@@ -18,6 +18,7 @@ GNU General Public License for more details.
 #include "client.h"
 #include "vid_common.h"
 #include "platform_sdl2.h"
+#include "vr/vr_openxr.h"
 
 // include it after because it breaks definitions in net_api.h wtf
 #include <SDL_syswm.h>
@@ -797,6 +798,27 @@ static void GL_SetupAttributes( void )
 	SDL_GL_ResetAttributes();
 
 	ref.dllFuncs.GL_SetupAttributes( glw_state.safe );
+
+	// PCVR fork: the renderer asks for a COMPATIBILITY profile but pins no
+	// version, so the driver is free to hand back something older than the
+	// OpenXR runtime will accept (VirtualDesktopXR reports min GL 4.0).
+	// Override afterwards - the engine gets the last word. COMPATIBILITY is
+	// mandatory here: ref_gl still issues legacy fixed-function GL that a core
+	// profile would reject outright.
+	if( VR_IsAvailable() && !glw_state.safe )
+	{
+		int major = 0, minor = 0;
+
+		VR_GetRequiredGLVersion( &major, &minor );
+
+		if( major > 0 )
+		{
+			Con_Reportf( "VR: requesting OpenGL %d.%d compatibility context\n", major, minor );
+			SDL_GL_SetAttribute( SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY );
+			SDL_GL_SetAttribute( SDL_GL_CONTEXT_MAJOR_VERSION, major );
+			SDL_GL_SetAttribute( SDL_GL_CONTEXT_MINOR_VERSION, minor );
+		}
+	}
 }
 
 void GL_SwapBuffers( void )

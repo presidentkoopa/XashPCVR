@@ -557,7 +557,15 @@ void R_SetupGL( qboolean set_gl_state )
 
 	if( !set_gl_state ) return;
 
-	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
+	if( RI.rvp.vr_active )
+	{
+		// PCVR fork: an HMD eye renders into an OpenXR swapchain FBO whose size
+		// is unrelated to the window, so the y-flip against gpGlobals->height
+		// below would be wrong. The viewport covers the whole eye texture.
+		// Same reasoning as the cubemap/mirror path underneath.
+		pglViewport( RI.rvp.viewport[0], RI.rvp.viewport[1], RI.rvp.viewport[2], RI.rvp.viewport[3] );
+	}
+	else if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
 	{
 		// set up viewport (main, playersetup)
 		int x = floor( RI.rvp.viewport[0] * gpGlobals->width / gpGlobals->width );
@@ -963,7 +971,9 @@ void R_RenderScene( void )
 		gEngfuncs.Host_Error( "%s: NULL worldmodel\n", __func__ );
 
 	// frametime is valid only for normal pass
-	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
+	// PCVR fork: also zero it for the second eye - it drives particle and tracer
+	// integration, which would otherwise advance twice per displayed frame.
+	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ) && ( !RI.rvp.vr_active || RI.rvp.vr_eye == 0 ))
 		tr.frametime = gp_cl->time -   gp_cl->oldtime;
 	else tr.frametime = 0.0;
 
@@ -1115,10 +1125,19 @@ void R_RenderFrame( const ref_viewpass_t *rvp )
 	}
 
 	tr.fCustomRendering = false;
-	if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ))
-		R_RunViewmodelEvents();
 
-	tr.realframecount++; // right called after viewmodel events
+	// PCVR fork: in stereo the scene is rendered once per eye. Viewmodel events
+	// and tr.realframecount must fire exactly once per FRAME, not once per eye -
+	// tr.realframecount is the same-frame dedupe key for player gait and is
+	// exported to mods, so double-stepping it corrupts animation.
+	if( !RI.rvp.vr_active || RI.rvp.vr_eye == 0 )
+	{
+		if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ))
+			R_RunViewmodelEvents();
+
+		tr.realframecount++; // right called after viewmodel events
+	}
+
 	R_RenderScene();
 
 	return;

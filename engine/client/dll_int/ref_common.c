@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "platform/platform.h"
 #include "vid_common.h"
 #include "imagelib.h"
+#include "vr/vr_openxr.h"
 
 struct ref_state_s ref;
 
@@ -756,6 +757,12 @@ qboolean R_Init( void )
 	Cvar_RegisterVariable( &r_refdll_loaded );
 	Cvar_RegisterVariable( &r_pvs_radius );
 
+	// PCVR fork: bring up OpenXR before any GL context exists, so that
+	// GL_SetupAttributes can request a context version the runtime accepts
+	// (VirtualDesktopXR demands GL >= 4.0). Failure here is not fatal - the
+	// engine simply runs flatscreen.
+	VR_Init();
+
 	// cvars that are expected to exist
 	Cvar_Get( "r_speeds", "0", FCVAR_ARCHIVE, "shows renderer speeds" );
 	Cvar_Get( "r_fullbright", "0", FCVAR_CHEAT, "disable lightmaps, get fullbright for entities" );
@@ -843,6 +850,14 @@ qboolean R_Init( void )
 	{
 		Sys_Error( "Can't initialize any renderer. Check your video drivers!\n" );
 		return false;
+	}
+
+	// PCVR fork: the GL context now exists and is current, so the OpenXR session
+	// can be created (it needs the Win32 HDC/HGLRC graphics binding).
+	if( VR_IsAvailable( ))
+	{
+		if( !VR_InitSession( ))
+			Con_Printf( S_WARN "VR: session creation failed, continuing flatscreen\n" );
 	}
 
 	SCR_Init();

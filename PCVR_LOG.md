@@ -346,7 +346,56 @@ xash3d.exe -rodir "D:\SteamLibrary\steamapps\common\Half-Life" -game valve -cons
 
 **Status: WORKS.** Engine boots, loads HL's real `cl_dlls/client.dll` and `dlls/hl.dll`
 (proving 32-bit mod-DLL loading), `ref_gl` initializes on the RTX 3080 Ti, no errors.
-Runs **flatscreen** — `VR_Init()` still has zero call sites.
+Reaches the intro tram sequence.
+
+### To test VR
+
+VR activates only when a headset is actually present. **Start Virtual Desktop
+Streamer and connect the headset first**, then run `run.bat`. Without a headset the
+log shows `VR: no HMD present, running flatscreen` and the game runs flat — that is
+the intended graceful fallback, not a failure.
+
+## FINDING 014 — VR wired into the frame loop; graceful fallback confirmed
+
+`VR_Init()` now runs at the top of `R_Init()` (`engine/client/dll_int/ref_common.c`),
+before any GL context exists, so `GL_SetupAttributes` can request a context version the
+runtime accepts. `VR_InitSession()` runs after the renderer succeeds, when the GL
+context is current and can supply the Win32 `HDC`/`HGLRC`.
+
+Verified live without a headset connected:
+```
+VR: runtime VirtualDesktopXR 1.0.10
+VR: no HMD present, running flatscreen
+```
+Instance creation succeeds, `xrGetSystem` correctly reports no HMD, and the engine
+falls back cleanly. **This is also the flatscreen-player code path** — the same binary
+serves VR and non-VR players, which is what makes VR/flatscreen LAN crossplay free.
+
+### Changes made to wire it up
+
+| File | Change |
+|---|---|
+| `engine/client/dll_int/ref_common.c` | `VR_Init()` early in `R_Init()`; `VR_InitSession()` after renderer load |
+| `engine/platform/sdl2/vid_sdl2.c` | engine overrides `ref_gl`'s GL attributes to force a 4.x **compatibility** context when VR is available |
+| `engine/client/cl_view.c` | `V_RenderView()` gains a stereo path: call the mod's `pfnCalcRefdef` **once**, then render the scene once per eye |
+| `ref/gl/gl_rmain.c` | VR viewport bypasses the window-height y-flip (FINDING 013); viewmodel events + `tr.realframecount` + `tr.frametime` gated to `vr_eye == 0` |
+| `common/ref_params.h` | added `vr_eye` index so the renderer can distinguish first eye from second |
+| `engine/client/vr/vr_openxr.c` | eye position emitted as offset from head centre; conservative symmetric FOV published for culling |
+
+### Design decisions worth remembering
+
+- **Eye anchoring.** OpenXR poses are in tracking space, not world space. `VR_BeginEye`
+  emits the eye position as an **offset from head centre** (essentially the IPD half-
+  offset); `cl_view.c` adds the mod's computed view origin. This yields correct stereo
+  and full head **orientation** tracking without pretending to have solved room-scale
+  **positional** tracking — that is priority item 2 and needs real play-space↔world
+  reconciliation (port from HLVR's `vr_ClientOriginOffset` / `vr_lastHMDOffset`).
+
+- **Culling frustum is conservative, not exact.** `R_SetupFrustum` builds a *symmetric*
+  frustum from `fov_x/fov_y`, independent of the projection matrix. Building it from the
+  true asymmetric angles would clip the wider side, so `VR_BeginEye` publishes twice the
+  **larger** half-angle — guaranteed to contain the real frustum. Over-inclusive (draws a
+  little extra) is safe; under-inclusive would pop geometry at the edges.
 
 ---
 

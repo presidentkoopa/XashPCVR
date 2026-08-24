@@ -118,6 +118,12 @@ typedef struct ref_viewpass_s
 	float		vr_tan_right;	// tan( fov.angleRight )
 	float		vr_tan_up;	// tan( fov.angleUp )
 	float		vr_tan_down;	// tan( fov.angleDown )   (negative)
+	int		vr_eye;		// which eye this pass is (0 = first)
+
+	// The whole scene is rendered once per eye, so anything that must happen
+	// exactly ONCE PER FRAME - viewmodel events, tr.realframecount (a same-frame
+	// dedupe key exported to mods), tr.frametime (drives particle and tracer
+	// integration) - must be gated on vr_eye == 0, or it runs at 2x.
 } ref_viewpass_t;
 
 #endif//REF_PARAMS_H

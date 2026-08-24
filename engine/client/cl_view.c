@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include "sound.h"
 #include "input.h" // touch
 #include "platform/platform.h" // GL_UpdateSwapInterval
+#include "vr/vr_openxr.h"
 
 /*
 ===============
@@ -402,23 +403,67 @@ void V_RenderView( void )
 	SCR_DirtyScreen();
 	ref.dllFuncs.GL_BackendStartFrame ();
 
-	do
+	// PCVR fork: stereo path.
+	//
+	// The mod's pfnCalcRefdef still computes the view exactly as it always does -
+	// we never touch it, which is what keeps this working for any GoldSrc mod.
+	// We then render the SAME scene once per eye, overriding only the viewpass.
+	if( VR_IsActive() && VR_BeginFrame( ))
 	{
+		vec3_t base_origin;
+		int eye;
+
 		clgame.dllFuncs.pfnCalcRefdef( &rp );
 		V_GetRefParams( &rp, &rvp );
 		V_RefApplyOverview( &rvp );
 		V_ApplyRefUnderwater( &rvp );
 
-		if( viewnum == 0 && FBitSet( rvp.flags, RF_ONLY_CLIENTDRAW ))
-		{
+		// anchor point for the eyes: whatever the mod decided the view origin is
+		VectorCopy( rvp.vieworigin, base_origin );
+
+		if( FBitSet( rvp.flags, RF_ONLY_CLIENTDRAW ))
 			ref.dllFuncs.R_ClearScreen();
+
+		for( eye = 0; eye < VR_GetEyeCount(); eye++ )
+		{
+			ref_viewpass_t eye_rvp = rvp;	// inherit flags/viewentity from the mod
+
+			if( !VR_BeginEye( eye, &eye_rvp ))
+				continue;
+
+			// VR_BeginEye emits the eye position relative to head centre; anchor
+			// it to the mod's view origin to get a world-space eye position.
+			VectorAdd( base_origin, eye_rvp.vieworigin, eye_rvp.vieworigin );
+
+			GL_RenderFrame( &eye_rvp );
+			VR_EndEye( eye );
 		}
 
-		GL_RenderFrame( &rvp );
+		// audio is updated once per frame, not once per eye
 		S_UpdateFrame( &rvp );
-		viewnum++;
 
-	} while( rp.nextView );
+		VR_EndFrame();
+	}
+	else
+	{
+		do
+		{
+			clgame.dllFuncs.pfnCalcRefdef( &rp );
+			V_GetRefParams( &rp, &rvp );
+			V_RefApplyOverview( &rvp );
+			V_ApplyRefUnderwater( &rvp );
+
+			if( viewnum == 0 && FBitSet( rvp.flags, RF_ONLY_CLIENTDRAW ))
+			{
+				ref.dllFuncs.R_ClearScreen();
+			}
+
+			GL_RenderFrame( &rvp );
+			S_UpdateFrame( &rvp );
+			viewnum++;
+
+		} while( rp.nextView );
+	}
 
 	// draw debug triangles on a server
 	SV_DrawDebugTriangles ();

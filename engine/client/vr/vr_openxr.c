@@ -698,15 +698,34 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 		rvp->viewport[2] = sc->width;
 		rvp->viewport[3] = sc->height;
 
-		VectorCopy( pose.origin, rvp->vieworigin );
+		// OpenXR poses are in TRACKING space, not game world space. Emit the eye
+		// position as an OFFSET FROM HEAD CENTRE (i.e. essentially the IPD half-
+		// offset, already rotated by head orientation). The caller anchors it by
+		// adding the view origin the mod computed. That gives correct stereo and
+		// full head ORIENTATION tracking without yet claiming to solve room-scale
+		// POSITIONAL tracking, which needs the play-space<->world reconciliation
+		// that is tracked separately as priority item 2.
+		VectorSubtract( pose.origin, vr.hmd_pose.origin, rvp->vieworigin );
 		VectorCopy( pose.angles, rvp->viewangles );
 
-		// Symmetric fallback so anything reading fov_x/fov_y stays sane.
-		rvp->fov_x = RAD2DEG( v->fov.angleRight - v->fov.angleLeft );
-		rvp->fov_y = RAD2DEG( v->fov.angleUp    - v->fov.angleDown );
+		// fov_x/fov_y still feed the CULLING frustum (R_SetupFrustum ->
+		// GL_FrustumInitProj), which is symmetric and separate from the
+		// projection matrix. A symmetric frustum built from the true asymmetric
+		// angles could clip geometry off the wider side, so publish a
+		// CONSERVATIVE symmetric FOV: twice the larger half-angle, which is
+		// guaranteed to contain the real frustum. Slightly over-inclusive (draws
+		// a little extra) is safe; under-inclusive would pop geometry at edges.
+		{
+			float half_x = Q_max( fabs( v->fov.angleLeft ), fabs( v->fov.angleRight ));
+			float half_y = Q_max( fabs( v->fov.angleUp   ), fabs( v->fov.angleDown ));
+
+			rvp->fov_x = RAD2DEG( 2.0f * half_x );
+			rvp->fov_y = RAD2DEG( 2.0f * half_y );
+		}
 
 		// True asymmetric frustum - what the renderer should actually use.
 		rvp->vr_active     = true;
+		rvp->vr_eye        = eye;
 		rvp->vr_tan_left   = tanf( v->fov.angleLeft );
 		rvp->vr_tan_right  = tanf( v->fov.angleRight );
 		rvp->vr_tan_up     = tanf( v->fov.angleUp );
