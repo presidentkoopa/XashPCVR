@@ -544,6 +544,39 @@ static void R_StudioSetUpTransform( cl_entity_t *e )
 
 	Matrix3x4_CreateFromEntity( g_studio.rotationmatrix, angles, origin, 1.0f );
 
+	// PCVR fork: mirror this entity across its local X axis. Used for the
+	// VR bare-hand model (an inherently right-handed mesh) so the left hand
+	// does not render as a second right hand.
+	//
+	// Deliberately independent of tr.fFlipViewModel below: that mechanism is
+	// coupled to a per-submesh backface-culling check deep in the draw loop
+	// (see R_AllowFlipViewModel, gated to `e == tr.viewent` specifically), and
+	// its set/read ordering relative to a generically-list-drawn entity like
+	// this one is not verified here. This path only touches the transform,
+	// which is independently correct: Matrix3x4_CreateFromEntity's `scale`
+	// parameter multiplies all three local basis columns uniformly (confirmed
+	// in matrixlib.c), so passing a negative scale would point-invert the
+	// whole entity rather than mirror one axis - negating a single column of
+	// the finished matrix afterward is the actual single-axis mirror.
+	//
+	// curstate.scale is otherwise unused for entity geometry in this renderer
+	// (its only other reference, in R_StudioSetupLighting, is a lighting-
+	// normalization heuristic), so a negative value is repurposed here as a
+	// safe, non-colliding "mirror this entity" signal - no real entity in any
+	// mod sends a negative scale.
+	//
+	// KNOWN LIMITATION: mirroring reverses triangle winding order, which can
+	// make backface culling remove the wrong faces (holes / inside-out look)
+	// unless culling is also flipped for this entity's draw. Not yet done -
+	// watch for that specifically if the mirrored hand looks visually broken
+	// rather than simply wrong-handed.
+	if( e->curstate.scale < 0.0f )
+	{
+		g_studio.rotationmatrix[0][0] = -g_studio.rotationmatrix[0][0];
+		g_studio.rotationmatrix[1][0] = -g_studio.rotationmatrix[1][0];
+		g_studio.rotationmatrix[2][0] = -g_studio.rotationmatrix[2][0];
+	}
+
 	if( tr.fFlipViewModel )
 	{
 		g_studio.rotationmatrix[0][1] = -g_studio.rotationmatrix[0][1];

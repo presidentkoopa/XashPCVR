@@ -221,7 +221,8 @@ static struct
 	XrFrameState  frame_state;
 
 	vr_pose_t     hmd_pose;
-	vr_pose_t     hand_pose[2];
+	vr_pose_t     hand_pose[2];      // AIM pose - for weapon pointing direction
+	vr_pose_t     hand_grip_pose[2]; // GRIP pose - for rendering held meshes (hands, weapon model)
 
 	int           gl_major, gl_minor;
 
@@ -229,9 +230,11 @@ static struct
 	qboolean      input_ready;
 	XrActionSet   action_set;
 	XrAction      actions[VRA_COUNT];
-	XrAction      act_hand_pose;
+	XrAction      act_hand_pose;    // aim/pose
+	XrAction      act_hand_grip;    // grip/pose
 	XrPath        hand_path[2];  // /user/hand/left, /user/hand/right
 	XrSpace       hand_space[2];
+	XrSpace       grip_space[2];
 
 	float         move_x, move_y;   // -1..1 locomotion stick
 	float         turn_x, turn_y;   // -1..1 turn stick
@@ -792,6 +795,20 @@ qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang )
 	return true;
 }
 
+// Same, but GRIP pose - for rendering a held mesh (the hand model itself, or
+// a weapon's visual placement) rather than a pointing/aim direction. See the
+// design note on vr_profile_t for why these are two separate poses.
+qboolean VR_GetHandGripWorld( int hand, vec3_t out_org, vec3_t out_ang )
+{
+	hand = bound( 0, hand, 1 );
+
+	if( !VR_IsActive() || !vr.hand_grip_pose[hand].valid )
+		return false;
+
+	VR_PlayToWorld( &vr.hand_grip_pose[hand], out_org, out_ang );
+	return true;
+}
+
 /*
 =================================================================
 	bare-hand visuals
@@ -853,6 +870,12 @@ static void VR_InitHandModels( void )
 		vr_hand_ent[i].index = clgame.maxEntities - 1 - i;
 		vr_hand_ent[i].curstate.rendermode = kRenderNormal;
 		vr_hand_ent[i].curstate.renderamt  = 255;
+
+		// hand 0 = left. The mesh is an inherently right-handed model; mirror
+		// the left copy across its local X axis (see the mirror code added to
+		// R_StudioSetUpTransform in gl_studio.c, and the note there on why a
+		// negative *uniform* scale would NOT be equivalent to this).
+		vr_hand_ent[i].curstate.scale = ( i == 0 ) ? -1.0f : 0.0f;
 	}
 }
 
@@ -884,7 +907,11 @@ void VR_DrawHands( qboolean draw_right )
 		if( hand == 1 && !draw_right )
 			continue;
 
-		if( !VR_GetHandWorld( hand, org, ang ))
+		// GRIP pose, not aim - this is a rendered mesh (the hand itself), and
+		// OpenXR defines grip pose specifically for that. Using aim pose here
+		// (as a shared single pose action briefly did) is what caused the
+		// hand to render pointed at the floor.
+		if( !VR_GetHandGripWorld( hand, org, ang ))
 			continue;
 
 		// TODO: switch to the labcoat model before the player has picked up
@@ -1254,6 +1281,10 @@ static void VR_DestroySession( void )
 		if( vr.hand_space[i] )
 			xrDestroySpace( vr.hand_space[i] );
 		vr.hand_space[i] = 0;
+
+		if( vr.grip_space[i] )
+			xrDestroySpace( vr.grip_space[i] );
+		vr.grip_space[i] = 0;
 	}
 
 	if( vr.view_space )  xrDestroySpace( vr.view_space );
@@ -1381,11 +1412,20 @@ static XrPath VR_Path( const char *s )
 
 // Binding table: one row per interaction profile, one path per action.
 // NULL leaves an action unbound on that device.
+//
+// Two separate pose bindings per profile, not one - OpenXR defines these for
+// different purposes and conflating them is what caused the hand mesh to
+// point at the floor:
+//   aim_*  - "aim/pose": where the controller is pointed. Drives weapon aim.
+//   grip_* - "grip/pose": how a held object naturally sits in the hand. This
+//            is what OpenXR's own spec says to use for rendering a held
+//            object's mesh - including the hand model itself.
 typedef struct
 {
 	const char *profile;
 	const char *path[VRA_COUNT];
-	const char *pose_l, *pose_r;
+	const char *aim_l, *aim_r;
+	const char *grip_l, *grip_r;
 } vr_profile_t;
 
 static const vr_profile_t vr_profiles[] =
@@ -1406,7 +1446,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",	// PREVWEAP
 			"/user/hand/left/input/menu/click",		// MENU
 		},
-		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
+		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
 	},
 	{
 		"/interaction_profiles/valve/index_controller",
@@ -1424,7 +1465,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/system/click",
 		},
-		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
+		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
 	},
 	{
 		"/interaction_profiles/microsoft/motion_controller",
@@ -1442,7 +1484,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/menu/click",
 		},
-		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
+		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
 	},
 	{
 		"/interaction_profiles/htc/vive_controller",
@@ -1460,14 +1503,15 @@ static const vr_profile_t vr_profiles[] =
 			NULL,
 			"/user/hand/left/input/menu/click",
 		},
-		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
+		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
 	},
 };
 
 static qboolean VR_SuggestProfile( const vr_profile_t *p )
 {
 	XrInteractionProfileSuggestedBinding sb = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
-	XrActionSuggestedBinding b[VRA_COUNT + 2];
+	XrActionSuggestedBinding b[VRA_COUNT + 4];	// +4: aim_l/aim_r/grip_l/grip_r
 	uint32_t n = 0;
 	int i;
 	XrResult res;
@@ -1481,8 +1525,10 @@ static qboolean VR_SuggestProfile( const vr_profile_t *p )
 		n++;
 	}
 
-	if( p->pose_l ) { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->pose_l ); n++; }
-	if( p->pose_r ) { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->pose_r ); n++; }
+	if( p->aim_l )  { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->aim_l );  n++; }
+	if( p->aim_r )  { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->aim_r );  n++; }
+	if( p->grip_l ) { b[n].action = vr.act_hand_grip; b[n].binding = VR_Path( p->grip_l ); n++; }
+	if( p->grip_r ) { b[n].action = vr.act_hand_grip; b[n].binding = VR_Path( p->grip_r ); n++; }
 
 	sb.interactionProfile     = VR_Path( p->profile );
 	sb.suggestedBindings      = b;
@@ -1544,15 +1590,29 @@ static qboolean VR_InitInput( void )
 		XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.actions[i] ), "xrCreateAction" );
 	}
 
-	// hand poses DO want subaction paths - we need them told apart
+	// hand poses DO want subaction paths - we need them told apart.
+	// Two separate pose actions, not one: aim/pose (pointing direction, drives
+	// weapon aim) and grip/pose (how a held object sits in the hand - what
+	// OpenXR's spec says to use for rendering the hand mesh itself). Using one
+	// pose for both is what caused the hand mesh to render pointed at the
+	// floor after the weapon-aim fix.
 	memset( &aci, 0, sizeof( aci ));
 	aci.type       = XR_TYPE_ACTION_CREATE_INFO;
 	aci.actionType = XR_ACTION_TYPE_POSE_INPUT;
 	Q_strncpy( aci.actionName, "hand", sizeof( aci.actionName ));
-	Q_strncpy( aci.localizedActionName, "Hand", sizeof( aci.localizedActionName ));
+	Q_strncpy( aci.localizedActionName, "Hand Aim", sizeof( aci.localizedActionName ));
 	aci.countSubactionPaths = 2;
 	aci.subactionPaths      = vr.hand_path;
 	XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.act_hand_pose ), "xrCreateAction hand" );
+
+	memset( &aci, 0, sizeof( aci ));
+	aci.type       = XR_TYPE_ACTION_CREATE_INFO;
+	aci.actionType = XR_ACTION_TYPE_POSE_INPUT;
+	Q_strncpy( aci.actionName, "handgrip", sizeof( aci.actionName ));
+	Q_strncpy( aci.localizedActionName, "Hand Grip", sizeof( aci.localizedActionName ));
+	aci.countSubactionPaths = 2;
+	aci.subactionPaths      = vr.hand_path;
+	XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.act_hand_grip ), "xrCreateAction handgrip" );
 
 	for( i = 0; i < (int)( sizeof( vr_profiles ) / sizeof( vr_profiles[0] )); i++ )
 	{
@@ -1573,6 +1633,11 @@ static qboolean VR_InitInput( void )
 
 		if( XR_FAILED( xrCreateActionSpace( vr.session, &asp, &vr.hand_space[i] )))
 			Con_Printf( S_WARN "VR: could not create hand space %d\n", i );
+
+		asp.action = vr.act_hand_grip;
+
+		if( XR_FAILED( xrCreateActionSpace( vr.session, &asp, &vr.grip_space[i] )))
+			Con_Printf( S_WARN "VR: could not create hand grip space %d\n", i );
 	}
 
 	ai.countActionSets = 1;
@@ -1694,6 +1759,25 @@ static void VR_SyncInput( void )
 				VR_ConvertPose( &loc.pose, &vr.hand_pose[i] );
 			else
 				vr.hand_pose[i].valid = false;
+		}
+	}
+
+	// same, for the separate grip pose used to render held meshes
+	for( i = 0; i < 2; i++ )
+	{
+		XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
+
+		if( !vr.grip_space[i] )
+			continue;
+
+		if( XR_SUCCEEDED( xrLocateSpace( vr.grip_space[i], vr.stage_space,
+			vr.frame_state.predictedDisplayTime, &loc )))
+		{
+			if(( loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT ) &&
+			   ( loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT ))
+				VR_ConvertPose( &loc.pose, &vr.hand_grip_pose[i] );
+			else
+				vr.hand_grip_pose[i].valid = false;
 		}
 	}
 }
