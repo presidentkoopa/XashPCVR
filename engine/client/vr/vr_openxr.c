@@ -126,6 +126,46 @@ static qboolean VR_LoadGLFuncs( void )
 	state
 =================================================================
 */
+// Semantic actions. OpenXR binds these per controller type, so one set of code
+// drives Touch, Index, Vive wands and WMR without per-device branching.
+typedef enum
+{
+	VRA_MOVE = 0,	// vec2 - left stick
+	VRA_TURN,	// vec2 - right stick
+	VRA_JUMP,
+	VRA_CROUCH,
+	VRA_ATTACK,
+	VRA_ATTACK2,
+	VRA_USE,
+	VRA_RELOAD,
+	VRA_FLASHLIGHT,
+	VRA_NEXTWEAP,
+	VRA_PREVWEAP,
+	VRA_MENU,
+	VRA_COUNT
+} vr_action_id_t;
+
+static const struct
+{
+	const char *name;
+	const char *label;
+	int         type;	// XrActionType
+} vr_action_defs[VRA_COUNT] =
+{
+	{ "move",       "Move",           XR_ACTION_TYPE_VECTOR2F_INPUT },
+	{ "turn",       "Turn",           XR_ACTION_TYPE_VECTOR2F_INPUT },
+	{ "jump",       "Jump",           XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "crouch",     "Crouch",         XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "attack",     "Attack",         XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "attack2",    "Secondary Fire", XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "use",        "Use",            XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "reload",     "Reload",         XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "flashlight", "Flashlight",     XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "nextweap",   "Next Weapon",    XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "prevweap",   "Prev Weapon",    XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "menu",       "Menu",           XR_ACTION_TYPE_BOOLEAN_INPUT },
+};
+
 typedef struct
 {
 	XrSwapchain            handle;
@@ -178,18 +218,15 @@ static struct
 	// ---- input ----
 	qboolean      input_ready;
 	XrActionSet   action_set;
-	XrAction      act_move;      // vec2, left stick  - locomotion
-	XrAction      act_turn;      // vec2, right stick - turning
-	XrAction      act_jump;      // bool
-	XrAction      act_attack;    // bool
-	XrAction      act_use;       // bool
-	XrAction      act_hand_pose; // pose, both hands
+	XrAction      actions[VRA_COUNT];
+	XrAction      act_hand_pose;
 	XrPath        hand_path[2];  // /user/hand/left, /user/hand/right
 	XrSpace       hand_space[2];
 
 	float         move_x, move_y;   // -1..1 locomotion stick
-	float         turn_x;           // -1..1 turn stick
-	qboolean      btn_jump, btn_attack, btn_use;
+	float         turn_x, turn_y;   // -1..1 turn stick
+	qboolean      btn[VRA_COUNT];
+	qboolean      btn_prev[VRA_COUNT];
 	qboolean      snap_pending;
 
 	// PFN cache
@@ -1014,37 +1051,126 @@ static XrPath VR_Path( const char *s )
 	return p;
 }
 
-static qboolean VR_SuggestBindings( const char *profile,
-	const char *move, const char *turn, const char *jump,
-	const char *attack, const char *use, const char *pose_l, const char *pose_r )
+// Binding table: one row per interaction profile, one path per action.
+// NULL leaves an action unbound on that device.
+typedef struct
+{
+	const char *profile;
+	const char *path[VRA_COUNT];
+	const char *pose_l, *pose_r;
+} vr_profile_t;
+
+static const vr_profile_t vr_profiles[] =
+{
+	{
+		"/interaction_profiles/oculus/touch_controller",
+		{
+			"/user/hand/left/input/thumbstick",		// MOVE
+			"/user/hand/right/input/thumbstick",		// TURN
+			"/user/hand/right/input/a/click",		// JUMP
+			"/user/hand/right/input/b/click",		// CROUCH
+			"/user/hand/right/input/trigger/value",		// ATTACK
+			"/user/hand/right/input/squeeze/value",		// ATTACK2
+			"/user/hand/left/input/squeeze/value",		// USE
+			"/user/hand/left/input/x/click",		// RELOAD
+			"/user/hand/left/input/y/click",		// FLASHLIGHT
+			"/user/hand/right/input/thumbstick/click",	// NEXTWEAP
+			"/user/hand/left/input/thumbstick/click",	// PREVWEAP
+			"/user/hand/left/input/menu/click",		// MENU
+		},
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+	},
+	{
+		"/interaction_profiles/valve/index_controller",
+		{
+			"/user/hand/left/input/thumbstick",
+			"/user/hand/right/input/thumbstick",
+			"/user/hand/right/input/a/click",
+			"/user/hand/right/input/b/click",
+			"/user/hand/right/input/trigger/value",
+			"/user/hand/right/input/squeeze/value",
+			"/user/hand/left/input/squeeze/value",
+			"/user/hand/left/input/a/click",
+			"/user/hand/left/input/b/click",
+			"/user/hand/right/input/thumbstick/click",
+			"/user/hand/left/input/thumbstick/click",
+			"/user/hand/left/input/system/click",
+		},
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+	},
+	{
+		"/interaction_profiles/microsoft/motion_controller",
+		{
+			"/user/hand/left/input/thumbstick",
+			"/user/hand/right/input/thumbstick",
+			"/user/hand/right/input/trackpad/click",
+			"/user/hand/left/input/trackpad/click",
+			"/user/hand/right/input/trigger",
+			"/user/hand/right/input/squeeze/click",
+			"/user/hand/left/input/squeeze/click",
+			NULL,
+			NULL,
+			"/user/hand/right/input/thumbstick/click",
+			"/user/hand/left/input/thumbstick/click",
+			"/user/hand/left/input/menu/click",
+		},
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+	},
+	{
+		"/interaction_profiles/htc/vive_controller",
+		{
+			"/user/hand/left/input/trackpad",
+			"/user/hand/right/input/trackpad",
+			"/user/hand/right/input/trackpad/click",
+			"/user/hand/left/input/trackpad/click",
+			"/user/hand/right/input/trigger/value",
+			"/user/hand/right/input/squeeze/click",
+			"/user/hand/left/input/squeeze/click",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			"/user/hand/left/input/menu/click",
+		},
+		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+	},
+};
+
+static qboolean VR_SuggestProfile( const vr_profile_t *p )
 {
 	XrInteractionProfileSuggestedBinding sb = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
-	XrActionSuggestedBinding b[7];
+	XrActionSuggestedBinding b[VRA_COUNT + 2];
 	uint32_t n = 0;
+	int i;
 	XrResult res;
 
-	b[n].action = vr.act_move;      b[n].binding = VR_Path( move );   n++;
-	b[n].action = vr.act_turn;      b[n].binding = VR_Path( turn );   n++;
-	b[n].action = vr.act_jump;      b[n].binding = VR_Path( jump );   n++;
-	b[n].action = vr.act_attack;    b[n].binding = VR_Path( attack ); n++;
-	b[n].action = vr.act_use;       b[n].binding = VR_Path( use );    n++;
-	b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( pose_l ); n++;
-	b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( pose_r ); n++;
+	for( i = 0; i < VRA_COUNT; i++ )
+	{
+		if( !p->path[i] )
+			continue;
+		b[n].action  = vr.actions[i];
+		b[n].binding = VR_Path( p->path[i] );
+		n++;
+	}
 
-	sb.interactionProfile     = VR_Path( profile );
+	if( p->pose_l ) { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->pose_l ); n++; }
+	if( p->pose_r ) { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->pose_r ); n++; }
+
+	sb.interactionProfile     = VR_Path( p->profile );
 	sb.suggestedBindings      = b;
 	sb.countSuggestedBindings = n;
 
 	res = xrSuggestInteractionProfileBindings( vr.instance, &sb );
 	if( XR_FAILED( res ))
 	{
-		// Not fatal: a runtime rejects profiles it does not know about.
+		// not fatal - a runtime rejects device profiles it does not know
 		if( vr_debug.value )
-			Con_Printf( "VR: bindings for %s rejected: %s\n", profile, VR_ResultString( res ));
+			Con_Printf( "VR: bindings for %s rejected: %s\n", p->profile, VR_ResultString( res ));
+		VR_DiagPrintf( "bindings FAILED: %s\n", p->profile );
 		return false;
 	}
 
-	VR_DiagPrintf( "bindings ok    : %s\n", profile );
+	VR_DiagPrintf( "bindings ok    : %s (%u paths)\n", p->profile, n );
 	return true;
 }
 
@@ -1052,8 +1178,9 @@ static qboolean VR_SuggestBindings( const char *profile,
 ================
 VR_InitInput
 
-Must run AFTER the session exists (action sets are attached to a session) but
-the actions themselves are instance-level.
+Actions are instance-level, but the action SET is attached to the session and
+attachment is permanent - so this runs once, right after session creation and
+before the session starts running.
 ================
 */
 static qboolean VR_InitInput( void )
@@ -1061,8 +1188,7 @@ static qboolean VR_InitInput( void )
 	XrActionSetCreateInfo asci = { XR_TYPE_ACTION_SET_CREATE_INFO };
 	XrSessionActionSetsAttachInfo ai = { XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
 	XrActionCreateInfo aci;
-	int i;
-	int profiles = 0;
+	int i, profiles = 0;
 
 	if( vr.input_ready )
 		return true;
@@ -1075,73 +1201,46 @@ static qboolean VR_InitInput( void )
 	vr.hand_path[0] = VR_Path( "/user/hand/left" );
 	vr.hand_path[1] = VR_Path( "/user/hand/right" );
 
-	// NB: parameter is 'atype', not 'type' - naming it 'type' makes the
-	// preprocessor rewrite the struct field aci.type as well.
-#define MAKE_ACTION( out, name, label, atype ) \
-	memset( &aci, 0, sizeof( aci )); \
-	aci.type = XR_TYPE_ACTION_CREATE_INFO; \
-	aci.actionType = ( atype ); \
-	Q_strncpy( aci.actionName, ( name ), sizeof( aci.actionName )); \
-	Q_strncpy( aci.localizedActionName, ( label ), sizeof( aci.localizedActionName )); \
-	aci.countSubactionPaths = 2; \
-	aci.subactionPaths = vr.hand_path; \
-	XR_CHECK( xrCreateAction( vr.action_set, &aci, &( out )), "xrCreateAction " name );
+	// NOTE: deliberately NO subaction paths on the gameplay actions. Declaring
+	// them forces every query to name a hand, and an action bound only to one
+	// controller then reads inactive when queried against the other - which is
+	// exactly what silently killed turning. Without them, a query using
+	// XR_NULL_PATH aggregates across all bindings.
+	for( i = 0; i < VRA_COUNT; i++ )
+	{
+		memset( &aci, 0, sizeof( aci ));
+		aci.type       = XR_TYPE_ACTION_CREATE_INFO;
+		aci.actionType = vr_action_defs[i].type;
+		Q_strncpy( aci.actionName, vr_action_defs[i].name, sizeof( aci.actionName ));
+		Q_strncpy( aci.localizedActionName, vr_action_defs[i].label, sizeof( aci.localizedActionName ));
+		XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.actions[i] ), "xrCreateAction" );
+	}
 
-	MAKE_ACTION( vr.act_move,      "move",   "Move",   XR_ACTION_TYPE_VECTOR2F_INPUT )
-	MAKE_ACTION( vr.act_turn,      "turn",   "Turn",   XR_ACTION_TYPE_VECTOR2F_INPUT )
-	MAKE_ACTION( vr.act_jump,      "jump",   "Jump",   XR_ACTION_TYPE_BOOLEAN_INPUT )
-	MAKE_ACTION( vr.act_attack,    "attack", "Attack", XR_ACTION_TYPE_BOOLEAN_INPUT )
-	MAKE_ACTION( vr.act_use,       "use",    "Use",    XR_ACTION_TYPE_BOOLEAN_INPUT )
-	MAKE_ACTION( vr.act_hand_pose, "hand",   "Hand",   XR_ACTION_TYPE_POSE_INPUT )
-#undef MAKE_ACTION
+	// hand poses DO want subaction paths - we need them told apart
+	memset( &aci, 0, sizeof( aci ));
+	aci.type       = XR_TYPE_ACTION_CREATE_INFO;
+	aci.actionType = XR_ACTION_TYPE_POSE_INPUT;
+	Q_strncpy( aci.actionName, "hand", sizeof( aci.actionName ));
+	Q_strncpy( aci.localizedActionName, "Hand", sizeof( aci.localizedActionName ));
+	aci.countSubactionPaths = 2;
+	aci.subactionPaths      = vr.hand_path;
+	XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.act_hand_pose ), "xrCreateAction hand" );
 
-	// Left stick moves, right stick turns - the near-universal VR convention.
-	profiles += VR_SuggestBindings( "/interaction_profiles/oculus/touch_controller",
-		"/user/hand/left/input/thumbstick",
-		"/user/hand/right/input/thumbstick",
-		"/user/hand/right/input/a/click",
-		"/user/hand/right/input/trigger/value",
-		"/user/hand/left/input/squeeze/value",
-		"/user/hand/left/input/grip/pose",
-		"/user/hand/right/input/grip/pose" );
-
-	profiles += VR_SuggestBindings( "/interaction_profiles/valve/index_controller",
-		"/user/hand/left/input/thumbstick",
-		"/user/hand/right/input/thumbstick",
-		"/user/hand/right/input/a/click",
-		"/user/hand/right/input/trigger/value",
-		"/user/hand/left/input/squeeze/value",
-		"/user/hand/left/input/grip/pose",
-		"/user/hand/right/input/grip/pose" );
-
-	profiles += VR_SuggestBindings( "/interaction_profiles/microsoft/motion_controller",
-		"/user/hand/left/input/thumbstick",
-		"/user/hand/right/input/thumbstick",
-		"/user/hand/right/input/trackpad/click",
-		"/user/hand/right/input/trigger",
-		"/user/hand/left/input/squeeze/click",
-		"/user/hand/left/input/grip/pose",
-		"/user/hand/right/input/grip/pose" );
-
-	profiles += VR_SuggestBindings( "/interaction_profiles/htc/vive_controller",
-		"/user/hand/left/input/trackpad",
-		"/user/hand/right/input/trackpad",
-		"/user/hand/right/input/menu/click",
-		"/user/hand/right/input/trigger/value",
-		"/user/hand/left/input/squeeze/click",
-		"/user/hand/left/input/grip/pose",
-		"/user/hand/right/input/grip/pose" );
+	for( i = 0; i < (int)( sizeof( vr_profiles ) / sizeof( vr_profiles[0] )); i++ )
+	{
+		if( VR_SuggestProfile( &vr_profiles[i] ))
+			profiles++;
+	}
 
 	if( !profiles )
 		Con_Printf( S_WARN "VR: no interaction profile bindings accepted\n" );
 
-	// hand pose spaces
 	for( i = 0; i < 2; i++ )
 	{
 		XrActionSpaceCreateInfo asp = { XR_TYPE_ACTION_SPACE_CREATE_INFO };
 
-		asp.action            = vr.act_hand_pose;
-		asp.subactionPath     = vr.hand_path[i];
+		asp.action        = vr.act_hand_pose;
+		asp.subactionPath = vr.hand_path[i];
 		asp.poseInActionSpace.orientation.w = 1.0f;
 
 		if( XR_FAILED( xrCreateActionSpace( vr.session, &asp, &vr.hand_space[i] )))
@@ -1183,42 +1282,43 @@ static void VR_SyncInput( void )
 	if( XR_FAILED( xrSyncActions( vr.session, &si )))
 		return;
 
-	vr.move_x = vr.move_y = vr.turn_x = 0.0f;
-	vr.btn_jump = vr.btn_attack = vr.btn_use = false;
+	memcpy( vr.btn_prev, vr.btn, sizeof( vr.btn ));
+	memset( vr.btn, 0, sizeof( vr.btn ));
+	vr.move_x = vr.move_y = vr.turn_x = vr.turn_y = 0.0f;
 
-	// Poll both hands and take whichever is active. Runtimes may map a stick to
-	// either subaction path depending on the profile, so we don't assume.
-	for( i = 0; i < 2; i++ )
+	gi.subactionPath = XR_NULL_PATH;	// aggregate across every binding
+
+	gi.action = vr.actions[VRA_MOVE];
+	if( XR_SUCCEEDED( xrGetActionStateVector2f( vr.session, &gi, &v2 )) && v2.isActive )
 	{
-		gi.subactionPath = vr.hand_path[i];
-
-		gi.action = vr.act_move;
-		if( XR_SUCCEEDED( xrGetActionStateVector2f( vr.session, &gi, &v2 )) && v2.isActive )
-		{
-			if( fabs( v2.currentState.x ) > fabs( vr.move_x )) vr.move_x = v2.currentState.x;
-			if( fabs( v2.currentState.y ) > fabs( vr.move_y )) vr.move_y = v2.currentState.y;
-		}
-
-		gi.action = vr.act_turn;
-		if( XR_SUCCEEDED( xrGetActionStateVector2f( vr.session, &gi, &v2 )) && v2.isActive )
-		{
-			if( fabs( v2.currentState.x ) > fabs( vr.turn_x )) vr.turn_x = v2.currentState.x;
-		}
-
-		gi.action = vr.act_jump;
-		if( XR_SUCCEEDED( xrGetActionStateBoolean( vr.session, &gi, &bl )) && bl.isActive && bl.currentState )
-			vr.btn_jump = true;
-
-		gi.action = vr.act_attack;
-		if( XR_SUCCEEDED( xrGetActionStateBoolean( vr.session, &gi, &bl )) && bl.isActive && bl.currentState )
-			vr.btn_attack = true;
-
-		gi.action = vr.act_use;
-		if( XR_SUCCEEDED( xrGetActionStateBoolean( vr.session, &gi, &bl )) && bl.isActive && bl.currentState )
-			vr.btn_use = true;
+		vr.move_x = v2.currentState.x;
+		vr.move_y = v2.currentState.y;
 	}
 
-	// hand poses
+	gi.action = vr.actions[VRA_TURN];
+	if( XR_SUCCEEDED( xrGetActionStateVector2f( vr.session, &gi, &v2 )) && v2.isActive )
+	{
+		vr.turn_x = v2.currentState.x;
+		vr.turn_y = v2.currentState.y;
+	}
+
+	for( i = VRA_JUMP; i < VRA_COUNT; i++ )
+	{
+		gi.action = vr.actions[i];
+		if( XR_SUCCEEDED( xrGetActionStateBoolean( vr.session, &gi, &bl )) && bl.isActive )
+			vr.btn[i] = bl.currentState ? true : false;
+	}
+
+	// One-shot actions are console commands, dispatched on the press edge only.
+	if( vr.btn[VRA_FLASHLIGHT] && !vr.btn_prev[VRA_FLASHLIGHT] )
+		Cbuf_AddText( "impulse 100\n" );
+	if( vr.btn[VRA_NEXTWEAP] && !vr.btn_prev[VRA_NEXTWEAP] )
+		Cbuf_AddText( "invnext\n" );
+	if( vr.btn[VRA_PREVWEAP] && !vr.btn_prev[VRA_PREVWEAP] )
+		Cbuf_AddText( "invprev\n" );
+	if( vr.btn[VRA_MENU] && !vr.btn_prev[VRA_MENU] )
+		Cbuf_AddText( "escape\n" );
+
 	for( i = 0; i < 2; i++ )
 	{
 		XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
@@ -1307,13 +1407,9 @@ void VR_UpdateTurn( float frametime )
 
 qboolean VR_GetButton( int btn )
 {
-	switch( btn )
-	{
-	case VR_BTN_JUMP:   return vr.btn_jump;
-	case VR_BTN_ATTACK: return vr.btn_attack;
-	case VR_BTN_USE:    return vr.btn_use;
-	default:            return false;
-	}
+	if( !VR_IsActive() || !vr.input_ready || btn < 0 || btn >= VRA_COUNT )
+		return false;
+	return vr.btn[btn];
 }
 
 /*

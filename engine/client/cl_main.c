@@ -824,9 +824,12 @@ static void CL_CreateCmd( void )
 		if( vr_fwd != 0.0f )  cmd->forwardmove = vr_fwd;
 		if( vr_side != 0.0f ) cmd->sidemove    = vr_side;
 
-		if( VR_GetButton( VR_BTN_JUMP ))   cmd->buttons |= IN_JUMP;
-		if( VR_GetButton( VR_BTN_ATTACK )) cmd->buttons |= IN_ATTACK;
-		if( VR_GetButton( VR_BTN_USE ))    cmd->buttons |= IN_USE;
+		if( VR_GetButton( VR_BTN_JUMP ))    cmd->buttons |= IN_JUMP;
+		if( VR_GetButton( VR_BTN_CROUCH ))  cmd->buttons |= IN_DUCK;
+		if( VR_GetButton( VR_BTN_ATTACK ))  cmd->buttons |= IN_ATTACK;
+		if( VR_GetButton( VR_BTN_ATTACK2 )) cmd->buttons |= IN_ATTACK2;
+		if( VR_GetButton( VR_BTN_USE ))     cmd->buttons |= IN_USE;
+		if( VR_GetButton( VR_BTN_RELOAD ))  cmd->buttons |= IN_RELOAD;
 	}
 
 	CL_PopPMStates();

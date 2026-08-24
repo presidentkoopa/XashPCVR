@@ -123,9 +123,17 @@ float    VR_GetBodyYaw( void );
 // controller input
 //
 
-#define VR_BTN_JUMP    0
-#define VR_BTN_ATTACK  1
-#define VR_BTN_USE     2
+// Must stay in step with vr_action_id_t in vr_openxr.c.
+#define VR_BTN_JUMP        2
+#define VR_BTN_CROUCH      3
+#define VR_BTN_ATTACK      4
+#define VR_BTN_ATTACK2     5
+#define VR_BTN_USE         6
+#define VR_BTN_RELOAD      7
+#define VR_BTN_FLASHLIGHT  8
+#define VR_BTN_NEXTWEAP    9
+#define VR_BTN_PREVWEAP    10
+#define VR_BTN_MENU        11
 
 // Thumbstick locomotion, already deadzoned and scaled to HL move units.
 // Values are relative to the current view direction, matching how the engine
