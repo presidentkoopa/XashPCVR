@@ -157,6 +157,10 @@ qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang );
 // and the bare hand are never both shown at once.
 void     VR_DrawHands( qboolean draw_right );
 
+// Applies the weapon viewmodel's rest-pose correction (vr_weapon_*_offset).
+// Call on the PHYSICAL tracked angles, BEFORE pre-negating pitch.
+void     VR_CalibrateWeaponAngles( vec3_t ang );
+
 // Constrain 2D drawing to a readable rect inside the current eye texture.
 // The engine's 2D pass sets up an ortho for the WINDOW, which would otherwise
 // splatter the HUD across the full eye at the wrong aspect. Call after

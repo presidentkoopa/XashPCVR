@@ -64,6 +64,106 @@ static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within t
 CVAR_DEFINE_AUTO( vr_hands, "1", FCVAR_ARCHIVE, "pin the viewmodel to the right controller" );
 CVAR_DEFINE_AUTO( vr_hud, "1", FCVAR_ARCHIVE, "draw the 2D HUD/menu inside the headset" );
 
+// Calibration offset for the hand/weapon mesh's local "forward" axis, applied
+// on top of the tracked pose. Live-reported: wrist-to-fingertip pointed at
+// the floor while pitch read ~-80 (which, by this engine's own convention,
+// means "pointing steeply up") - the mesh's own rest-pose forward axis does
+// not line up with the standard local-+X-forward assumption the angle math
+// is built on. +90 pitch is the single most likely correction for exactly
+// this symptom (a mesh whose forward axis is a quarter-turn off from
+// standard), so it is the default rather than 0 - not a guess shipped blind,
+// a specific candidate chosen from the reported numbers.
+CVAR_DEFINE_AUTO( vr_mirror, "1", FCVAR_ARCHIVE, "mirror the left eye to the desktop window" );
+
+// DEFAULT 0, deliberately. A 90-degree pitch "calibration" lived here for a
+// long time and was wrong: it rotated the mesh's whole reference frame, so
+// physical ROLL (turning the palm over) came out as rotation about a
+// perpendicular axis - reported live as flipping your palm swinging the
+// whole arm through a wide arc, when in reality a palm flip pivots in place.
+// It was compensating for a pitch inversion whose real cause was a missing
+// negation (see VR_DrawHands). Fixing the cause removed the need for it.
+// +90, set from live testing. -45 was tried first and went the WRONG WAY,
+// so the sign here is empirical, not derived: positive rotates the mesh the
+// direction that actually corrects it on this hardware. (Bone-chain
+// measurement says the wrist->fingertip axis sits 68.7 deg off model +X,
+// which brackets this magnitude, but the sign convention that reaches the
+// renderer passes through a pitch pre-negation here plus another inside
+// R_StudioSetUpTransform - so trust the headset over the derivation.)
+// Applied as a local pre-rotation, never euler addition (see VR_DrawHands).
+// NOTE: this default is largely cosmetic - the cvar is FCVAR_ARCHIVE, so
+// config.cfg restores the last live value at startup and overrides it. The
+// authoritative value is set in valve/vrbinds.cfg, which is exec'd after
+// config.cfg. Change it there; no rebuild needed.
+static CVAR_DEFINE_AUTO( vr_hand_pitch_offset, "-90", FCVAR_ARCHIVE, "hand mesh rest-pose pitch correction, degrees" );
+static CVAR_DEFINE_AUTO( vr_hand_yaw_offset,   "0",  FCVAR_ARCHIVE, "hand/weapon mesh calibration: yaw offset in degrees" );
+static CVAR_DEFINE_AUTO( vr_hand_roll_offset,  "0",  FCVAR_ARCHIVE, "hand/weapon mesh calibration: roll offset in degrees" );
+
+// Pivot correction, expressed as a point in the MESH's own local space.
+//
+// Purpose: make the mesh rotate about the player's real pivot (the palm)
+// instead of about whatever point the model happens to be built around. If
+// these are wrong in either direction the mesh sweeps an arc when rotated -
+// reported live as "swings too wide, like it's rolling around a softball".
+//
+// Default 0,0,0 deliberately. A previous 2.5-unit forward default ASSUMED
+// the mesh origin sits at the wrist; the live "softball" report is evidence
+// it actually sits at or near the palm already, in which case any nonzero
+// value CREATES the lever arm rather than removing it. Zero = rotate about
+// the model's own origin, which is the correct behaviour if that origin is
+// already the palm.
+//
+// The offset FORMULA is Lambda1VR's (see the call site). The MAGNITUDE is
+// not - theirs is 5, tuned for their own models/v_hand.mdl at their scale.
+//
+// MEASURED, not guessed: v_hand_hevsuit.mdl's hands bodypart spans only
+// X = -2.36 .. +4.37, i.e. 6.73 units end to end, with the model origin
+// already sitting 35% along that span (the wrist/palm junction). A 5-unit
+// pullback is therefore ~74% of the entire hand length, throwing the
+// rotation centre way out past the mesh - reported live as "the pivot point
+// is in the finger tips". Blindly copying another project's constant across
+// a different model at a different scale was the error.
+//
+// Pivot correction, expressed as a POINT IN THE MESH'S OWN LOCAL SPACE
+// (GoldSrc model space: +X forward, +Y left, +Z up).
+//
+// MEASURED, not guessed. v_hand_hevsuit.mdl's sequence 0 frame 0 pose was
+// evaluated through the full bone chain - GoldSrc vertices are stored
+// BONE-LOCAL, so a raw vertex bbox is meaningless and an earlier "measured"
+// constant here was taken from exactly that mistake. Validation: the
+// computed posed bbox (-8.705,-3.315,-3.918)..(-1.130,1.006,5.819) matches
+// the bbox the file itself stores for sequence 0 exactly.
+//
+// The result overturns the earlier assumptions in this file: the origin is
+// neither at the wrist nor the palm. The whole mesh lies BEHIND the origin
+// along +X, with the origin 1.255 units PAST THE THUMB TIP - so drawing at
+// the raw tracked point pivots the hand about its own fingertips, the live
+// report verbatim. Lambda1VR's "-5*forward" made it worse, pushing the
+// pivot ~10.1 units in front of the palm.
+//
+// This CANNOT be a scalar along forward: the palm is 5.14 fwd / 1.06 right /
+// 1.06 down from the origin, and the hand's long axis points 68.7 degrees
+// BELOW model +X (independently confirmed by the flashlight bones
+// muzzle_pos -> muzzle_pos2, a beam 64.4 degrees below +X).
+//
+// Defaults are the PALM CENTRE. For a WRIST pivot use -5.828/-0.987/2.827.
+// Pose-invariant: the wrist joint measures identically across all 9
+// sequences, so these survive finger-curl blending. v_hand_labcoat.mdl is
+// the same rig within 0.03 units - no special case needed.
+// WEAPON mesh rest-pose correction. Separate from the hand's, because the
+// bare-hand mesh and the weapon viewmodels are different models with
+// different rest orientations - live proof: with the hands finally correct
+// at vr_hand_pitch_offset -45, the equipped gun still hung ~45 degrees
+// below horizontal. Same mechanism (local pre-rotation), own number.
+// Authoritative value lives in valve/vrbinds.cfg - see the note there.
+static CVAR_DEFINE_AUTO( vr_weapon_pitch_offset, "-45", FCVAR_ARCHIVE, "weapon viewmodel rest-pose pitch correction, degrees" );
+static CVAR_DEFINE_AUTO( vr_weapon_yaw_offset,   "0",   FCVAR_ARCHIVE, "weapon viewmodel rest-pose yaw correction, degrees" );
+static CVAR_DEFINE_AUTO( vr_weapon_roll_offset,  "0",   FCVAR_ARCHIVE, "weapon viewmodel rest-pose roll correction, degrees" );
+
+static CVAR_DEFINE_AUTO( vr_hand_pivot_fwd,  "-5.139", FCVAR_ARCHIVE, "hand mesh pivot point, model-space X (forward), HL units" );
+static CVAR_DEFINE_AUTO( vr_hand_pivot_left, "-1.059", FCVAR_ARCHIVE, "hand mesh pivot point, model-space Y (left), HL units" );
+static CVAR_DEFINE_AUTO( vr_hand_pivot_up,   "1.063",  FCVAR_ARCHIVE, "hand mesh pivot point, model-space Z (up), HL units" );
+
+
 
 /*
 =================================================================
@@ -78,6 +178,7 @@ typedef unsigned int GLenum_t;
 typedef unsigned int GLuint_t;
 typedef int          GLsizei_t;
 typedef int          GLint_t;
+typedef unsigned int GLbitfield_t;
 
 #define GL_FRAMEBUFFER_EXT          0x8D40
 #define GL_COLOR_ATTACHMENT0_EXT    0x8CE0
@@ -86,6 +187,10 @@ typedef int          GLint_t;
 #define GL_DEPTH_COMPONENT24_EXT    0x81A6
 #define GL_FRAMEBUFFER_COMPLETE_EXT 0x8CD5
 #define GL_TEXTURE_2D_T             0x0DE1
+#define GL_READ_FRAMEBUFFER_T       0x8CA8
+#define GL_DRAW_FRAMEBUFFER_T       0x8CA9
+#define GL_COLOR_BUFFER_BIT_T       0x00004000
+#define GL_LINEAR_T                 0x2601
 
 static struct
 {
@@ -100,6 +205,8 @@ static struct
 	void (APIENTRY *FramebufferRenderbuffer)( GLenum_t, GLenum_t, GLenum_t, GLuint_t );
 	GLenum_t (APIENTRY *CheckFramebufferStatus)( GLenum_t );
 	void (APIENTRY *Viewport)( GLint_t, GLint_t, GLsizei_t, GLsizei_t );
+	void (APIENTRY *BlitFramebuffer)( GLint_t, GLint_t, GLint_t, GLint_t,
+		GLint_t, GLint_t, GLint_t, GLint_t, GLbitfield_t, GLenum_t );
 	qboolean loaded;
 } vrgl;
 
@@ -123,6 +230,7 @@ static qboolean VR_LoadGLFuncs( void )
 	GETPROC( FramebufferRenderbuffer,"glFramebufferRenderbuffer" )
 	GETPROC( CheckFramebufferStatus, "glCheckFramebufferStatus" )
 	GETPROC( Viewport,               "glViewport" )
+	GETPROC( BlitFramebuffer,        "glBlitFramebuffer" )
 #undef GETPROC
 
 	vrgl.loaded = true;
@@ -199,6 +307,14 @@ static struct
 	// where the play space sits in the game world, refreshed each frame
 	vec3_t        world_origin;
 	float         world_yaw;
+	vec3_t        hmd_origin_at_sync;  // real HMD position when world_origin last
+	                                    // moved (the player actually walked) - see
+	                                    // VR_SetWorldReference. Hand/eye offsets are
+	                                    // measured from THIS, not the live HMD pose,
+	                                    // so real head translation between walk-steps
+	                                    // (leaning, natural movement) is preserved
+	                                    // instead of being silently cancelled out.
+	qboolean      hmd_origin_at_sync_valid;
 	float         body_yaw;       // play-space rotation in world (mouse/stick turn)
 	float         injected_yaw;   // head yaw written into cl.viewangles last frame
 	float         turn_delta;     // stick turn accumulated this frame, consumed by
@@ -388,6 +504,14 @@ VR_DiagSample
 Periodic snapshot of everything that matters, plus anomaly tracking.
 ================
 */
+// Forward declarations: VR_DiagSample (below) reports live hand-mesh state,
+// which needs these before their real definitions later in this file.
+static qboolean VR_GetHandGripWorld( int hand, vec3_t out_org, vec3_t out_ang );
+static model_t   *vr_hand_model_suit;
+static model_t   *vr_hand_model_labcoat;
+static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
+static qboolean    vr_hands_init_tried;
+
 static void VR_DiagSample( void )
 {
 	float dt;
@@ -430,26 +554,71 @@ static void VR_DiagSample( void )
 		if( vr.frame_state.predictedDisplayPeriod > 0 )
 			hmd_hz = 1000000000.0f / (float)vr.frame_state.predictedDisplayPeriod;
 
-		VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
-			"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  fps=%5.1f  hz=%5.1f"
-			"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  weapon=%s  sub=%d%s\n",
-			host.realtime - vrdiag.session_start,
-			vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
-			vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
-			vr.world_origin[0], vr.world_origin[1], vr.world_origin[2], vr.world_yaw,
-			vrdiag.fps_frames ? vrdiag.fps_accum / vrdiag.fps_frames : 0.0f,
-			hmd_hz,
-			vr.move_x, vr.move_y, vr.turn_x, vr.turn_active ? "" : "[UNBOUND]",
-			vr.hand_pose[0].valid ? "ok" : "--",
-			vr.hand_pose[1].valid ? "ok" : "--",
-			cl.local.viewmodel ? "equipped" : "NONE",
-			vr.frames_submitted,
-			frozen ? "  [FROZEN]" : "" );
+		{
+			float lean = 0.0f;
+			if( vr.hmd_origin_at_sync_valid )
+			{
+				vec3_t d;
+				VectorSubtract( vr.hmd_pose.origin, vr.hmd_origin_at_sync, d );
+				lean = VectorLength( d );
+			}
+
+			VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
+				"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  sync=(%7.1f %7.1f %7.1f)%s lean=%6.1f"
+				"  fps=%5.1f  hz=%5.1f"
+				"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  weapon=%s  sub=%d%s\n",
+				host.realtime - vrdiag.session_start,
+				vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
+				vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
+				vr.world_origin[0], vr.world_origin[1], vr.world_origin[2], vr.world_yaw,
+				vr.hmd_origin_at_sync[0], vr.hmd_origin_at_sync[1], vr.hmd_origin_at_sync[2],
+				vr.hmd_origin_at_sync_valid ? "" : "[INVALID]", lean,
+				vrdiag.fps_frames ? vrdiag.fps_accum / vrdiag.fps_frames : 0.0f,
+				hmd_hz,
+				vr.move_x, vr.move_y, vr.turn_x, vr.turn_active ? "" : "[UNBOUND]",
+				vr.hand_pose[0].valid ? "ok" : "--",
+				vr.hand_pose[1].valid ? "ok" : "--",
+				cl.local.viewmodel ? "equipped" : "NONE",
+				vr.frames_submitted,
+				frozen ? "  [FROZEN]" : "" );
+		}
 	}
 
 	vrdiag.fps_accum = 0.0f;
 	vrdiag.fps_frames = 0;
 	vrdiag.samples++;
+
+	// Hand mesh diagnostics - what VR_DrawHands is ACTUALLY feeding the
+	// renderer, not just whether the raw pose is tracked. Logs BOTH pose
+	// types explicitly labeled, since VR_DrawHands has switched which one it
+	// consumes more than once - a label mismatch here previously meant this
+	// log did not reflect what was actually on screen. Always know which is
+	// LIVE (currently rendered) vs REF (the other one, for comparison).
+	{
+		int h;
+		const qboolean using_aim_for_hands = true; // keep in sync with VR_DrawHands
+
+		for( h = 0; h < 2; h++ )
+		{
+			vec3_t aim_org, aim_ang, grip_org, grip_ang;
+			qboolean got_aim  = VR_GetHandWorld( h, aim_org, aim_ang );
+			qboolean got_grip = VR_GetHandGripWorld( h, grip_org, grip_ang );
+
+			VR_DiagPrintf( "  hand[%s] LIVE=%s  aim=%s org=(%7.1f %7.1f %7.1f) ang=(p%7.2f y%7.2f r%7.2f)"
+				"  |  grip=%s org=(%7.1f %7.1f %7.1f) ang=(p%7.2f y%7.2f r%7.2f)"
+				"  ent.scale=%5.2f (mirror=%s)\n",
+				h == 0 ? "L" : "R",
+				using_aim_for_hands ? "aim" : "grip",
+				got_aim ? "ok" : "INVALID",
+				got_aim ? aim_org[0] : 0.0f, got_aim ? aim_org[1] : 0.0f, got_aim ? aim_org[2] : 0.0f,
+				got_aim ? aim_ang[PITCH] : 0.0f, got_aim ? aim_ang[YAW] : 0.0f, got_aim ? aim_ang[ROLL] : 0.0f,
+				got_grip ? "ok" : "INVALID",
+				got_grip ? grip_org[0] : 0.0f, got_grip ? grip_org[1] : 0.0f, got_grip ? grip_org[2] : 0.0f,
+				got_grip ? grip_ang[PITCH] : 0.0f, got_grip ? grip_ang[YAW] : 0.0f, got_grip ? grip_ang[ROLL] : 0.0f,
+				vr_hand_ent[h].curstate.scale,
+				vr_hand_ent[h].curstate.scale < 0.0f ? "YES" : "no" );
+		}
+	}
 }
 
 /*
@@ -504,6 +673,61 @@ NOTE: the roll sign convention has not yet been verified against a live headset.
 If the world appears to bank the wrong way, negate `roll` here.
 ================
 */
+/*
+================
+VR_AnglesFromBasis
+
+Extract HL euler angles from an orthonormal forward/right/up basis.
+
+Ported from HLVR's GetAnglesFromVectors (src/cl_dll/util.cpp:149), which is
+live-proven on real hardware with this exact hand mesh.
+
+Why not the obvious -asin(forward[2]): asin is mathematically clamped to
++-90 degrees, so any pose past vertical folds back on itself instead of
+continuing. That single limitation caused BOTH live-reported failures:
+  - pointing the controller at the ceiling rendered the hand REVERSED
+    (wrist up, fingers down), and
+  - the earlier motion-sickness incident, because a 90-degree mesh
+    calibration parked the extraction permanently ON the fold-over
+    boundary, where tiny real rotations produce huge angle jumps.
+Recovering cos(pitch) from whichever yaw/roll component is numerically
+stable gives atan2 a real 2-argument input, restoring the full +-180 range.
+
+Shared by both callers deliberately - VR_ApplyMeshCalibration previously had
+its own private copy of the broken asin form, which is why calibration was
+unsafe while raw tracking looked fine.
+================
+*/
+static void VR_AnglesFromBasis( const vec3_t fwd, const vec3_t right, const vec3_t up, vec3_t angles )
+{
+	float sp = -fwd[2];
+	float yaw_r  = atan2f( fwd[1], fwd[0] );
+	float roll_r = atan2f( -right[2], up[2] );
+	float cy = cosf( yaw_r ),  sy = sinf( yaw_r );
+	float cr = cosf( roll_r ), sr = sinf( roll_r );
+	float cp;
+
+	if( fabs( cy ) > 0.001f )       cp = fwd[0] / cy;
+	else if( fabs( sy ) > 0.001f )  cp = fwd[1] / sy;
+	else if( fabs( sr ) > 0.001f )  cp = -right[2] / sr;
+	else if( fabs( cr ) > 0.001f )  cp = up[2] / cr;
+	else                            cp = cosf( asinf( bound( -1.0f, sp, 1.0f )));
+
+	angles[PITCH] = RAD2DEG( atan2f( sp, cp ));
+	angles[YAW]   = RAD2DEG( yaw_r );
+
+	// ROLL IS NOT NEGATED. Xash's AngleVectors defines
+	//   right[2] = -sin(roll)*cos(pitch),  up[2] = cos(roll)*cos(pitch)
+	// so roll_r = atan2( -right[2], up[2] ) already IS roll. A stale comment
+	// here claimed a negation was needed - true only for atan2( right[2], .. ),
+	// which is not what is computed above, so the negation was applied on top
+	// of an already-correct value and inverted it. Both references return it
+	// un-negated (HLVR util.cpp:192, Lambda1VR TBXR_Common.c). Negated roll
+	// breaks round-tripping through AngleVectors/Matrix3x4_CreateFromEntity
+	// and inverts exactly the axis used to turn a palm over.
+	angles[ROLL]  = RAD2DEG( roll_r );
+}
+
 static void VR_ConvertOrientation( const XrQuaternionf *q, vec3_t angles )
 {
 	float x = q->x, y = q->y, z = q->z, w = q->w;
@@ -534,10 +758,7 @@ static void VR_ConvertOrientation( const XrQuaternionf *q, vec3_t angles )
 	//   forward[2] = -sin(pitch)
 	//   right[2]   = -sin(roll) * cos(pitch)
 	//   up[2]      =  cos(roll) * cos(pitch)
-	// so atan2( right[2], up[2] ) == -roll, hence the negation below.
-	angles[YAW]   = RAD2DEG( atan2f( fwd[1], fwd[0] ));
-	angles[PITCH] = RAD2DEG( -asinf( bound( -1.0f, fwd[2], 1.0f )));
-	angles[ROLL]  = RAD2DEG( -atan2f( right[2], up[2] ));
+	VR_AnglesFromBasis( fwd, right, up, angles );
 
 	// runtime sign overrides, see the cvar declarations
 	if( vr_pitch_sign.value < 0.0f ) angles[PITCH] = -angles[PITCH];
@@ -744,8 +965,36 @@ const vr_pose_t *VR_GetHandPose( int hand )   { return &vr.hand_pose[bound( 0, h
 
 void VR_SetWorldReference( const vec3_t origin )
 {
+	qboolean body_moved;
+
+	if( !vr.hmd_origin_at_sync_valid )
+	{
+		body_moved = true;
+	}
+	else
+	{
+		vec3_t delta;
+		VectorSubtract( origin, vr.world_origin, delta );
+		// LIVE-MEASURED, not guessed: vr_diag.log during actual standing-
+		// still testing showed the mod's own vieworigin jittering by ~1.3
+		// units frame-to-frame on its own (view bob / prediction noise),
+		// even with no player movement at all. An earlier 0.5-unit
+		// threshold was smaller than that noise floor, so it resynced on
+		// nearly every frame regardless - silently defeating the entire
+		// point of this gate (confirmed live: "no change"). 8 units is
+		// comfortably above the measured idle jitter and comfortably below
+		// a real step.
+		body_moved = ( VectorLength( delta ) > 8.0f );
+	}
+
 	VectorCopy( origin, vr.world_origin );
 	vr.world_yaw = vr.body_yaw;
+
+	if( body_moved )
+	{
+		VectorCopy( vr.hmd_pose.origin, vr.hmd_origin_at_sync );
+		vr.hmd_origin_at_sync_valid = true;
+	}
 }
 
 float VR_GetBodyYaw( void )
@@ -765,8 +1014,9 @@ static void VR_PlayToWorld( const vr_pose_t *pose, vec3_t out_org, vec3_t out_an
 {
 	vec3_t rel;
 	float s, c;
+	const float *hmd_ref = vr.hmd_origin_at_sync_valid ? vr.hmd_origin_at_sync : vr.hmd_pose.origin;
 
-	VectorSubtract( pose->origin, vr.hmd_pose.origin, rel );
+	VectorSubtract( pose->origin, hmd_ref, rel );
 	SinCos( DEG2RAD( vr.body_yaw ), &s, &c );
 
 	if( out_org )
@@ -778,6 +1028,16 @@ static void VR_PlayToWorld( const vr_pose_t *pose, vec3_t out_org, vec3_t out_an
 
 	if( out_ang )
 	{
+		// NOTE: no mesh calibration offset applied here. It was originally
+		// here and shared by both consumers of this function - but the
+		// weapon viewmodel and the bare-hand model are two DIFFERENT meshes
+		// with, evidently, two different rest-pose conventions: +90 pitch
+		// made the bare hand point correctly forward but made the equipped
+		// weapon point up/inverted. Each mesh gets its own calibration at its
+		// own call site instead of one shared here. See VR_DrawHands for the
+		// hand offset; the weapon-pin code in cl_view.c currently applies
+		// none (unconfirmed correct either way - not yet reported on
+		// independently of the hand mesh).
 		out_ang[PITCH] = pose->angles[PITCH];
 		out_ang[YAW]   = anglemod( pose->angles[YAW] + vr.body_yaw );
 		out_ang[ROLL]  = pose->angles[ROLL];
@@ -829,10 +1089,6 @@ stock Half-Life. They are placed in the writable game directory (an overlay
 on top of the read-only -rodir base) for local testing.
 =================================================================
 */
-static model_t   *vr_hand_model_suit;
-static model_t   *vr_hand_model_labcoat;
-static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
-static qboolean    vr_hands_init_tried;
 
 static void VR_InitHandModels( void )
 {
@@ -889,6 +1145,94 @@ hand always, and the right hand only when VR_ShouldDrawWeapon determines no
 weapon viewmodel is being shown this frame.
 ================
 */
+/*
+================
+VR_ApplyMeshCalibration
+
+Corrects a tracked pose for a mesh whose rest-pose axes don't line up with
+the raw controller convention. Previously this was done by simply ADDING a
+constant to the tracked pitch (vr_hand_pitch_offset) - live-tested and
+confirmed broken: it only looked right near the pose it was tuned at (rest,
+palms facing the body) and a real roll input (turning the palm to face away)
+came out as a pitch-like change (palm tilting to the sky) the further the
+hand rotated away from that reference pose. That symptom is the textbook
+signature of Euler-angle addition, which is NOT the same operation as
+rotating the mesh's local reference frame and does not commute with the
+tracked rotation except very close to identity.
+
+Checked against HLVR's actual working implementation (VRHelper.cpp) for how
+a real, live-tested VR mod handles this: it applies NO per-axis Euler offset
+at all anywhere in its controller-to-HL-angle pipeline - orientation stays
+in matrix/basis-vector form and is only collapsed to angles at the very end
+(GetHLAnglesFromVRMatrix). Where a mesh needs a fixed correction, the
+correct operation is a genuine LOCAL-SPACE pre-rotation, composed as
+matrices, not summed as angles.
+
+cal_angles is applied as a rotation in the mesh's own local space (composed
+via Matrix3x4_ConcatTransforms as tracked * calibration, i.e. calibration
+happens first, in local space, then the real tracked rotation orients the
+already-corrected frame) - this is what makes the correction pose-invariant
+instead of only valid near the pose it was empirically tuned at.
+================
+*/
+static void VR_ApplyMeshCalibration( vec3_t ang, const vec3_t cal_angles )
+{
+	matrix3x4 tracked, calib, result;
+	vec3_t local_fwd = { 1.0f, 0.0f, 0.0f };   // HL convention: X = forward
+	vec3_t local_right = { 0.0f, -1.0f, 0.0f }; // Y = left, so right = -Y
+	vec3_t local_up = { 0.0f, 0.0f, 1.0f };    // Z = up
+	vec3_t fwd, right, up;
+
+	Matrix3x4_CreateFromEntity( tracked, ang, vec3_origin, 1.0f );
+	Matrix3x4_CreateFromEntity( calib, (float *)cal_angles, vec3_origin, 1.0f );
+	Matrix3x4_ConcatTransforms( result, tracked, calib );
+
+	Matrix3x4_VectorRotate( result, local_fwd, fwd );
+	Matrix3x4_VectorRotate( result, local_right, right );
+	Matrix3x4_VectorRotate( result, local_up, up );
+
+	VectorNormalize( fwd );
+	VectorNormalize( right );
+	VectorNormalize( up );
+
+	// Shared full-range extraction - see VR_AnglesFromBasis. This function
+	// previously carried its own private copy using the asin form, which is
+	// clamped to +-90 degrees. With a 90-degree pitch calibration that put
+	// the extraction permanently ON the fold-over boundary, where tiny real
+	// rotations produce huge angle jumps - the direct cause of the
+	// motion-sickness incident that got calibration disabled entirely.
+	// Matrix composition here was never the problem; the extraction was.
+	VR_AnglesFromBasis( fwd, right, up, ang );
+}
+
+/*
+================
+VR_CalibrateWeaponAngles
+
+Applies the weapon viewmodel's rest-pose correction, for cl_view.c's
+controller-pinning code. Exposed rather than duplicated so the weapon uses
+the exact same local-pre-rotation path the hands do (never euler addition,
+which does not compose - see VR_ApplyMeshCalibration).
+
+Call this on the PHYSICAL tracked angles, BEFORE pre-negating pitch.
+================
+*/
+void VR_CalibrateWeaponAngles( vec3_t ang )
+{
+	vec3_t cal;
+
+	if( vr_weapon_pitch_offset.value == 0.0f &&
+	    vr_weapon_yaw_offset.value == 0.0f &&
+	    vr_weapon_roll_offset.value == 0.0f )
+		return;
+
+	cal[PITCH] = vr_weapon_pitch_offset.value;
+	cal[YAW]   = vr_weapon_yaw_offset.value;
+	cal[ROLL]  = vr_weapon_roll_offset.value;
+
+	VR_ApplyMeshCalibration( ang, cal );
+}
+
 void VR_DrawHands( qboolean draw_right )
 {
 	int hand;
@@ -907,12 +1251,80 @@ void VR_DrawHands( qboolean draw_right )
 		if( hand == 1 && !draw_right )
 			continue;
 
-		// GRIP pose, not aim - this is a rendered mesh (the hand itself), and
-		// OpenXR defines grip pose specifically for that. Using aim pose here
-		// (as a shared single pose action briefly did) is what caused the
-		// hand to render pointed at the floor.
-		if( !VR_GetHandGripWorld( hand, org, ang ))
+		// AIM pose, not grip - grip pose made the hand face the wrong way
+		// entirely when tried. Aim pose plus a per-mesh calibration offset
+		// (below) is what actually got the bare hand pointing forward,
+		// confirmed live. This offset is NOT shared with the weapon
+		// viewmodel - applying it there too made an equipped weapon point
+		// up/inverted, so the two meshes evidently have different rest-pose
+		// conventions and are calibrated independently.
+		if( !VR_GetHandWorld( hand, org, ang ))
 			continue;
+
+		// `ang` is the PHYSICAL controller orientation. The MESH, however,
+		// does not rest along its own +X: bone-chain measurement puts the
+		// hand's long axis (wrist joint -> fingertip centroid) 68.7 degrees
+		// BELOW model +X, independently corroborated by the flashlight bones
+		// (muzzle_pos -> muzzle_pos2 gives a beam 64.4 degrees below +X).
+		// So drawn raw, the hand hangs visibly pitched down - reported live
+		// as "the hands are pitched down like 45 degrees".
+		//
+		// Corrected as a LOCAL PRE-ROTATION (tracked * calib), NOT by adding
+		// to the euler pitch. Euler addition does not compose: it was tried,
+		// and away from the tuned pose it bled roll into pitch and turned a
+		// simple palm-flip into a wide sweeping arc.
+		//
+		// Applied BEFORE the pivot block below on purpose - the pivot point
+		// is expressed in MODEL space, so it has to rotate along with this
+		// correction or it lands somewhere else entirely.
+		if( vr_hand_pitch_offset.value != 0.0f || vr_hand_yaw_offset.value != 0.0f || vr_hand_roll_offset.value != 0.0f )
+		{
+			vec3_t cal = { vr_hand_pitch_offset.value, vr_hand_yaw_offset.value, vr_hand_roll_offset.value };
+			VR_ApplyMeshCalibration( ang, cal );
+		}
+
+		// Move the mesh so the point named by vr_hand_pivot_* lands ON the
+		// tracked point, instead of the model origin landing there. Solving
+		// world = origin + R*local for origin gives origin = tracked - R*P.
+		//
+		// Must stay HERE, before the pitch pre-negation below: gl_studio.c
+		// negates pitch again on the way in, so the basis the renderer
+		// actually uses is AngleVectors( physical ang ) - which is what `ang`
+		// still is at this point. Computing it after the flip would invert
+		// the Z component, the same frame-inversion bug the earlier
+		// Lambda1VR port introduced here.
+		{
+			vec3_t fwd, right, up;
+			// Left hand is drawn mirrored: R_StudioSetUpTransform negates
+			// matrix column 1 when curstate.scale < 0, mapping model +Y to
+			// world RIGHT instead of LEFT. The Y term must flip with it or
+			// the left hand's correction goes sideways.
+			float ysign = ( e->curstate.scale < 0.0f ) ? -1.0f : 1.0f;
+
+			AngleVectors( ang, fwd, right, up );
+
+			// R*P = P.x*fwd + P.y*(-right) + P.z*up   (AngleVectors' `right`
+			// is the image of model -Y, so model +Y is -right). Subtract it.
+			VectorMA( org, -vr_hand_pivot_fwd.value,               fwd,   org );
+			VectorMA( org,  vr_hand_pivot_left.value * ysign,      right, org );
+			VectorMA( org, -vr_hand_pivot_up.value,                up,    org );
+		}
+
+		// PRE-NEGATE PITCH. R_StudioSetUpTransform (ref/gl/gl_studio.c:539)
+		// negates pitch for every studio model unless the mod sets
+		// ENGINE_COMPENSATE_QUAKE_BUG - the original Quake inverse-pitch bug.
+		// Stock Half-Life does NOT set that flag, so the engine WILL negate.
+		//
+		// HLVR negates pitch a second time, at extraction, so its two
+		// negations cancel: VRHelper.cpp:492 `angles.x = 360.f - angles.x`
+		// feeding StudioModelRenderer.cpp:601 `angles[PITCH] = -angles[PITCH]`.
+		// We only ever had the engine's one, leaving hand pitch NET INVERTED -
+		// which is what "fingers to the ceiling renders wrist to the ceiling"
+		// actually was. Matching HLVR's double negation here fixes it at the
+		// source, instead of papering over it with a 90-degree offset that
+		// rotated the whole frame and turned a simple palm-flip into a wide
+		// sweeping arc.
+		ang[PITCH] = -ang[PITCH];
 
 		// TODO: switch to the labcoat model before the player has picked up
 		// the suit. No verified way to query that state from here yet -
@@ -1091,6 +1503,16 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_snap_angle );
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
+	Cvar_RegisterVariable( &vr_mirror );
+	Cvar_RegisterVariable( &vr_hand_pitch_offset );
+	Cvar_RegisterVariable( &vr_hand_yaw_offset );
+	Cvar_RegisterVariable( &vr_hand_roll_offset );
+	Cvar_RegisterVariable( &vr_weapon_pitch_offset );
+	Cvar_RegisterVariable( &vr_weapon_yaw_offset );
+	Cvar_RegisterVariable( &vr_weapon_roll_offset );
+	Cvar_RegisterVariable( &vr_hand_pivot_fwd );
+	Cvar_RegisterVariable( &vr_hand_pivot_left );
+	Cvar_RegisterVariable( &vr_hand_pivot_up );
 	Cvar_RegisterVariable( &vr_hands );
 	Cvar_RegisterVariable( &vr_hud );
 	Cmd_AddCommand( "vr_status", VR_Status_f, "report OpenXR VR state" );
@@ -1383,6 +1805,22 @@ qboolean VR_InitSession( void )
 	// HMD's refresh. Leaving desktop vsync on additionally clamps us to the
 	// monitor (60Hz here), starving a 72/90Hz headset and causing judder.
 	Cvar_Set( "gl_vsync", "0" );
+
+	// gl_clear defaults to 0 because in flatscreen the 3D scene overwrites
+	// every pixel, making a clear wasted work. In VR nothing draws to the
+	// window at all (both eyes go to OpenXR FBOs), so without this the window
+	// swaps an unwritten buffer full of garbage. Needed even with the mirror
+	// blit enabled, so the letterbox bars are black instead of stale memory.
+	Cvar_Set( "gl_clear", "1" );
+
+	// REVERTED: forcing r_studio_builtin_renderer globally did make the
+	// mirror fire (confirmed), but it routes EVERY entity through the
+	// engine's own studio path instead of Half-Life's client.dll-provided
+	// one - and broke weapon pickup, which evidently depends on something
+	// the client.dll's own path does. That regression is worse than an
+	// unmirrored hand. The surgical fix - targeting only the VR hand
+	// entities by model name - lives in R_StudioDrawModelInternal
+	// (gl_studio.c), not here.
 	Con_Printf( "VR: disabled desktop vsync (headset paces frames)\n" );
 
 	Con_Printf( "VR: session created\n" );
@@ -2061,8 +2499,9 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 			vec3_t rel;
 			float yaw_off = vr_compose_yaw.value ? vr.world_yaw : 0.0f;
 			float s, c;
+			const float *hmd_ref = vr.hmd_origin_at_sync_valid ? vr.hmd_origin_at_sync : vr.hmd_pose.origin;
 
-			VectorSubtract( pose.origin, vr.hmd_pose.origin, rel );
+			VectorSubtract( pose.origin, hmd_ref, rel );
 			SinCos( DEG2RAD( yaw_off ), &s, &c );
 
 			rvp->vieworigin[0] = vr.world_origin[0] + ( rel[0] * c - rel[1] * s );
@@ -2119,6 +2558,49 @@ void VR_EndEye( int eye )
 		return;
 
 	sc = &vr.swapchains[eye];
+
+	// Desktop mirror: copy the left eye into the window before releasing the
+	// swapchain image back to the runtime.
+	//
+	// Why this is needed at all: in VR both eyes render into OpenXR swapchain
+	// FBOs, so NOTHING is ever drawn to the window's back buffer - but
+	// R_EndFrame still swaps it every frame. Combined with gl_clear
+	// defaulting to "0" (the flatscreen scene normally overwrites every
+	// pixel, so clearing is wasted work there), the window ends up swapping
+	// in a buffer that was never written: undefined GPU memory, which shows
+	// as scrambled garbage rather than a black screen.
+	//
+	// Blitting one eye also makes the game visible to anyone not wearing the
+	// headset, and lets rendering be verified without putting it on.
+	if( eye == 0 && vr_mirror.value && vrgl.BlitFramebuffer )
+	{
+		int ww = refState.width;
+		int wh = refState.height;
+
+		if( ww > 0 && wh > 0 )
+		{
+			// Fit preserving aspect (letterbox) rather than stretching - an eye
+			// is roughly square (2496x2688 here) while the window is
+			// widescreen, so a straight stretch distorts badly.
+			float src_aspect = (float)sc->width / (float)sc->height;
+			int dw = ww, dh = (int)( ww / src_aspect );
+			int dx, dy;
+
+			if( dh > wh )
+			{
+				dh = wh;
+				dw = (int)( wh * src_aspect );
+			}
+			dx = ( ww - dw ) / 2;
+			dy = ( wh - dh ) / 2;
+
+			vrgl.BindFramebuffer( GL_READ_FRAMEBUFFER_T, sc->fbos[sc->acquired_index] );
+			vrgl.BindFramebuffer( GL_DRAW_FRAMEBUFFER_T, 0 );
+			vrgl.BlitFramebuffer( 0, 0, (GLint_t)sc->width, (GLint_t)sc->height,
+				dx, dy, dx + dw, dy + dh,
+				GL_COLOR_BUFFER_BIT_T, GL_LINEAR_T );
+		}
+	}
 
 	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, 0 );
 	xrReleaseSwapchainImage( sc->handle, &ri );

@@ -436,6 +436,8 @@ void V_RenderView( void )
 		// viewmodel relative to a mouse-look camera; in VR the hand owns it.
 		{
 			qboolean weapon_equipped = ( cl.local.viewmodel != 0 );
+			cl_entity_t *view = &clgame.viewent;
+			qboolean pinned = false;
 
 			if( vr_hands.value && weapon_equipped )
 			{
@@ -443,16 +445,47 @@ void V_RenderView( void )
 
 				if( VR_GetHandWorld( 1, hand_org, hand_ang ))
 				{
-					cl_entity_t *view = &clgame.viewent;
+					// Weapon meshes rest at a different angle than the bare-hand
+					// mesh, so they get their own correction (vr_weapon_*_offset).
+					// Live: with the hands correct, the gun still hung ~45 deg
+					// below horizontal. Applied on the PHYSICAL angles, before
+					// the pitch pre-negation below, exactly as VR_DrawHands does.
+					VR_CalibrateWeaponAngles( hand_ang );
 
+					// PRE-NEGATE PITCH, same as VR_DrawHands does for the bare
+					// hands. Studio rendering negates pitch (the old Quake
+					// inverse-pitch bug) unless the mod sets
+					// ENGINE_COMPENSATE_QUAKE_BUG - and stock Half-Life cannot
+					// set it, because valve/hl.dll does not export
+					// Server_GetPhysicsInterface, so host.features stays 0.
+					// Both reference VR ports negate a second time on the way
+					// in so the two cancel (HLVR VRHelper.cpp "360-x" +
+					// StudioModelRenderer.cpp; Lambda1VR VrInputDefault.c +
+					// its gl_studio.c).
+					//
+					// The bare hands got this fix; THIS path was missed, so the
+					// equipped weapon stayed net inverted - raising the hand
+					// pitched the gun down and eventually behind the player.
+					hand_ang[PITCH] = -hand_ang[PITCH];
+
+					view->curstate.movetype = MOVETYPE_NONE; // UNVERIFIED hypothesis: avoid stale interpolation blend in R_StudioSetUpTransform if viewent's movetype happens to be MOVETYPE_STEP
 					VectorCopy( hand_org, view->origin );
 					VectorCopy( hand_org, view->curstate.origin );
 					VectorCopy( hand_org, view->latched.prevorigin );
 					VectorCopy( hand_ang, view->angles );
 					VectorCopy( hand_ang, view->curstate.angles );
 					VectorCopy( hand_ang, view->latched.prevangles );
+					pinned = true;
 				}
 			}
+
+			// NOTE: previously routed this entity around the mod's pStudioDraw
+			// hook (EF_VR_PINNED_VIEWMODEL, checked in gl_studio.c) to fix a
+			// pivot/inversion bug - reverted, live-tested to break weapon
+			// pickup, same regression this exact bypass-pStudioDraw mechanism
+			// caused before when applied globally. Pickup takes priority;
+			// the pivot bug fix needs a different mechanism.
+			ClearBits( view->curstate.effects, EF_VR_PINNED_VIEWMODEL );
 
 			// Left hand always; right hand only when no weapon is filling
 			// that slot this frame, so the gun and a bare hand never overlap.

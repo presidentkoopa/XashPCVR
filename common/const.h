@@ -114,6 +114,12 @@
 #define EF_LIGHT			64	// rocket flare glow sprite
 #define EF_NODRAW			128	// don't draw entity
 
+// PCVR fork: marks clgame.viewent for a frame where the engine has pinned it
+// to the right controller (see cl_view.c). Client-only entity, never
+// networked, so this bit is safe to repurpose - picked from the gap below
+// the real reserved high bits (26-30) to avoid any future collision.
+#define EF_VR_PINNED_VIEWMODEL	(1U<<24)
+
 #define EF_WATERSIDES		(1U<<26)	// Do not remove sides for func_water entity
 #define EF_FULLBRIGHT		(1U<<27)	// Just get fullbright
 #define EF_NOSHADOW			(1U<<28)	// ignore shadow for this entity

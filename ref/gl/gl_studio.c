@@ -572,9 +572,35 @@ static void R_StudioSetUpTransform( cl_entity_t *e )
 	// rather than simply wrong-handed.
 	if( e->curstate.scale < 0.0f )
 	{
-		g_studio.rotationmatrix[0][0] = -g_studio.rotationmatrix[0][0];
-		g_studio.rotationmatrix[1][0] = -g_studio.rotationmatrix[1][0];
-		g_studio.rotationmatrix[2][0] = -g_studio.rotationmatrix[2][0];
+		// PCVR fork: one-shot proof this branch is actually reached at
+		// runtime for this entity. Static analysis could not fully confirm
+		// whether pStudioDraw (an externally-overridable dispatch table -
+		// see R_StudioSetDrawInterface) ultimately calls through to THIS
+		// function for a given mod's client.dll, since that is a closed
+		// binary. Remove once mirroring is confirmed visually correct.
+		static qboolean warned[8];
+		int slot = e->index % 8;
+		if( !warned[slot] )
+		{
+			warned[slot] = true;
+			gEngfuncs.Con_Printf( "VR-MIRROR-HIT: entity index=%d IS reaching the mirror transform\n", e->index );
+		}
+
+		// Mirror the LOCAL Y axis, not X. GoldSrc model space is X=forward,
+		// Y=left, Z=up - so Y is the left/right axis, which is what mirroring
+		// a hand requires. Negating X (as this originally did) mirrors
+		// front-to-back instead, which is why the left hand kept rendering
+		// as a second right hand.
+		//
+		// Confirmed against two independent references:
+		//   HLVR  src/cl_dll/StudioModelRenderer.cpp:607 - builds an explicit
+		//         mirrormatrix diag(1,-1,1) and concats it. Note HLVR ships
+		//         NO separate left-hand model; it mirrors the right one.
+		//   Xash  tr.fFlipViewModel, ~40 lines below - negates column 1 (Y)
+		//         for the cl_righthand viewmodel flip.
+		g_studio.rotationmatrix[0][1] = -g_studio.rotationmatrix[0][1];
+		g_studio.rotationmatrix[1][1] = -g_studio.rotationmatrix[1][1];
+		g_studio.rotationmatrix[2][1] = -g_studio.rotationmatrix[2][1];
 	}
 
 	if( tr.fFlipViewModel )
@@ -2101,6 +2127,18 @@ static void R_StudioDrawPoints( void )
 			tr.fFlipViewModel = true;
 			GL_Cull( GL_NONE );
 		}
+		else if( RI.currententity && RI.currententity->curstate.scale < 0.0f )
+		{
+			// PCVR fork: mirrored entity (see the mirror in
+			// R_StudioSetUpTransform). A mirror reverses triangle winding, so
+			// culling would remove exactly the wrong faces and the model
+			// would look inside-out. Disabling culling is the same remedy the
+			// fFlipViewModel branch above already uses for its own mirror.
+			// fFlipViewModel stays false here - that flag drives a SECOND,
+			// independent Y-flip further up, which would cancel ours out.
+			tr.fFlipViewModel = false;
+			GL_Cull( GL_NONE );
+		}
 		else
 		{
 			tr.fFlipViewModel = false;
@@ -3236,8 +3274,53 @@ static int R_StudioDrawModel( int flags )
 R_StudioDrawModelInternal
 =================
 */
+/*
+================
+R_IsVRSyntheticHandModel
+
+PCVR fork: identifies the two client-only VR hand entities by model name, so
+they alone can be routed around pStudioDraw (see R_StudioDrawModelInternal).
+
+Model name, not entity index: an earlier attempt used a large fixed index
+(clgame.maxEntities - 1 - hand) as the signal, but that value is not visible
+from this file (clgame is engine-side, this is ref_gl), and re-deriving a
+"top of the allocated range" heuristic here would be fragile - it would have
+to track clgame.maxEntities independently and could drift or collide.
+Model name is a stable, unambiguous signal: nothing else loads these two
+specific assets.
+================
+*/
+static qboolean R_IsVRSyntheticHandModel( const cl_entity_t *e )
+{
+	if( !e || !e->model || !e->model->name[0] )
+		return false;
+
+	return Q_stristr( e->model->name, "v_hand_hevsuit.mdl" ) != NULL ||
+	       Q_stristr( e->model->name, "v_hand_labcoat.mdl" ) != NULL;
+}
+
 static void R_StudioDrawModelInternal( cl_entity_t *e, int flags )
 {
+	// PCVR fork: force the engine's own direct render path for the two
+	// synthetic VR hand entities ONLY. They need it because the game's own
+	// studio draw interface (pStudioDraw, provided by the mod's client.dll)
+	// bypasses this engine's R_StudioSetUpTransform entirely - confirmed by
+	// instrumentation, the mirror fix living there never fired through that
+	// path - and mirroring is what makes the left hand not render as a
+	// second right hand.
+	//
+	// Forcing r_studio_builtin_renderer GLOBALLY was tried first: it does
+	// activate the mirror, but it broke weapon pickup, which evidently
+	// depends on something the client.dll's own path does for every other
+	// entity. Scoping the override to just these two model names avoids that
+	// regression entirely - every other entity, including real weapons,
+	// keeps using the game's normal path unchanged.
+	if( R_IsVRSyntheticHandModel( e ))
+	{
+		R_StudioDrawModel( flags );
+		return;
+	}
+
 	if( !FBitSet( RI.rvp.flags, RF_DRAW_WORLD ))
 	{
 		if( e->player )
