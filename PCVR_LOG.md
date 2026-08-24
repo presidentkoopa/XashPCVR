@@ -397,6 +397,49 @@ serves VR and non-VR players, which is what makes VR/flatscreen LAN crossplay fr
   **larger** half-angle — guaranteed to contain the real frustum. Over-inclusive (draws a
   little extra) is safe; under-inclusive would pop geometry at the edges.
 
+## FINDING 015 — **Leaked OpenXR sessions**: the failure mode that wastes the most time
+
+Symptom: headset goes black while **sound and controls still work**. Easy to misread as a
+rendering bug. Actual cause: `xrCreateSwapchain` fails with `XR_ERROR_RUNTIME_FAILURE`
+because leftover `xash3d.exe` processes are still holding OpenXR sessions and the runtime
+has a session limit. Five had accumulated before this was spotted.
+
+Three independent causes, all now fixed:
+
+1. **`VR_Shutdown()` was never called anywhere.** It existed but had zero call sites, so the
+   session was never released on exit. Now called from `R_Shutdown()`
+   (`engine/client/dll_int/ref_common.c`), before the GL context is destroyed, plus an
+   `atexit()` backstop for paths that never reach it (`Sys_Error`, crash dialog, `Host_Abort`).
+
+2. **`-console` keeps the process alive.** That flag opens a console whose
+   "Press Enter to continue..." exit prompt blocks forever, so the process — and its session —
+   survives the game closing. **Removed from run.bat.** `-log` still captures everything.
+   Note such a process reports as running but `taskkill /F` refuses it
+   ("no running instance of the task"); it must be closed from its window or Task Manager.
+
+3. **Session leak on partial failure.** `VR_InitSession` returned on swapchain failure
+   *without destroying the session it had already created*, and `VR_BeginFrame` retried every
+   frame — reaching `XR_ERROR_LIMIT_REACHED` within seconds. Added `VR_DestroySession()`
+   (safe on a partially built session) and a 3-attempt cap.
+
+Defences added: a named-mutex single-instance guard (a second copy runs flatscreen with a
+clear log message rather than fighting for the runtime — which also makes local two-instance
+multiplayer testing behave), and a run.bat pre-flight that kills any leftover instance and
+warns loudly if one refuses to die.
+
+**Rule of thumb: black headset + working audio/input == check for stray processes first.**
+
+## FINDING 016 — HUD and hands verified working; both were misread as broken
+
+- **"No HUD until the HEV suit" is correct Half-Life behaviour**, not a bug. HL draws no HUD
+  without the suit. Its appearing on suit pickup actually *proves* the per-eye HUD
+  compositing works.
+- **"No hands" was no weapon.** Telemetry shows `hands=Lok/Rok` — both controller poses track
+  fine. HL's viewmodel *is* the weapon-plus-hands, so with no weapon equipped there is simply
+  nothing to draw. `+impulse 101` was not taking effect because it runs before the player
+  spawns. run.bat now also binds **F9** = `impulse 101`, **F10** = `give item_suit`,
+  **F11** = both.
+
 ---
 
 ## OPEN QUESTIONS

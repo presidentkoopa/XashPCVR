@@ -17,6 +17,7 @@ See vr_openxr.h for the design rationale.
 
 #include "common.h"
 #include "client.h"
+#include "ref_common.h"
 #include "vr_openxr.h"
 
 #if XASH_WIN32 && !XASH_DEDICATED
@@ -57,6 +58,9 @@ static CVAR_DEFINE_AUTO( vr_turnspeed, "120", FCVAR_ARCHIVE, "smooth turn degree
 static CVAR_DEFINE_AUTO( vr_snap_turn, "1", FCVAR_ARCHIVE, "1 = snap turning, 0 = smooth" );
 static CVAR_DEFINE_AUTO( vr_snap_angle, "30", FCVAR_ARCHIVE, "snap turn step in degrees" );
 static CVAR_DEFINE_AUTO( vr_deadzone, "0.2", FCVAR_ARCHIVE, "thumbstick deadzone (0-1)" );
+static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
+CVAR_DEFINE_AUTO( vr_hands, "1", FCVAR_ARCHIVE, "pin the viewmodel to the right controller" );
+CVAR_DEFINE_AUTO( vr_hud, "1", FCVAR_ARCHIVE, "draw the 2D HUD/menu inside the headset" );
 
 
 /*
@@ -93,6 +97,7 @@ static struct
 	void (APIENTRY *RenderbufferStorage)( GLenum_t, GLenum_t, GLsizei_t, GLsizei_t );
 	void (APIENTRY *FramebufferRenderbuffer)( GLenum_t, GLenum_t, GLenum_t, GLuint_t );
 	GLenum_t (APIENTRY *CheckFramebufferStatus)( GLenum_t );
+	void (APIENTRY *Viewport)( GLint_t, GLint_t, GLsizei_t, GLsizei_t );
 	qboolean loaded;
 } vrgl;
 
@@ -115,6 +120,7 @@ static qboolean VR_LoadGLFuncs( void )
 	GETPROC( RenderbufferStorage,    "glRenderbufferStorage" )
 	GETPROC( FramebufferRenderbuffer,"glFramebufferRenderbuffer" )
 	GETPROC( CheckFramebufferStatus, "glCheckFramebufferStatus" )
+	GETPROC( Viewport,               "glViewport" )
 #undef GETPROC
 
 	vrgl.loaded = true;
@@ -230,7 +236,10 @@ static struct
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
 	qboolean      snap_pending;
-	qboolean      turn_active;	// turn action reported bound+active by the runtime
+	qboolean      turn_active;
+	qboolean      profiles_logged;
+	int           session_retries;
+	HANDLE        instance_mutex;	// turn action reported bound+active by the runtime
 
 	// PFN cache
 	PFN_xrGetOpenGLGraphicsRequirementsKHR pfnGetOpenGLGraphicsRequirementsKHR;
@@ -418,7 +427,7 @@ static void VR_DiagSample( void )
 
 		VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
 			"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  fps=%5.1f  hz=%5.1f"
-			"  stick=(%5.2f %5.2f) turn=%5.2f  sub=%d%s\n",
+			"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  sub=%d%s\n",
 			host.realtime - vrdiag.session_start,
 			vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
 			vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
@@ -426,6 +435,8 @@ static void VR_DiagSample( void )
 			vrdiag.fps_frames ? vrdiag.fps_accum / vrdiag.fps_frames : 0.0f,
 			hmd_hz,
 			vr.move_x, vr.move_y, vr.turn_x, vr.turn_active ? "" : "[UNBOUND]",
+			vr.hand_pose[0].valid ? "ok" : "--",
+			vr.hand_pose[1].valid ? "ok" : "--",
 			vr.frames_submitted,
 			frozen ? "  [FROZEN]" : "" );
 	}
@@ -738,6 +749,103 @@ float VR_GetBodyYaw( void )
 
 /*
 ================
+VR_PlayToWorld
+
+Map a play-space position/orientation into game world space, using the same
+anchor and rotation the eyes use so hands and view agree.
+================
+*/
+static void VR_PlayToWorld( const vr_pose_t *pose, vec3_t out_org, vec3_t out_ang )
+{
+	vec3_t rel;
+	float s, c;
+
+	VectorSubtract( pose->origin, vr.hmd_pose.origin, rel );
+	SinCos( DEG2RAD( vr.body_yaw ), &s, &c );
+
+	if( out_org )
+	{
+		out_org[0] = vr.world_origin[0] + ( rel[0] * c - rel[1] * s );
+		out_org[1] = vr.world_origin[1] + ( rel[0] * s + rel[1] * c );
+		out_org[2] = vr.world_origin[2] + rel[2];
+	}
+
+	if( out_ang )
+	{
+		out_ang[PITCH] = pose->angles[PITCH];
+		out_ang[YAW]   = anglemod( pose->angles[YAW] + vr.body_yaw );
+		out_ang[ROLL]  = pose->angles[ROLL];
+	}
+}
+
+qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang )
+{
+	hand = bound( 0, hand, 1 );
+
+	if( !VR_IsActive() || !vr.hand_pose[hand].valid )
+		return false;
+
+	VR_PlayToWorld( &vr.hand_pose[hand], out_org, out_ang );
+	return true;
+}
+
+/*
+================
+VR_Begin2D / VR_End2D
+
+The engine's 2D pass builds an ortho sized to the WINDOW and sets the viewport
+to the whole window. Rendering that straight into a 2496x2688 eye texture would
+stretch the HUD across the entire field of view at the wrong aspect - unreadable
+and, at the periphery, invisible. Instead we keep the ortho and remap it into a
+centred rect that preserves the window aspect, which is also just better VR
+practice: HUD content belongs near the centre where the eye can actually resolve
+it.
+================
+*/
+void VR_Begin2D( void )
+{
+	const vr_swapchain_t *sc = &vr.swapchains[0];
+	float scale = bound( 0.2f, vr_hud_scale.value, 1.0f );
+	int ew, eh, w, h, x, y;
+	float aspect;
+
+	if( !VR_IsActive() || !vrgl.loaded || !vrgl.Viewport )
+		return;
+
+	ew = (int)sc->width;
+	eh = (int)sc->height;
+
+	// match the aspect ref_gl built its 2D ortho from (the window)
+	aspect = ( refState.height > 0 )
+		? (float)refState.width / (float)refState.height : ( 16.0f / 9.0f );
+
+	// fit a window-aspect rect inside the eye, then shrink by vr_hud_scale
+	w = (int)( ew * scale );
+	h = (int)( w / aspect );
+	if( h > eh * scale )
+	{
+		h = (int)( eh * scale );
+		w = (int)( h * aspect );
+	}
+
+	x = ( ew - w ) / 2;
+	y = ( eh - h ) / 2;
+
+	vrgl.Viewport( x, y, w, h );
+}
+
+void VR_End2D( void )
+{
+	const vr_swapchain_t *sc = &vr.swapchains[0];
+
+	if( !VR_IsActive() || !vrgl.loaded || !vrgl.Viewport )
+		return;
+
+	vrgl.Viewport( 0, 0, (int)sc->width, (int)sc->height );
+}
+
+/*
+================
 VR_OverrideViewAngles
 
 cl.viewangles decides movement direction and weapon aim. Left mouse-controlled,
@@ -795,6 +903,25 @@ qboolean VR_Init( void )
 	vr.session  = XR_NULL_HANDLE;
 	vr.system   = XR_NULL_SYSTEM_ID;
 
+	// Only one process can usefully hold an OpenXR session. If another XashVR is
+	// already running (including one wedged on a crash dialog), take the
+	// flatscreen path instead of fighting over the runtime and exhausting its
+	// session limit. This also makes running a second local instance for
+	// multiplayer testing work sensibly - first one gets the headset.
+	vr.instance_mutex = CreateMutexA( NULL, TRUE, "XashVR_OpenXR_SingleInstance" );
+	if( vr.instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS )
+	{
+		Con_Printf( S_WARN "VR: another XashVR instance already holds the headset; running flatscreen\n" );
+		Con_Printf( S_WARN "VR: if no other copy is visible, a previous one is stuck - close it in Task Manager\n" );
+		CloseHandle( vr.instance_mutex );
+		vr.instance_mutex = NULL;
+		return false;
+	}
+
+	// Backstop for exit paths that never reach R_Shutdown (Sys_Error, a crash
+	// dialog, Host_Abort). Without it the runtime keeps the session alive.
+	atexit( VR_Shutdown );
+
 	Cvar_RegisterVariable( &vr_enable );
 	Cvar_RegisterVariable( &vr_debug );
 	Cvar_RegisterVariable( &vr_pitch_sign );
@@ -808,6 +935,9 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_snap_turn );
 	Cvar_RegisterVariable( &vr_snap_angle );
 	Cvar_RegisterVariable( &vr_deadzone );
+	Cvar_RegisterVariable( &vr_hud_scale );
+	Cvar_RegisterVariable( &vr_hands );
+	Cvar_RegisterVariable( &vr_hud );
 	Cmd_AddCommand( "vr_status", VR_Status_f, "report OpenXR VR state" );
 
 	VR_DiagOpen();
@@ -966,6 +1096,55 @@ static qboolean VR_CreateSwapchain( int eye )
 
 /*
 ================
+VR_DestroySession
+
+Release everything owned by a session, so a failed attempt can be retried
+without leaking. Safe to call on a partially constructed session.
+================
+*/
+static void VR_DestroySession( void )
+{
+	int i;
+
+	for( i = 0; i < VR_MAX_EYES; i++ )
+	{
+		vr_swapchain_t *sc = &vr.swapchains[i];
+
+		if( sc->fbos && vrgl.loaded )
+			vrgl.DeleteFramebuffers( sc->image_count, sc->fbos );
+		if( sc->depth_rb && vrgl.loaded )
+			vrgl.DeleteRenderbuffers( 1, &sc->depth_rb );
+		if( sc->handle )
+			xrDestroySwapchain( sc->handle );
+		if( sc->images ) Mem_Free( sc->images );
+		if( sc->fbos )   Mem_Free( sc->fbos );
+		memset( sc, 0, sizeof( *sc ));
+	}
+
+	for( i = 0; i < 2; i++ )
+	{
+		if( vr.hand_space[i] )
+			xrDestroySpace( vr.hand_space[i] );
+		vr.hand_space[i] = 0;
+	}
+
+	if( vr.view_space )  xrDestroySpace( vr.view_space );
+	if( vr.stage_space ) xrDestroySpace( vr.stage_space );
+	vr.view_space = vr.stage_space = 0;
+
+	if( vr.session != XR_NULL_HANDLE )
+		xrDestroySession( vr.session );
+	vr.session = XR_NULL_HANDLE;
+
+	vr.session_ready = false;
+	vr.running       = false;
+	vr.frame_started = false;
+	vr.input_ready   = false;
+	vr.action_set    = 0;
+}
+
+/*
+================
 VR_InitSession
 
 Requires a current GL context.
@@ -1021,7 +1200,21 @@ qboolean VR_InitSession( void )
 	for( i = 0; i < vr.eye_count; i++ )
 	{
 		if( !VR_CreateSwapchain( i ))
+		{
+			// CRITICAL: the session already exists at this point. Returning
+			// without destroying it leaks one session per attempt, and since
+			// VR_BeginFrame retries every frame that reaches
+			// XR_ERROR_LIMIT_REACHED within seconds. Tear down and back off.
+			Con_Printf( S_ERROR "VR: swapchain setup failed, releasing session\n" );
+			VR_DestroySession();
+			vr.session_retries++;
+			if( vr.session_retries >= 3 )
+			{
+				Con_Printf( S_ERROR "VR: giving up on session creation, running flatscreen\n" );
+				vr.available = false;
+			}
 			return false;
+		}
 		vr.views[i].type = XR_TYPE_VIEW;
 	}
 
@@ -1288,6 +1481,36 @@ static void VR_SyncInput( void )
 
 	if( XR_FAILED( xrSyncActions( vr.session, &si )))
 		return;
+
+	// Report which interaction profile the runtime actually bound per hand. This
+	// is the definitive answer to "are my bindings live?" - suggestion succeeding
+	// only means the runtime understood the profile, not that it selected it.
+	if( !vr.profiles_logged && vr.frames_submitted > 30 )
+	{
+		int h;
+
+		vr.profiles_logged = true;
+		for( h = 0; h < 2; h++ )
+		{
+			XrInteractionProfileState ips = { XR_TYPE_INTERACTION_PROFILE_STATE };
+			char buf[XR_MAX_PATH_LENGTH];
+			uint32_t len = 0;
+
+			if( XR_FAILED( xrGetCurrentInteractionProfile( vr.session, vr.hand_path[h], &ips )))
+				continue;
+
+			if( ips.interactionProfile == XR_NULL_PATH )
+			{
+				VR_DiagPrintf( "active profile %s: NONE (controller asleep or absent)\n",
+					h ? "right" : "left" );
+				continue;
+			}
+
+			if( XR_SUCCEEDED( xrPathToString( vr.instance, ips.interactionProfile,
+				sizeof( buf ), &len, buf )))
+				VR_DiagPrintf( "active profile %s: %s\n", h ? "right" : "left", buf );
+		}
+	}
 
 	memcpy( vr.btn_prev, vr.btn, sizeof( vr.btn ));
 	memset( vr.btn, 0, sizeof( vr.btn ));
@@ -1753,6 +1976,10 @@ VR_Shutdown
 void VR_Shutdown( void )
 {
 	int i;
+
+	// atexit registers this too, so it can run twice - make that harmless.
+	if( !vr.available && vr.instance == XR_NULL_HANDLE && !vr.instance_mutex )
+		return;
 
 	for( i = 0; i < vr.eye_count; i++ )
 	{

@@ -145,6 +145,18 @@ void     VR_UpdateTurn( float frametime );
 
 qboolean VR_GetButton( int btn );
 
+// Controller pose mapped into game world space, using the same anchor and
+// rotation the eyes use so hands and view agree. hand: 0 = left, 1 = right.
+// Returns false if that controller is not currently tracked.
+qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang );
+
+// Constrain 2D drawing to a readable rect inside the current eye texture.
+// The engine's 2D pass sets up an ortho for the WINDOW, which would otherwise
+// splatter the HUD across the full eye at the wrong aspect. Call after
+// R_Set2DMode(true) while an eye FBO is bound; VR_End2D restores the viewport.
+void     VR_Begin2D( void );
+void     VR_End2D( void );
+
 // Acquire this eye's swapchain image and bind an FBO around it, then fill in
 // rvp (viewport, vieworigin, viewangles, fov, asymmetric frustum tangents).
 // The caller then invokes the normal GL_RenderFrame( rvp ).
@@ -169,5 +181,7 @@ const vr_pose_t *VR_GetHandPose( int hand );  // 0 = left, 1 = right
 void     VR_GetRequiredGLVersion( int *major, int *minor );
 
 extern convar_t vr_enable;
+extern convar_t vr_hands;
+extern convar_t vr_hud;
 
 #endif // VR_OPENXR_H

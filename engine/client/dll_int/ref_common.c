@@ -599,6 +599,12 @@ void R_Shutdown( void )
 	int i;
 	model_t *mod;
 
+	// PCVR fork: release the OpenXR session BEFORE the GL context goes away.
+	// Skipping this leaves the runtime holding a session for a process that is
+	// exiting; enough of those and xrCreateSwapchain starts failing for every
+	// later launch with XR_ERROR_RUNTIME_FAILURE.
+	VR_Shutdown();
+
 	// release SpriteTextures
 	for( i = 1, mod = clgame.sprites; i < MAX_CLIENT_SPRITES; i++, mod++ )
 	{

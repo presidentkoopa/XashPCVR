@@ -432,6 +432,25 @@ void V_RenderView( void )
 		if( FBitSet( rvp.flags, RF_ONLY_CLIENTDRAW ))
 			ref.dllFuncs.R_ClearScreen();
 
+		// Pin the weapon to the right controller. The mod positioned the
+		// viewmodel relative to a mouse-look camera; in VR the hand owns it.
+		if( vr_hands.value )
+		{
+			vec3_t hand_org, hand_ang;
+
+			if( VR_GetHandWorld( 1, hand_org, hand_ang ))
+			{
+				cl_entity_t *view = &clgame.viewent;
+
+				VectorCopy( hand_org, view->origin );
+				VectorCopy( hand_org, view->curstate.origin );
+				VectorCopy( hand_org, view->latched.prevorigin );
+				VectorCopy( hand_ang, view->angles );
+				VectorCopy( hand_ang, view->curstate.angles );
+				VectorCopy( hand_ang, view->latched.prevangles );
+			}
+		}
+
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )
 		{
 			ref_viewpass_t eye_rvp = rvp;	// inherit flags/viewentity from the mod
@@ -440,6 +459,21 @@ void V_RenderView( void )
 				continue;
 
 			GL_RenderFrame( &eye_rvp );
+
+			// Composite the 2D layer into this eye while its FBO is still bound.
+			// Without this the HUD, console and menu only ever reach the flat
+			// window, leaving the headset with no health, ammo or menu at all.
+			if( vr_hud.value )
+			{
+				ref.dllFuncs.R_Set2DMode( true );
+				VR_Begin2D();
+				CL_DrawHUD( CL_ACTIVE );
+				UI_UpdateMenu( host.realtime );
+				Con_DrawConsole();
+				VR_End2D();
+				ref.dllFuncs.R_Set2DMode( false );
+			}
+
 			VR_EndEye( eye );
 		}
 
