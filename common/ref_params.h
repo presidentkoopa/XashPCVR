@@ -94,6 +94,11 @@ typedef struct ref_overview_s
 #define RF_ONLY_CLIENTDRAW	(1<<3)		// nothing is drawn by the engine except clientDraw functions
 
 // intermediate struct for viewpass (or just a single frame)
+//
+// NOTE: this struct crosses the ENGINE <-> RENDERER (ref_*.dll) boundary only.
+// The mod's client.dll never sees it - mods talk in ref_params_t via pfnCalcRefdef.
+// Extending it therefore does NOT break game DLL compatibility, only requires
+// engine and renderer to be built together.
 typedef struct ref_viewpass_s
 {
 	int		viewport[4];	// size of new viewport
@@ -102,6 +107,17 @@ typedef struct ref_viewpass_s
 	int		viewentity;	// entitynum (P2: Savior uses this)
 	float		fov_x, fov_y;	// vertical & horizontal FOV
 	int		flags;		// if !=0 nothing is drawn by the engine except clientDraw functions
+
+	// --- PCVR fork: asymmetric per-eye frustum ---
+	// OpenXR reports each eye's frustum as four independent half-angles, which
+	// are NOT symmetric about the view axis. fov_x/fov_y above cannot express
+	// that. When vr_active is set, the renderer must build the projection from
+	// these tangents instead of from fov_x/fov_y.
+	qboolean	vr_active;
+	float		vr_tan_left;	// tan( fov.angleLeft )   (negative)
+	float		vr_tan_right;	// tan( fov.angleRight )
+	float		vr_tan_up;	// tan( fov.angleUp )
+	float		vr_tan_down;	// tan( fov.angleDown )   (negative)
 } ref_viewpass_t;
 
 #endif//REF_PARAMS_H

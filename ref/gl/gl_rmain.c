@@ -381,14 +381,30 @@ static void R_SetupProjectionMatrix( matrix4x4 m )
 
 	RI.farClip = R_GetFarClip();
 
-	GLfloat zNear = 4.0f;
+	// PCVR fork: a VR near plane of 4 units (~0.1m) is far enough out that the
+	// player's own hands clip through it. Pull it in when rendering an HMD eye.
+	GLfloat zNear = RI.rvp.vr_active ? 1.0f : 4.0f;
 	GLfloat zFar = Q_max( 256.0f, RI.farClip );
 
-	GLfloat yMax = zNear * tan( RI.rvp.fov_y * M_PI_F / 360.0f );
-	GLfloat yMin = -yMax;
+	GLfloat yMax, yMin, xMax, xMin;
 
-	GLfloat xMax = zNear * tan( RI.rvp.fov_x * M_PI_F / 360.0f );
-	GLfloat xMin = -xMax;
+	if( RI.rvp.vr_active )
+	{
+		// OpenXR gives four independent half-angles per eye; the frustum is
+		// asymmetric and must not be reconstructed from a single fov value.
+		xMin = zNear * RI.rvp.vr_tan_left;
+		xMax = zNear * RI.rvp.vr_tan_right;
+		yMin = zNear * RI.rvp.vr_tan_down;
+		yMax = zNear * RI.rvp.vr_tan_up;
+	}
+	else
+	{
+		yMax = zNear * tan( RI.rvp.fov_y * M_PI_F / 360.0f );
+		yMin = -yMax;
+
+		xMax = zNear * tan( RI.rvp.fov_x * M_PI_F / 360.0f );
+		xMin = -xMax;
+	}
 
 	if( tr.rotation & 1 )
 	{

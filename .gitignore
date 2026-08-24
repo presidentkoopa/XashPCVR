@@ -374,3 +374,8 @@ GEMINI.md
 .continue/
 .codeium/
 .github/copilot-instructions.md
+
+# PCVR fork build artifacts
+vr/probe/*.exe
+vr/probe/*.obj
+vr/probe/*.dll

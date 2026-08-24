@@ -40,6 +40,9 @@ def m_hook(self, node):
 def options(opt):
 	grp = opt.add_option_group('Engine options')
 
+	grp.add_option('--openxr', action = 'store', dest = 'OPENXR_PATH', default = None,
+		help = 'path to the OpenXR SDK (enables PCVR support; needs include/ and a built loader)')
+
 	grp.add_option('--enable-fbdev', action = 'store_true', dest = 'FBDEV_SW', default = False,
 		help = 'build fbdev-only software-only engine')
 
@@ -95,6 +98,45 @@ def configure(conf):
 		conf.define('XASH_LLVM_LIBFUZZER', 1)
 		conf.env.append_unique('CFLAGS', '-fsanitize=fuzzer-no-link')
 		conf.env.append_unique('LINKFLAGS', '-fsanitize=fuzzer-no-link')
+
+	# --- PCVR fork: OpenXR ---
+	# Enabled by passing --openxr=<path to OpenXR-SDK>. We look for the headers
+	# and for a loader built for the SAME bitness as the engine. Note the engine
+	# builds 32-bit by default (GoldSrc mod DLLs are 32-bit), and not every
+	# runtime ships a 32-bit loader/runtime - see PCVR_LOG.md FINDING 003/004.
+	conf.env.OPENXR = False
+	if conf.env.CLIENT and conf.options.OPENXR_PATH:
+		xr = conf.options.OPENXR_PATH
+		inc = os.path.join(xr, 'include')
+
+		# accept either a build32/ or build64/ tree from the SDK's CMake build
+		bits = 32 if conf.env.DEST_SIZEOF_VOID_P == 4 else 64
+		candidates = [
+			os.path.join(xr, 'build%d' % bits, 'src', 'loader', 'Release'),
+			os.path.join(xr, 'build%d' % bits, 'src', 'loader'),
+			os.path.join(xr, 'lib'),
+		]
+
+		libpath = None
+		for c in candidates:
+			if os.path.exists(os.path.join(c, 'openxr_loader.lib')):
+				libpath = c
+				break
+
+		conf.start_msg('Checking for OpenXR SDK (%d-bit loader)' % bits)
+		if not os.path.exists(os.path.join(inc, 'openxr', 'openxr.h')):
+			conf.end_msg('no: headers not found at %s' % inc, color='YELLOW')
+		elif not libpath:
+			conf.end_msg('no: openxr_loader.lib not found (build it for %d-bit)' % bits, color='YELLOW')
+		else:
+			conf.env.INCLUDES_OPENXR = [inc]
+			conf.env.LIBPATH_OPENXR = [libpath]
+			# opengl32 is needed for wglGetCurrentDC/wglGetCurrentContext, which
+			# supply the XrGraphicsBindingOpenGLWin32KHR handles.
+			conf.env.LIB_OPENXR = ['openxr_loader', 'opengl32']
+			conf.env.OPENXR = True
+			conf.define('XASH_OPENXR', 1)
+			conf.end_msg('yes: %s' % libpath)
 
 	# Client-only dependencies
 	if conf.env.CLIENT:
@@ -263,9 +305,16 @@ def build(bld):
 			libs.append('SWSCALE')
 
 		# add client files
+		# NOTE: this glob is recursive, so PCVR sources in client/vr/ are picked
+		# up automatically - no source list edit needed when adding VR files.
 		if not bld.env.DEDICATED:
 			source += bld.path.ant_glob('client/**/*.c')
 			libs += ['bzip2', 'MultiEmulator', 'opus', 'opusfile', 'vorbis', 'vorbisfile']
+
+			# PCVR fork: OpenXR loader + headers
+			if bld.env.OPENXR:
+				libs += ['OPENXR']
+				includes += ['client/vr']
 
 		# Android port is linked differently
 		if bld.env.DEST_OS == 'android':
