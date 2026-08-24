@@ -134,6 +134,7 @@ float    VR_GetBodyYaw( void );
 #define VR_BTN_NEXTWEAP    9
 #define VR_BTN_PREVWEAP    10
 #define VR_BTN_MENU        11
+#define VR_BTN_OFFGRIP     12	// off-hand grip: grab / two-hand a weapon
 
 // Thumbstick locomotion, already deadzoned and scaled to HL move units.
 // Values are relative to the current view direction, matching how the engine
@@ -160,6 +161,41 @@ void     VR_DrawHands( qboolean draw_right );
 // Applies the weapon viewmodel's rest-pose correction (vr_weapon_*_offset).
 // Call on the PHYSICAL tracked angles, BEFORE pre-negating pitch.
 void     VR_CalibrateWeaponAngles( vec3_t ang );
+
+// Two-handed stabilisation: aim along the hand-to-hand vector when the off
+// hand is up at the weapon. Call BEFORE VR_CalibrateWeaponAngles.
+// Returns true if it engaged this frame.
+qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang );
+
+// True when the equipped viewmodel is a melee weapon (crowbar and friends).
+qboolean VR_HoldingMelee( void );
+
+// True when firing should follow the weapon rather than the head.
+qboolean VR_AimFromWeapon( void );
+
+// Angles for the usercmd so the shot LANDS where the weapon points, given
+// the mod fires from the player's eye. See the implementation for why the
+// origin itself cannot be moved from engine code.
+qboolean VR_GetAimAngles( vec3_t out_ang );
+
+// Where the weapon actually points (raw aim pose + two-handed stabilisation,
+// WITHOUT the cosmetic mesh correction). Used for firing and the laser.
+qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang );
+
+// World-space VR overlays (laser sight, grenade arc). Called from
+// pfnDrawNormalTriangles during the 3D pass.
+void     VR_DrawOverlays( void );
+
+// Buzz a controller. hand: 0 = left, 1 = right. duration seconds,
+// frequency Hz (0 = runtime default), amplitude 0..1.
+void     VR_Haptic( int hand, float duration, float frequency, float amplitude );
+
+// True on the frame a melee swing should count as an attack. Only fires
+// while a melee weapon is equipped.
+qboolean VR_GetMeleeAttack( void );
+
+// Off-hand flashlight source. Returns false to use the stock head mount.
+qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd );
 
 // Constrain 2D drawing to a readable rect inside the current eye texture.
 // The engine's 2D pass sets up an ortho for the WINDOW, which would otherwise

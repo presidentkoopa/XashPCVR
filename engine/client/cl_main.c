@@ -824,12 +824,63 @@ static void CL_CreateCmd( void )
 		if( vr_fwd != 0.0f )  cmd->forwardmove = vr_fwd;
 		if( vr_side != 0.0f ) cmd->sidemove    = vr_side;
 
+		// Aim from the weapon rather than the head. See vr_aim_from_weapon.
+		// The mod fires from the view origin along cmd->viewangles, so this
+		// is what actually decides where bullets go; the rendered view is
+		// unaffected because it comes from the HMD pose in VR_BeginEye.
+		if( VR_AimFromWeapon( ))
+		{
+			vec3_t weap_ang;
+
+			if( VR_GetAimAngles( weap_ang ))
+			{
+				// viewangles also define the movement frame, so rotating them
+				// to the muzzle would make the stick walk you relative to the
+				// gun. Counter-rotate the move vector by the same yaw delta
+				// so world-space movement is exactly what it was.
+				float d = DEG2RAD( weap_ang[YAW] - cmd->viewangles[YAW] );
+				float c = cosf( d ), s = sinf( d );
+				float f = cmd->forwardmove, sd = cmd->sidemove;
+
+				cmd->forwardmove = f * c - sd * s;
+				cmd->sidemove    = f * s + sd * c;
+
+				// ONLY the outgoing usercmd. cl.viewangles must keep the HEAD
+				// angles: VR_OverrideViewAngles reconstructs body yaw next
+				// frame by subtracting the head yaw it injected, so writing
+				// weapon yaw back into cl.viewangles corrupts that bookkeeping
+				// and head yaw compounds every frame - an uncontrollable spin,
+				// which is exactly what happened when this was first tried.
+				// The server reads pev->v_angle from the usercmd, so putting
+				// the weapon angles here alone is enough to aim the shot.
+				VectorCopy( weap_ang, cmd->viewangles );
+			}
+		}
+
 		if( VR_GetButton( VR_BTN_JUMP ))    cmd->buttons |= IN_JUMP;
 		if( VR_GetButton( VR_BTN_CROUCH ))  cmd->buttons |= IN_DUCK;
 		if( VR_GetButton( VR_BTN_ATTACK ))  cmd->buttons |= IN_ATTACK;
 		if( VR_GetButton( VR_BTN_ATTACK2 )) cmd->buttons |= IN_ATTACK2;
 		if( VR_GetButton( VR_BTN_USE ))     cmd->buttons |= IN_USE;
 		if( VR_GetButton( VR_BTN_RELOAD ))  cmd->buttons |= IN_RELOAD;
+
+		// Swing-to-hit for melee. Injected as IN_ATTACK - the same button
+		// the mod already handles - so no game-DLL knowledge is required.
+		if( VR_GetMeleeAttack( ))
+			cmd->buttons |= IN_ATTACK;
+
+		// Recoil buzz on the weapon hand when the trigger goes down. Edge
+		// triggered, otherwise an automatic weapon buzzes continuously into
+		// one long meaningless rumble.
+		{
+			static qboolean was_firing = false;
+			qboolean firing = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+
+			if( firing && !was_firing )
+				VR_Haptic( 1, 0.06f, 0.0f, 0.7f );
+
+			was_firing = firing;
+		}
 	}
 
 	CL_PopPMStates();

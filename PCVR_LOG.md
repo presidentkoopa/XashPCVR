@@ -442,6 +442,91 @@ warns loudly if one refuses to die.
 
 ---
 
+## FINDING 017 — **HEADLINE** — Fire from the controller with an *unmodified* game DLL
+
+The single most important architectural result in this fork so far.
+
+### The problem
+
+Shots came out of the player's face. Every stock Half-Life weapon traces from
+`CBasePlayer::GetGunPosition()` (`glock.cpp:156`, `crowbar.cpp:153`, `gauss.cpp:324`, ...),
+which in vanilla returns:
+
+```cpp
+Vector CBasePlayer::GetGunPosition() { return pev->origin + pev->view_ofs; }   // the EYE
+```
+
+Two separate defects hide behind "I shoot from my face":
+
+| | source | fixable engine-side? |
+|---|---|---|
+| **Direction** | `pev->v_angle`, set from `usercmd.viewangles` | **Yes** — engine already sends it |
+| **Origin** | `pev->origin + pev->view_ofs`, read inside the game DLL | looked like **no** |
+
+Direction was fixed by writing weapon aim into the outgoing usercmd. Origin looked impossible
+without touching `hl.dll`.
+
+### How the reference ports solved it — and why we can't copy them
+
+Both fork the SDK and override the virtual:
+
+- **HLVR** — `src/dlls/player.cpp:4763` returns the weapon model's **muzzle attachment point**.
+- **Lambda1VR** — `hlsdk-xash3d/dlls/player.cpp:371` returns `GetWeaponPosition()`, the tracked
+  controller position.
+
+Correct for them, useless here. **A forked `hl.dll` only fixes the one mod it was built for.**
+The goal of this fork is playing *arbitrary* mods with their own custom game code, so any
+solution requiring a per-mod rebuild is a non-solution.
+
+### The actual fix
+
+**`entvars_t` is ENGINE memory. The game DLL *reads* `view_ofs` — it does not own it.**
+
+So don't move the shot; move the thing the shot is measured from. Point `view_ofs` at the
+controller for exactly the one call that fires the weapon, then put it back:
+
+```
+engine/server/sv_pmove.c, SV_RunCmd():
+
+    save   clent->v.view_ofs
+    set    clent->v.view_ofs = muzzle - clent->v.origin      // VR_GetWeaponAim()
+    call   svgame.dllFuncs.pfnPlayerPostThink( clent )       // -> ItemPostFrame -> weapon fires
+    restore clent->v.view_ofs
+```
+
+`PostThink` is the right and only hook: `CBasePlayer::PostThink()` calls `ItemPostFrame()`,
+which is where weapons actually fire. It must also be applied *after* `SV_FinishPMove()`, since
+that copies pmove's duck-adjusted `view_ofs` back onto the entity and would otherwise clobber it.
+
+### Why this satisfies every constraint at once
+
+- **Custom mods** — stock `hl.dll` is untouched. Any mod, any custom content, no per-mod work.
+- **Co-op with desktop players** — nothing is added to the network protocol, so vanilla clients
+  connect normally.
+- **Other players unaffected** — gated on `NET_IsLocalAddress( cl->netchan.remote_address )`.
+  On a listen server `SV_RunCmd` runs for *every* client; remote desktop players must be
+  left alone.
+- **Nothing else observes it** — restoring immediately means networking, prediction and the
+  client's own view never see the substituted value. This matters: an earlier attempt at the
+  direction fix wrote weapon yaw into `cl.viewangles`, corrupting the injected-yaw bookkeeping
+  in `VR_OverrideViewAngles` and compounding head yaw into an **uncontrollable spin**.
+- **Dual wield later** — same mechanism, second position.
+
+### Limitation
+
+Works when the VR player **hosts** (singleplayer, or hosting the co-op server). If the VR player
+*joins* someone else's server, origin reverts to the eye — that server cannot see the controller
+without a protocol extension. Accepted deliberately: protocol changes would break crossplay with
+vanilla clients, which is a stated priority.
+
+### Generalisable lesson
+
+When a game-DLL value blocks something, check whether the field lives in `entvars_t` first.
+Anything the engine owns can be substituted around a specific game-DLL call without forking the
+mod. This is likely reusable for other "the game DLL decides this" problems.
+
+---
+
 ## OPEN QUESTIONS
 
 1. ~~Does the runtime support `XR_KHR_opengl_enable`?~~ **ANSWERED — YES, see FINDING 007.**

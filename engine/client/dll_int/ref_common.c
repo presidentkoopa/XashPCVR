@@ -291,6 +291,12 @@ static const bpc_desc_t *pfnImage_GetPFDesc( int idx )
 static void pfnDrawNormalTriangles( void )
 {
 	clgame.dllFuncs.pfnDrawNormalTriangles();
+
+	// PCVR fork: VR world overlays (laser sight, grenade arc). Hooked here
+	// rather than in the mod because this wrapper is engine-side, so the
+	// overlays work with any GoldSrc mod. Runs inside the 3D pass with the
+	// world transform set, which is what the TriAPI needs.
+	VR_DrawOverlays();
 }
 
 static void pfnDrawTransparentTriangles( void )

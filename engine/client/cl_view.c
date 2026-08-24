@@ -445,6 +445,11 @@ void V_RenderView( void )
 
 				if( VR_GetHandWorld( 1, hand_org, hand_ang ))
 				{
+					// Two-handed stabilisation, before any mesh correction so
+					// it operates on physical tracked angles like everything
+					// else. No-op unless the off hand is up at the weapon.
+					VR_ApplyTwoHandedAim( hand_org, hand_ang );
+
 					// Weapon meshes rest at a different angle than the bare-hand
 					// mesh, so they get their own correction (vr_weapon_*_offset).
 					// Live: with the hands correct, the gun still hung ~45 deg

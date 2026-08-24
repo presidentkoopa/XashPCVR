@@ -159,6 +159,117 @@ static CVAR_DEFINE_AUTO( vr_weapon_pitch_offset, "-45", FCVAR_ARCHIVE, "weapon v
 static CVAR_DEFINE_AUTO( vr_weapon_yaw_offset,   "0",   FCVAR_ARCHIVE, "weapon viewmodel rest-pose yaw correction, degrees" );
 static CVAR_DEFINE_AUTO( vr_weapon_roll_offset,  "0",   FCVAR_ARCHIVE, "weapon viewmodel rest-pose roll correction, degrees" );
 
+// TWO-HANDED WEAPON STABILISATION.
+//
+// Ported from Lambda1VR (VrInputAlt2.c:183-196): when the off hand is
+// brought up to the weapon, aim is taken from the VECTOR BETWEEN THE TWO
+// HANDS instead of from the dominant controller's own orientation. That is
+// what makes a rifle feel shouldered - small wrist jitter on the firing
+// hand stops throwing the muzzle around, because the barrel now follows the
+// long baseline between both hands.
+//
+// The min distance is Lambda1VR's guard, and it matters: with the hands
+// close together (a pistol in a two-handed grip) the baseline is too short
+// to derive a stable direction from, and the aim would snap around wildly.
+// Below the minimum we fall back to normal one-handed aim.
+//
+// Distances are HL units (1 unit ~= 1 inch). Lambda1VR uses metres:
+// its 0.15 m guard ~= 6 units, and its 0.50 m engage range ~= 20 units.
+// A straight port of that is NOT enough on its own, and live testing showed
+// why: taking aim from the hand-to-hand vector unconditionally makes the gun
+// CHASE the off hand - wherever the off hand goes, the muzzle snaps to point
+// at it. Reported as "gun snaps to offhand = bad, offhand grabs gun = good".
+//
+// So engagement is gated on the off hand actually being ON THE BARREL LINE:
+// the hand-to-hand direction must lie within a cone around the weapon's
+// CURRENT forward. That is the difference between the off hand grabbing a
+// foregrip that is already there, and the gun swinging over to find the
+// hand. Outside the cone we simply stay one-handed.
+//
+// Engagement is also blended over vr_twohand_smooth seconds rather than
+// switching hard, so grabbing and releasing eases in instead of popping.
+//
+// Distances are HL units (1 unit ~= 1 inch). Lambda1VR uses metres:
+// its 0.15 m guard ~= 6 units, and its 0.50 m engage range ~= 20 units.
+// Engagement is a GEOMETRY test, not a proximity cone: the off hand has to
+// actually be on the weapon. The gun is modelled as a line segment running
+// from the grip out along the barrel, and the hand must come within
+// vr_twohand_radius of that segment - i.e. the hand and the weapon have to
+// physically meet, which is what a real support grip is.
+//
+// A cone was tried first and is wrong at close range: a cone is infinitely
+// wide far away and infinitely tight up close, so the hand could be a foot
+// off the barrel and still count as long as the angle was small.
+static CVAR_DEFINE_AUTO( vr_twohand,        "1",  FCVAR_ARCHIVE, "two-handed weapon stabilisation (aim along the hand-to-hand vector)" );
+static CVAR_DEFINE_AUTO( vr_twohand_min,    "5",  FCVAR_ARCHIVE, "two-hand: min hand separation to engage, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_max,    "30", FCVAR_ARCHIVE, "two-hand: max hand separation to stay engaged, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_radius, "5",  FCVAR_ARCHIVE, "two-hand: how close the off hand must come to the barrel line, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_barrel, "22", FCVAR_ARCHIVE, "two-hand: barrel length used for the grip test, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_smooth, "0.12", FCVAR_ARCHIVE, "two-hand: engage/release blend time, seconds (0 = instant)" );
+
+// ---------------------------------------------------------------------
+// LASER SIGHT + GRENADE ARC
+//
+// Both are drawn through the TriAPI from inside pfnDrawNormalTriangles
+// (see VR_DrawOverlays), which runs during the 3D pass with the world
+// transform already set, once per eye, and is engine-side - so this works
+// regardless of which mod is loaded.
+//
+// The arc is a real ballistic simulation stepped against the world with
+// CL_TraceLine, not a decorative curve: it uses the same gravity the server
+// applies, so where the line ends is where the grenade lands.
+// ---------------------------------------------------------------------
+static CVAR_DEFINE_AUTO( vr_laser,        "1",   FCVAR_ARCHIVE, "laser sight: 0 off, 1 dot only, 2 dot + beam" );
+static CVAR_DEFINE_AUTO( vr_laser_r,      "1.0", FCVAR_ARCHIVE, "laser sight colour, red 0-1" );
+static CVAR_DEFINE_AUTO( vr_laser_g,      "0.1", FCVAR_ARCHIVE, "laser sight colour, green 0-1" );
+static CVAR_DEFINE_AUTO( vr_laser_b,      "0.1", FCVAR_ARCHIVE, "laser sight colour, blue 0-1" );
+static CVAR_DEFINE_AUTO( vr_laser_alpha,  "0.5", FCVAR_ARCHIVE, "laser beam opacity 0-1 (the dot is always solid)" );
+static CVAR_DEFINE_AUTO( vr_laser_width,  "0.35", FCVAR_ARCHIVE, "laser beam half-width, HL units" );
+static CVAR_DEFINE_AUTO( vr_laser_dot,    "1.6", FCVAR_ARCHIVE, "laser impact dot radius, HL units" );
+static CVAR_DEFINE_AUTO( vr_laser_range,  "4096", FCVAR_ARCHIVE, "laser sight max range, HL units" );
+
+static CVAR_DEFINE_AUTO( vr_arc,          "1",   FCVAR_ARCHIVE, "grenade trajectory arc: 0 off, 1 on when holding a throwable" );
+static CVAR_DEFINE_AUTO( vr_arc_speed,    "500", FCVAR_ARCHIVE, "assumed throw speed for the arc, HL units/sec (HL grenade is ~500 + view velocity)" );
+static CVAR_DEFINE_AUTO( vr_arc_gravity,  "800", FCVAR_ARCHIVE, "gravity used for the arc, HL units/sec^2 (sv_gravity default 800)" );
+static CVAR_DEFINE_AUTO( vr_arc_steps,    "48",  FCVAR_ARCHIVE, "arc simulation steps (higher = smoother)" );
+static CVAR_DEFINE_AUTO( vr_arc_step_time,"0.06", FCVAR_ARCHIVE, "arc simulation timestep, seconds" );
+static CVAR_DEFINE_AUTO( vr_arc_width,    "0.6", FCVAR_ARCHIVE, "arc ribbon half-width, HL units" );
+static CVAR_DEFINE_AUTO( vr_arc_r,        "0.2", FCVAR_ARCHIVE, "arc colour, red 0-1" );
+static CVAR_DEFINE_AUTO( vr_arc_g,        "0.9", FCVAR_ARCHIVE, "arc colour, green 0-1" );
+static CVAR_DEFINE_AUTO( vr_arc_b,        "1.0", FCVAR_ARCHIVE, "arc colour, blue 0-1" );
+static CVAR_DEFINE_AUTO( vr_arc_alpha,    "0.65", FCVAR_ARCHIVE, "arc opacity 0-1" );
+
+// Per-weapon rest-pose pitch. A single global value cannot be right for
+// every viewmodel: Lambda1VR carries separate vr_weapon_pitchadjust (-20)
+// and vr_crowbar_pitchadjust (-25) for exactly this reason. Melee weapons
+// are held like a tool, not aimed like a gun, so they need their own angle.
+static CVAR_DEFINE_AUTO( vr_melee_pitch_offset, "-70", FCVAR_ARCHIVE, "melee weapon rest-pose pitch correction, degrees" );
+
+// Swing-to-hit. Threshold is in HL units/sec of real hand movement; a
+// deliberate swing runs well past this while ordinary hand drift does not.
+static CVAR_DEFINE_AUTO( vr_melee_swing, "1",   FCVAR_ARCHIVE, "melee: swing the controller to attack" );
+static CVAR_DEFINE_AUTO( vr_melee_speed, "220", FCVAR_ARCHIVE, "melee: hand speed needed to register a swing, HL units/sec" );
+
+// Fire along the WEAPON, not along the head.
+//
+// The mod's weapon code traces the shot from the player's view origin along
+// cmd->viewangles - so with viewangles driven by the HMD, bullets come out
+// of your face no matter where the gun is pointed. Reported live as exactly
+// that. Sending the weapon's aim as viewangles instead makes shots follow
+// the gun, and costs nothing visually because the rendered view comes from
+// the HMD pose in VR_BeginEye, not from viewangles.
+//
+// The catch is that viewangles ALSO define the movement frame, so the stick
+// would suddenly walk you relative to the muzzle. VR_GetMovement's output is
+// counter-rotated by the head/weapon yaw difference to cancel that out.
+static CVAR_DEFINE_AUTO( vr_aim_from_weapon, "1", FCVAR_ARCHIVE, "fire along the weapon instead of the head" );
+
+// Haptics. Value doubles as a master gain, so 0 disables and 0.5 halves.
+static CVAR_DEFINE_AUTO( vr_haptics, "1", FCVAR_ARCHIVE, "haptic feedback strength, 0 = off" );
+
+// Off-hand flashlight: 0 = stock head-mounted, 1 = off hand, 2 = weapon hand.
+static CVAR_DEFINE_AUTO( vr_flashlight_hand, "1", FCVAR_ARCHIVE, "flashlight mount: 0 head, 1 off hand, 2 weapon hand" );
+
 static CVAR_DEFINE_AUTO( vr_hand_pivot_fwd,  "-5.139", FCVAR_ARCHIVE, "hand mesh pivot point, model-space X (forward), HL units" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_left, "-1.059", FCVAR_ARCHIVE, "hand mesh pivot point, model-space Y (left), HL units" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_up,   "1.063",  FCVAR_ARCHIVE, "hand mesh pivot point, model-space Z (up), HL units" );
@@ -258,6 +369,7 @@ typedef enum
 	VRA_NEXTWEAP,
 	VRA_PREVWEAP,
 	VRA_MENU,
+	VRA_OFFGRIP,	// off-hand grip: grab / two-hand a weapon
 	VRA_COUNT
 } vr_action_id_t;
 
@@ -280,6 +392,7 @@ static const struct
 	{ "nextweap",   "Next Weapon",    XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "prevweap",   "Prev Weapon",    XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "menu",       "Menu",           XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "offgrip",    "Off-hand Grip",  XR_ACTION_TYPE_BOOLEAN_INPUT },
 };
 
 typedef struct
@@ -348,6 +461,7 @@ static struct
 	XrAction      actions[VRA_COUNT];
 	XrAction      act_hand_pose;    // aim/pose
 	XrAction      act_hand_grip;    // grip/pose
+	XrAction      act_haptic[2];    // vibration output, 0 = left, 1 = right
 	XrPath        hand_path[2];  // /user/hand/left, /user/hand/right
 	XrSpace       hand_space[2];
 	XrSpace       grip_space[2];
@@ -1217,16 +1331,126 @@ which does not compose - see VR_ApplyMeshCalibration).
 Call this on the PHYSICAL tracked angles, BEFORE pre-negating pitch.
 ================
 */
+/*
+================
+VR_ApplyTwoHandedAim
+
+If the off hand is up at the weapon, take aim from the hand-to-hand vector
+instead of the dominant controller's own orientation. See the cvar block for
+why (Lambda1VR VrInputAlt2.c:183-196).
+
+dom_org is the weapon hand's world position; ang is the PHYSICAL tracked
+orientation, modified in place. Call BEFORE the mesh calibration and before
+pre-negating pitch, so it stays in the same convention as everything else.
+
+Returns true if two-handed aim was applied.
+================
+*/
+qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
+{
+	static float blend = 0.0f;	// 0 = one-handed, 1 = fully two-handed
+	vec3_t off_org, off_ang, delta, dir, fwd, aim, va;
+	float dist, target = 0.0f;
+
+	// The weapon's current forward, i.e. where the barrel already points.
+	AngleVectors( ang, fwd, NULL, NULL );
+
+	// Requires an actual grip press on the off hand, like Lambda1VR
+	// (VrInputAlt2.c:109-124). Proximity alone was tried and is wrong: the
+	// weapon would grab onto the off hand any time it drifted near, with no
+	// way to just rest a hand there. Holding the grip is the deliberate
+	// "I am supporting the weapon" signal; releasing drops back to one hand.
+	if( VR_IsActive() && vr_twohand.value && VR_GetButton( VR_BTN_OFFGRIP ) &&
+	    VR_GetHandWorld( 0, off_org, off_ang ))	// hand 0 = left = off hand
+	{
+		VectorSubtract( off_org, dom_org, delta );
+		dist = VectorLength( delta );
+
+		if( dist >= vr_twohand_min.value && dist <= vr_twohand_max.value )
+		{
+			// Closest approach between the off hand and the barrel, modelled
+			// as the segment from the grip out along forward. Engaging on
+			// that distance means the hand has to physically meet the weapon,
+			// not merely be roughly in line with it.
+			float along = DotProduct( delta, fwd );
+			vec3_t closest, gap;
+
+			along = bound( 0.0f, along, vr_twohand_barrel.value );
+			VectorMA( dom_org, along, fwd, closest );
+			VectorSubtract( off_org, closest, gap );
+
+			if( VectorLength( gap ) <= vr_twohand_radius.value )
+				target = 1.0f;
+		}
+	}
+
+	// Ease toward the target instead of switching hard.
+	if( vr_twohand_smooth.value > 0.0f && host.frametime > 0.0f )
+	{
+		float step = (float)host.frametime / vr_twohand_smooth.value;
+
+		if( target > blend ) blend = Q_min( blend + step, target );
+		else                 blend = Q_max( blend - step, target );
+	}
+	else blend = target;
+
+	if( blend <= 0.001f )
+		return false;
+
+	// Blend the DIRECTION VECTORS, not the euler angles - lerping angles
+	// wraps badly through +-180 and would produce a spin.
+	VectorLerp( fwd, blend, dir, aim );
+	if( VectorNormalizeLength( aim ) == 0.0f )
+		return false;
+
+	VectorAngles( aim, va );
+
+	// VectorAngles reports pitch POSITIVE-UP (public/xash3d_mathlib.c:198
+	// uses atan2(forward[2], horiz)), while entity angles follow
+	// AngleVectors, where forward[2] = -sin(pitch) and positive pitch is
+	// DOWN. Mixing the two conventions is the exact class of sign bug that
+	// cost so much on the hand orientation - negate here.
+	ang[PITCH] = -va[PITCH];
+	ang[YAW]   = va[YAW];
+	// ROLL deliberately left alone: it still comes from the firing hand, so
+	// twisting that wrist still rolls the weapon while two-handing.
+
+	return true;
+}
+
+qboolean VR_HoldingMelee( void )
+{
+	const char *name;
+
+	if( !clgame.viewent.model || !clgame.viewent.model->name[0] )
+		return false;
+
+	name = clgame.viewent.model->name;
+
+	return Q_stristr( name, "crowbar" ) != NULL
+	    || Q_stristr( name, "knife" )   != NULL
+	    || Q_stristr( name, "wrench" )  != NULL
+	    || Q_stristr( name, "pipe" )    != NULL;
+}
+
 void VR_CalibrateWeaponAngles( vec3_t ang )
 {
 	vec3_t cal;
+	float pitch;
 
-	if( vr_weapon_pitch_offset.value == 0.0f &&
+	// Melee weapons are held like a tool rather than aimed like a gun, so
+	// they rest at a different angle in the hand and need their own
+	// correction. Lambda1VR carries a separate vr_crowbar_pitchadjust for
+	// the same reason.
+	pitch = VR_HoldingMelee() ? vr_melee_pitch_offset.value
+	                          : vr_weapon_pitch_offset.value;
+
+	if( pitch == 0.0f &&
 	    vr_weapon_yaw_offset.value == 0.0f &&
 	    vr_weapon_roll_offset.value == 0.0f )
 		return;
 
-	cal[PITCH] = vr_weapon_pitch_offset.value;
+	cal[PITCH] = pitch;
 	cal[YAW]   = vr_weapon_yaw_offset.value;
 	cal[ROLL]  = vr_weapon_roll_offset.value;
 
@@ -1354,6 +1578,452 @@ void VR_DrawHands( qboolean draw_right )
 
 		CL_AddVisibleEntity( e, ET_NORMAL );
 	}
+}
+
+/*
+=================================================================
+	Haptics, melee swings, hand-mounted flashlight
+=================================================================
+*/
+
+/*
+================
+VR_Haptic
+
+Fire-and-forget buzz on one controller. hand: 0 = left, 1 = right.
+duration in seconds, amplitude 0..1.
+================
+*/
+void VR_Haptic( int hand, float duration, float frequency, float amplitude )
+{
+	XrHapticVibration hv = { XR_TYPE_HAPTIC_VIBRATION };
+	XrHapticActionInfo hai = { XR_TYPE_HAPTIC_ACTION_INFO };
+
+	if( !VR_IsActive() || !vr_haptics.value )
+		return;
+
+	hand = bound( 0, hand, 1 );
+
+	hv.duration  = (XrDuration)( bound( 0.01f, duration, 2.0f ) * 1000000000.0 ); // ns
+	hv.frequency = frequency > 0.0f ? frequency : XR_FREQUENCY_UNSPECIFIED;
+	hv.amplitude = bound( 0.0f, amplitude * vr_haptics.value, 1.0f );
+
+	hai.action = vr.act_haptic[hand];
+
+	xrApplyHapticFeedback( vr.session, &hai, (const XrHapticBaseHeader *)&hv );
+}
+
+/*
+================
+VR_GetFlashlightSource
+
+Off-hand flashlight. Returns the world position and forward direction the
+flashlight should project from, so it can be aimed independently of the
+head. Called from CL_UpdateFlashlight (cl_tent.c); returns false to fall
+back to the stock head-mounted behaviour.
+================
+*/
+qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd )
+{
+	vec3_t ang;
+	int hand;
+
+	if( !VR_IsActive() || !vr_flashlight_hand.value )
+		return false;
+
+	// 0 = left (off hand) by default; 1 puts it on the weapon hand.
+	hand = ( vr_flashlight_hand.value >= 2.0f ) ? 1 : 0;
+
+	if( !VR_GetHandWorld( hand, out_org, ang ))
+		return false;
+
+	AngleVectors( ang, out_fwd, NULL, NULL );
+	return true;
+}
+
+/*
+================
+VR_UpdateMelee
+
+Swing-to-hit for melee weapons. Tracks how fast the weapon hand is actually
+moving through the world and reports a hit when it crosses a threshold, so
+the crowbar responds to a real swing instead of a trigger pull.
+
+Velocity is differentiated from the tracked position rather than taken from
+OpenXR's velocity field, because the position is already being computed here
+every frame and this avoids depending on a runtime reporting velocities.
+
+Latching: once a swing fires, it will not fire again until the hand slows
+back below the release threshold. Without that, a single swing spans several
+frames above the threshold and would register as a burst of hits.
+================
+*/
+static qboolean VR_UpdateMelee( void )
+{
+	static vec3_t prev_org;
+	static qboolean have_prev = false;
+	static qboolean swinging = false;
+	vec3_t org, ang, delta;
+	float speed;
+
+	if( !VR_IsActive() || !vr_melee_swing.value || host.frametime <= 0.0f )
+	{
+		have_prev = false;
+		swinging = false;
+		return false;
+	}
+
+	if( !VR_GetHandWorld( 1, org, ang ))
+	{
+		have_prev = false;
+		return false;
+	}
+
+	if( !have_prev )
+	{
+		VectorCopy( org, prev_org );
+		have_prev = true;
+		return false;
+	}
+
+	VectorSubtract( org, prev_org, delta );
+	VectorCopy( org, prev_org );
+
+	speed = VectorLength( delta ) / (float)host.frametime;	// HL units/sec
+
+	if( !swinging && speed >= vr_melee_speed.value )
+	{
+		swinging = true;
+		VR_Haptic( 1, 0.09f, 0.0f, 0.85f );
+		return true;
+	}
+
+	// Hysteresis - require a clear slowdown before another swing counts.
+	if( swinging && speed < vr_melee_speed.value * 0.5f )
+		swinging = false;
+
+	return false;
+}
+
+/*
+================
+VR_GetMeleeAttack
+
+True on the frame a melee swing should register as an attack. Only active
+while actually holding a melee weapon, so normal guns are unaffected.
+Consumed by CL_CreateCmd, which ORs IN_ATTACK into the usercmd - the same
+button the mod already handles, so no game-DLL knowledge is needed.
+================
+*/
+qboolean VR_GetMeleeAttack( void )
+{
+	if( !VR_HoldingMelee( ))
+		return false;
+
+	return VR_UpdateMelee();
+}
+
+/*
+=================================================================
+	VR world overlays - laser sight and grenade arc
+
+Drawn through the TriAPI from pfnDrawNormalTriangles, which ref_gl calls
+during the 3D pass with the world transform already set. Engine-side, so it
+is mod-agnostic.
+
+Camera-facing ribbons rather than GL lines: a 1px line is nearly invisible
+at VR resolutions and shimmers badly under reprojection, while a quad strip
+turned to face the eye stays solid and reads at distance.
+=================================================================
+*/
+
+/*
+================
+VR_GetWeaponAim
+
+Where the weapon is actually pointing, in world space.
+
+Deliberately does NOT apply VR_CalibrateWeaponAngles: that is a correction
+for the MESH's rest pose, which exists so the model lines up with the
+controller's aim pose. The aim pose is already the true pointing direction,
+so folding the mesh correction in here would bend aim away from it by
+whatever cosmetic angle the model happened to need.
+
+Includes two-handed stabilisation, so a shouldered weapon shoots where the
+steadied barrel points.
+================
+*/
+qboolean VR_AimFromWeapon( void )
+{
+	return ( VR_IsActive() && vr_aim_from_weapon.value != 0.0f ) ? true : false;
+}
+
+/*
+================
+VR_GetAimAngles
+
+Angles to put in the usercmd so the shot LANDS where the weapon is pointing.
+
+The mod's weapon code fires from CBasePlayer::GetGunPosition(), which in
+stock Half-Life is pev->origin + pev->view_ofs - the player's eye. That is
+game-DLL code, so an engine-only VR layer cannot move the shot's origin.
+Both reference ports solved it by overriding GetGunPosition() in a forked
+hlsdk (HLVR player.cpp:4763 returns the muzzle attachment, Lambda1VR
+player.cpp:371 returns the controller position). That is not an option here:
+the whole point is to play ARBITRARY mods with their own custom content,
+and a forked hl.dll only fixes the one mod it was built for.
+
+So instead of moving the origin, aim the origin we are stuck with:
+
+  1. trace from the real muzzle along the real barrel -> impact point P
+     (the same trace the laser sight draws, so they agree by construction)
+  2. hand back the angles from the EYE to P
+
+The bullet still leaves the eye, but it now converges on exactly the point
+the gun is pointed at, so shots land on the laser dot. What remains is
+cosmetic: server-spawned tracers still originate at the head.
+
+Falls back to the plain weapon angles if the player entity is not available.
+================
+*/
+qboolean VR_GetAimAngles( vec3_t out_ang )
+{
+	vec3_t muzzle, ang, fwd, target, eye, dir, va;
+	cl_entity_t *player;
+	pmtrace_t tr;
+
+	if( !VR_GetWeaponAim( muzzle, ang ))
+		return false;
+
+	AngleVectors( ang, fwd, NULL, NULL );
+
+	player = CL_GetLocalPlayer();
+	if( !player )
+	{
+		VectorCopy( ang, out_ang );
+		return true;
+	}
+
+	// Where the barrel is actually pointed.
+	VectorMA( muzzle, vr_laser_range.value, fwd, target );
+	tr = CL_TraceLine( muzzle, target, PM_STUDIO_BOX );
+	VectorCopy( tr.endpos, target );
+
+	// The eye the game will fire from.
+	VectorAdd( player->origin, cl.viewheight, eye );
+
+	VectorSubtract( target, eye, dir );
+	if( VectorNormalizeLength( dir ) == 0.0f )
+	{
+		VectorCopy( ang, out_ang );
+		return true;
+	}
+
+	VectorAngles( dir, va );
+
+	// VectorAngles is pitch-positive-up; usercmd view angles follow the
+	// AngleVectors convention where positive pitch is DOWN.
+	out_ang[PITCH] = -va[PITCH];
+	out_ang[YAW]   = va[YAW];
+	out_ang[ROLL]  = 0.0f;
+
+	return true;
+}
+
+qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang )
+{
+	vec3_t org, ang;
+
+	if( !VR_GetHandWorld( 1, org, ang ))
+		return false;
+
+	VR_ApplyTwoHandedAim( org, ang );
+
+	if( out_org ) VectorCopy( org, out_org );
+	if( out_ang ) VectorCopy( ang, out_ang );
+	return true;
+}
+
+// Weapon muzzle in world space, for both the laser and the arc origin.
+static qboolean VR_GetMuzzle( vec3_t out_org, vec3_t out_fwd )
+{
+	vec3_t ang;
+
+	if( !VR_GetWeaponAim( out_org, ang ))
+		return false;
+
+	AngleVectors( ang, out_fwd, NULL, NULL );
+	return true;
+}
+
+// One camera-facing quad between two points. refState.vieworg is the
+// engine-side mirror of the renderer's view origin - RI lives in ref_gl and
+// is not visible from here.
+static void VR_RibbonSegment( const vec3_t a, const vec3_t b, float halfwidth )
+{
+	vec3_t dir, to_eye, side, p;
+
+	VectorSubtract( b, a, dir );
+	if( VectorNormalizeLength( dir ) == 0.0f )
+		return;
+
+	VectorSubtract( a, refState.vieworg, to_eye );
+	CrossProduct( dir, to_eye, side );
+	if( VectorNormalizeLength( side ) == 0.0f )
+		return;
+	VectorScale( side, halfwidth, side );
+
+	VectorAdd( a, side, p );      ref.dllFuncs.Vertex3fv( p );
+	VectorSubtract( a, side, p ); ref.dllFuncs.Vertex3fv( p );
+	VectorSubtract( b, side, p ); ref.dllFuncs.Vertex3fv( p );
+	VectorAdd( b, side, p );      ref.dllFuncs.Vertex3fv( p );
+}
+
+// Small camera-facing quad centred on a point, for impact/landing markers.
+static void VR_Marker( const vec3_t at, float radius )
+{
+	vec3_t right, up, p, vfwd;
+
+	AngleVectors( refState.viewangles, vfwd, right, up );
+	VectorScale( right, radius, right );
+	VectorScale( up, radius, up );
+
+	VectorAdd( at, right, p ); VectorAdd( p, up, p );        ref.dllFuncs.Vertex3fv( p );
+	VectorSubtract( at, right, p ); VectorAdd( p, up, p );   ref.dllFuncs.Vertex3fv( p );
+	VectorSubtract( at, right, p ); VectorSubtract( p, up, p ); ref.dllFuncs.Vertex3fv( p );
+	VectorAdd( at, right, p ); VectorSubtract( p, up, p );   ref.dllFuncs.Vertex3fv( p );
+}
+
+static void VR_DrawLaser( void )
+{
+	vec3_t org, fwd, end;
+	pmtrace_t tr;
+	float r, g, b;
+
+	if( vr_laser.value <= 0.0f || !VR_GetMuzzle( org, fwd ))
+		return;
+
+	VectorMA( org, vr_laser_range.value, fwd, end );
+	tr = CL_TraceLine( org, end, PM_STUDIO_BOX );
+	VectorCopy( tr.endpos, end );
+
+	r = vr_laser_r.value; g = vr_laser_g.value; b = vr_laser_b.value;
+
+	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+
+	if( vr_laser.value >= 2.0f )
+	{
+		ref.dllFuncs.Color4f( r, g, b, vr_laser_alpha.value );
+		ref.dllFuncs.Begin( TRI_QUADS );
+		VR_RibbonSegment( org, end, vr_laser_width.value );
+		ref.dllFuncs.End();
+	}
+
+	// Impact dot always drawn, and drawn solid - it is the part that
+	// actually tells you where the shot goes.
+	ref.dllFuncs.Color4f( r, g, b, 1.0f );
+	ref.dllFuncs.Begin( TRI_QUADS );
+	VR_Marker( end, vr_laser_dot.value );
+	ref.dllFuncs.End();
+}
+
+/*
+================
+VR_DrawArc
+
+Ballistic prediction for a thrown grenade. Steps the same simple integration
+the server uses for a MOVETYPE_TOSS entity - constant gravity, straight
+segments between samples - and traces each segment against the world, so the
+arc terminates exactly where the grenade would first hit something.
+
+Only drawn while actually holding a throwable, otherwise it is visual noise.
+================
+*/
+static qboolean VR_HoldingThrowable( void )
+{
+	const char *name;
+
+	if( !clgame.viewent.model || !clgame.viewent.model->name[0] )
+		return false;
+
+	name = clgame.viewent.model->name;
+
+	// Stock Half-Life throwables. Matched by viewmodel name so no game-DLL
+	// knowledge is needed; unknown mods simply will not match.
+	return Q_stristr( name, "v_grenade" ) != NULL
+	    || Q_stristr( name, "v_satchel" ) != NULL
+	    || Q_stristr( name, "v_tripmine" ) != NULL
+	    || Q_stristr( name, "v_squeak" ) != NULL;
+}
+
+static void VR_DrawArc( void )
+{
+	vec3_t org, fwd, pos, vel, next;
+	int i, steps;
+	float dt, grav;
+
+	if( vr_arc.value <= 0.0f || !VR_HoldingThrowable() || !VR_GetMuzzle( org, fwd ))
+		return;
+
+	steps = bound( 4, (int)vr_arc_steps.value, 256 );
+	dt    = bound( 0.005f, vr_arc_step_time.value, 0.5f );
+	grav  = vr_arc_gravity.value;
+
+	VectorCopy( org, pos );
+	VectorScale( fwd, vr_arc_speed.value, vel );
+
+	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+	ref.dllFuncs.Color4f( vr_arc_r.value, vr_arc_g.value, vr_arc_b.value, vr_arc_alpha.value );
+	ref.dllFuncs.Begin( TRI_QUADS );
+
+	for( i = 0; i < steps; i++ )
+	{
+		pmtrace_t tr;
+
+		vel[2] -= grav * dt;
+		VectorMA( pos, dt, vel, next );
+
+		tr = CL_TraceLine( pos, next, PM_STUDIO_IGNORE );
+
+		VR_RibbonSegment( pos, tr.endpos, vr_arc_width.value );
+
+		if( tr.fraction < 1.0f )
+		{
+			VectorCopy( tr.endpos, pos );
+			break;
+		}
+
+		VectorCopy( next, pos );
+	}
+
+	ref.dllFuncs.End();
+
+	// Landing marker, brighter than the ribbon so the endpoint is obvious.
+	ref.dllFuncs.Color4f( vr_arc_r.value, vr_arc_g.value, vr_arc_b.value, 1.0f );
+	ref.dllFuncs.Begin( TRI_QUADS );
+	VR_Marker( pos, 2.0f );
+	ref.dllFuncs.End();
+}
+
+/*
+================
+VR_DrawOverlays
+
+Called from pfnDrawNormalTriangles (ref_common.c) each eye, inside the 3D
+pass. Everything drawn here is additive and depth-tested against the world.
+================
+*/
+void VR_DrawOverlays( void )
+{
+	if( !VR_IsActive() )
+		return;
+
+	// Nothing to aim with when no weapon is up.
+	if( cl.local.viewmodel == 0 )
+		return;
+
+	VR_DrawArc();
+	VR_DrawLaser();
 }
 
 /*
@@ -1507,6 +2177,36 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_hand_pitch_offset );
 	Cvar_RegisterVariable( &vr_hand_yaw_offset );
 	Cvar_RegisterVariable( &vr_hand_roll_offset );
+	Cvar_RegisterVariable( &vr_twohand );
+	Cvar_RegisterVariable( &vr_twohand_min );
+	Cvar_RegisterVariable( &vr_twohand_max );
+	Cvar_RegisterVariable( &vr_twohand_radius );
+	Cvar_RegisterVariable( &vr_twohand_barrel );
+	Cvar_RegisterVariable( &vr_twohand_smooth );
+	Cvar_RegisterVariable( &vr_laser );
+	Cvar_RegisterVariable( &vr_laser_r );
+	Cvar_RegisterVariable( &vr_laser_g );
+	Cvar_RegisterVariable( &vr_laser_b );
+	Cvar_RegisterVariable( &vr_laser_alpha );
+	Cvar_RegisterVariable( &vr_laser_width );
+	Cvar_RegisterVariable( &vr_laser_dot );
+	Cvar_RegisterVariable( &vr_laser_range );
+	Cvar_RegisterVariable( &vr_arc );
+	Cvar_RegisterVariable( &vr_arc_speed );
+	Cvar_RegisterVariable( &vr_arc_gravity );
+	Cvar_RegisterVariable( &vr_arc_steps );
+	Cvar_RegisterVariable( &vr_arc_step_time );
+	Cvar_RegisterVariable( &vr_arc_width );
+	Cvar_RegisterVariable( &vr_arc_r );
+	Cvar_RegisterVariable( &vr_arc_g );
+	Cvar_RegisterVariable( &vr_arc_b );
+	Cvar_RegisterVariable( &vr_arc_alpha );
+	Cvar_RegisterVariable( &vr_melee_pitch_offset );
+	Cvar_RegisterVariable( &vr_melee_swing );
+	Cvar_RegisterVariable( &vr_melee_speed );
+	Cvar_RegisterVariable( &vr_haptics );
+	Cvar_RegisterVariable( &vr_aim_from_weapon );
+	Cvar_RegisterVariable( &vr_flashlight_hand );
 	Cvar_RegisterVariable( &vr_weapon_pitch_offset );
 	Cvar_RegisterVariable( &vr_weapon_yaw_offset );
 	Cvar_RegisterVariable( &vr_weapon_roll_offset );
@@ -1877,12 +2577,17 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/right/input/b/click",		// CROUCH
 			"/user/hand/right/input/trigger/value",		// ATTACK
 			"/user/hand/right/input/squeeze/value",		// ATTACK2
-			"/user/hand/left/input/squeeze/value",		// USE
+			// USE moved off the left grip so the grip can be a dedicated
+			// GRAB. Left trigger was unused in every profile, and
+			// trigger-to-interact / grip-to-grab is the conventional VR
+			// mapping anyway.
+			"/user/hand/left/input/trigger/value",		// USE
 			"/user/hand/left/input/x/click",		// RELOAD
 			"/user/hand/left/input/y/click",		// FLASHLIGHT
 			"/user/hand/right/input/thumbstick/click",	// NEXTWEAP
 			"/user/hand/left/input/thumbstick/click",	// PREVWEAP
 			"/user/hand/left/input/menu/click",		// MENU
+			"/user/hand/left/input/squeeze/value",		// OFFGRIP
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -1896,12 +2601,13 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/right/input/b/click",
 			"/user/hand/right/input/trigger/value",
 			"/user/hand/right/input/squeeze/value",
-			"/user/hand/left/input/squeeze/value",
+			"/user/hand/left/input/trigger/value",		// USE
 			"/user/hand/left/input/a/click",
 			"/user/hand/left/input/b/click",
 			"/user/hand/right/input/thumbstick/click",
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/system/click",
+			"/user/hand/left/input/squeeze/value",		// OFFGRIP
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -1915,12 +2621,13 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/trackpad/click",
 			"/user/hand/right/input/trigger",
 			"/user/hand/right/input/squeeze/click",
-			"/user/hand/left/input/squeeze/click",
+			"/user/hand/left/input/trigger",		// USE
 			NULL,
 			NULL,
 			"/user/hand/right/input/thumbstick/click",
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/menu/click",
+			"/user/hand/left/input/squeeze/click",		// OFFGRIP
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -1934,12 +2641,13 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/trackpad/click",
 			"/user/hand/right/input/trigger/value",
 			"/user/hand/right/input/squeeze/click",
-			"/user/hand/left/input/squeeze/click",
+			"/user/hand/left/input/trigger/value",		// USE
 			NULL,
 			NULL,
 			NULL,
 			NULL,
 			"/user/hand/left/input/menu/click",
+			"/user/hand/left/input/squeeze/click",		// OFFGRIP
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -1949,7 +2657,7 @@ static const vr_profile_t vr_profiles[] =
 static qboolean VR_SuggestProfile( const vr_profile_t *p )
 {
 	XrInteractionProfileSuggestedBinding sb = { XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
-	XrActionSuggestedBinding b[VRA_COUNT + 4];	// +4: aim_l/aim_r/grip_l/grip_r
+	XrActionSuggestedBinding b[VRA_COUNT + 6];	// +6: aim_l/r, grip_l/r, haptic_l/r
 	uint32_t n = 0;
 	int i;
 	XrResult res;
@@ -1967,6 +2675,11 @@ static qboolean VR_SuggestProfile( const vr_profile_t *p )
 	if( p->aim_r )  { b[n].action = vr.act_hand_pose; b[n].binding = VR_Path( p->aim_r );  n++; }
 	if( p->grip_l ) { b[n].action = vr.act_hand_grip; b[n].binding = VR_Path( p->grip_l ); n++; }
 	if( p->grip_r ) { b[n].action = vr.act_hand_grip; b[n].binding = VR_Path( p->grip_r ); n++; }
+
+	// Haptic output. The standard path is the same across every profile, so
+	// it is not part of the per-profile table.
+	b[n].action = vr.act_haptic[0]; b[n].binding = VR_Path( "/user/hand/left/output/haptic" );  n++;
+	b[n].action = vr.act_haptic[1]; b[n].binding = VR_Path( "/user/hand/right/output/haptic" ); n++;
 
 	sb.interactionProfile     = VR_Path( p->profile );
 	sb.suggestedBindings      = b;
@@ -2051,6 +2764,23 @@ static qboolean VR_InitInput( void )
 	aci.countSubactionPaths = 2;
 	aci.subactionPaths      = vr.hand_path;
 	XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.act_hand_grip ), "xrCreateAction handgrip" );
+
+	// Haptic output, one action per hand. Separate actions rather than one
+	// with subaction paths, so a buzz can be sent to a specific controller
+	// without having to plumb subaction paths through every call site.
+	memset( &aci, 0, sizeof( aci ));
+	aci.type       = XR_TYPE_ACTION_CREATE_INFO;
+	aci.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+	Q_strncpy( aci.actionName, "haptic_left", sizeof( aci.actionName ));
+	Q_strncpy( aci.localizedActionName, "Haptic Left", sizeof( aci.localizedActionName ));
+	XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.act_haptic[0] ), "xrCreateAction haptic_left" );
+
+	memset( &aci, 0, sizeof( aci ));
+	aci.type       = XR_TYPE_ACTION_CREATE_INFO;
+	aci.actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT;
+	Q_strncpy( aci.actionName, "haptic_right", sizeof( aci.actionName ));
+	Q_strncpy( aci.localizedActionName, "Haptic Right", sizeof( aci.localizedActionName ));
+	XR_CHECK( xrCreateAction( vr.action_set, &aci, &vr.act_haptic[1] ), "xrCreateAction haptic_right" );
 
 	for( i = 0; i < (int)( sizeof( vr_profiles ) / sizeof( vr_profiles[0] )); i++ )
 	{

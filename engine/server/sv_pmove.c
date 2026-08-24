@@ -19,6 +19,9 @@ GNU General Public License for more details.
 #include "pm_local.h"
 #include "event_flags.h"
 #include "studio.h"
+#if !XASH_DEDICATED
+#include "client/vr/vr_openxr.h"	// PCVR fork: fire from the controller
+#endif
 
 static qboolean has_update = false;
 static void SV_GetTrueOrigin( sv_client_t *cl, int edictnum, vec3_t origin );
@@ -992,8 +995,53 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	svgame.globals->time = cl->timebase;
 	svgame.globals->frametime = frametime;
 
-	// run post-think
-	svgame.dllFuncs.pfnPlayerPostThink( clent );
+	// PCVR fork: fire from the CONTROLLER, not the player's eye.
+	//
+	// Stock CBasePlayer::GetGunPosition() returns pev->origin + pev->view_ofs,
+	// and every weapon traces from it (glock.cpp, crowbar.cpp, gauss.cpp, ...).
+	// That is why shots came out of the player's face. Both reference VR ports
+	// fixed it by overriding GetGunPosition() in a forked hlsdk - useless here,
+	// because a forked hl.dll only fixes the single mod it was built for, and
+	// the whole point is to play arbitrary mods with their own game code.
+	//
+	// entvars_t is ENGINE memory though: the game DLL reads view_ofs, it does
+	// not own it. So point view_ofs at the controller for exactly the call
+	// that fires the weapon (PostThink -> ItemPostFrame) and restore it
+	// immediately. Stock hl.dll then traces from the muzzle with no changes
+	// to it at all, and because nothing is added to the network protocol,
+	// non-VR clients still connect normally.
+	//
+	// Local client only: on a listen server this same function runs for every
+	// connected player, and remote desktop players must be left alone.
+	// Restored right after the call so networking, prediction and the client's
+	// own view never observe the substituted value.
+	{
+		vec3_t saved_view_ofs;
+		qboolean vr_muzzle = false;
+
+#if !XASH_DEDICATED
+		if( NET_IsLocalAddress( cl->netchan.remote_address ) && VR_IsActive( ))
+		{
+			vec3_t muzzle;
+
+			if( VR_GetWeaponAim( muzzle, NULL ))
+			{
+				VectorCopy( clent->v.view_ofs, saved_view_ofs );
+				VectorSubtract( muzzle, clent->v.origin, clent->v.view_ofs );
+				vr_muzzle = true;
+			}
+		}
+#endif
+
+		// run post-think
+		svgame.dllFuncs.pfnPlayerPostThink( clent );
+
+#if !XASH_DEDICATED
+		if( vr_muzzle )
+			VectorCopy( saved_view_ofs, clent->v.view_ofs );
+#endif
+	}
+
 	svgame.dllFuncs.pfnCmdEnd( clent );
 
 	if( !FBitSet( cl->flags, FCL_FAKECLIENT ))

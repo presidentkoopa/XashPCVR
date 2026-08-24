@@ -23,6 +23,7 @@ GNU General Public License for more details.
 #include "studio.h"
 #include "wadfile.h"	// acess decal size
 #include "sound.h"
+#include "vr/vr_openxr.h"	// PCVR fork: off-hand flashlight mount
 
 /*
 ==============================================================
@@ -2610,9 +2611,24 @@ static void CL_UpdateFlashlight( cl_entity_t *ent )
 
 	if( ent->index == ( cl.playernum + 1 ))
 	{
-		// local player case
-		AngleVectors( cl.viewangles, forward, NULL, NULL );
-		VectorCopy( cl.viewheight, view_ofs );
+		// PCVR fork: mount the flashlight on the off hand instead of the
+		// head, so it can be aimed independently of where you are looking -
+		// the single biggest quality-of-life win in a dark GoldSrc map.
+		// Falls through to the normal head-mounted path when VR is off, the
+		// off hand is not tracked, or vr_flashlight_hand is 0.
+		vec3_t hand_org, hand_fwd;
+
+		if( VR_GetFlashlightSource( hand_org, hand_fwd ))
+		{
+			VectorCopy( hand_fwd, forward );
+			VectorSubtract( hand_org, ent->origin, view_ofs );
+		}
+		else
+		{
+			// local player case
+			AngleVectors( cl.viewangles, forward, NULL, NULL );
+			VectorCopy( cl.viewheight, view_ofs );
+		}
 	}
 	else	// non-local player case
 	{
