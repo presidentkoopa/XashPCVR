@@ -813,6 +813,10 @@ static void CL_CreateCmd( void )
 
 		// turn first: it rotates the play space, and the view angles below are
 		// composed against that rotation
+		// Fire ray first: everything else this frame (laser, usercmd aim,
+		// muzzle origin) reads the cached result so they cannot diverge.
+		VR_UpdateFireRay();
+
 		VR_UpdateTurn( host.frametime );
 
 		VR_OverrideViewAngles( cmd->viewangles );

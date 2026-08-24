@@ -264,6 +264,33 @@ static CVAR_DEFINE_AUTO( vr_melee_speed, "220", FCVAR_ARCHIVE, "melee: hand spee
 // counter-rotated by the head/weapon yaw difference to cancel that out.
 static CVAR_DEFINE_AUTO( vr_aim_from_weapon, "1", FCVAR_ARCHIVE, "fire along the weapon instead of the head" );
 
+// Master switch for the view_ofs substitution that moves the shot ORIGIN to
+// the muzzle (sv_pmove.c and pfnLocalPlayerViewheight). Separate from
+// vr_aim_from_weapon, which only changes DIRECTION, so the two can be
+// bisected independently when something breaks.
+static CVAR_DEFINE_AUTO( vr_weapon_origin, "1", FCVAR_ARCHIVE, "shot ORIGIN at the muzzle (0 = stock, from the eye)" );
+
+// One-shot dump of the actual numbers going into aim, to vr_diag.log.
+static CVAR_DEFINE_AUTO( vr_diag_aim, "0", 0, "log muzzle/aim/overlay state for N frames" );
+
+// Aim pitch, SEPARATE from the mesh pitch (vr_weapon_pitch_offset).
+//
+// Two attempts to derive aim from the mesh correction both failed live:
+// using the raw pose put the laser 45 deg above the barrel, and applying the
+// mesh correction on top made it 90 deg. Each application of the mesh's -45
+// rotated aim UP by 45, so aim needs the opposite sign, not the same value.
+//
+// The mesh correction and the aim correction are simply not the same number:
+// the mesh one rotates the MODEL so it looks seated in the hand, and the
+// barrel sits at its own angle WITHIN that model. Tying them together was
+// the mistake. This is measured off the laser and tuned on its own.
+// Derive the firing line from the model's muzzle attachment (exact,
+// per-weapon, no tuning) rather than a hand-tuned angle. 0 falls back to
+// the vr_aim_*_offset values below.
+static CVAR_DEFINE_AUTO( vr_aim_attachment, "1", FCVAR_ARCHIVE, "aim from the weapon model's muzzle attachment" );
+static CVAR_DEFINE_AUTO( vr_aim_pitch_offset, "45", FCVAR_ARCHIVE, "aim pitch correction, degrees (tune until the laser lies on the barrel)" );
+static CVAR_DEFINE_AUTO( vr_aim_yaw_offset,   "0",  FCVAR_ARCHIVE, "aim yaw correction, degrees" );
+
 // Haptics. Value doubles as a master gain, so 0 disables and 0.5 halves.
 static CVAR_DEFINE_AUTO( vr_haptics, "1", FCVAR_ARCHIVE, "haptic feedback strength, 0 = off" );
 
@@ -1758,6 +1785,121 @@ qboolean VR_AimFromWeapon( void )
 	return ( VR_IsActive() && vr_aim_from_weapon.value != 0.0f ) ? true : false;
 }
 
+qboolean VR_WeaponOriginActive( void )
+{
+	return ( VR_IsActive() && vr_weapon_origin.value != 0.0f ) ? true : false;
+}
+
+/*
+================
+VR_UpdateFireRay / VR_GetFireRay
+
+THE single source of truth for where the weapon shoots.
+
+Previously the laser sight and the usercmd each called VR_GetWeaponAim
+separately. They were supposed to agree by construction, and did not: the
+laser rendered ~90 degrees off the actual firing line, because the two reads
+happened at different points in the frame and did not see the same
+calibration state.
+
+Now it is computed ONCE per client frame and cached. The laser draws this
+ray, and the usercmd is built from this ray. They cannot diverge, whatever
+the calibration does - if aim is wrong, the laser is visibly wrong in exactly
+the same way, which makes it a real sight instead of a decoration that lies.
+================
+*/
+static vec3_t vr_fire_org;
+static vec3_t vr_fire_ang;
+static qboolean vr_fire_valid = false;
+
+void VR_UpdateFireRay( void )
+{
+	vec3_t org, ang;
+
+	vr_fire_valid = false;
+
+	if( !VR_IsActive() || !VR_GetHandWorld( 1, org, ang ))
+		return;
+
+	VR_ApplyTwoHandedAim( org, ang );
+
+	// PREFERRED: take the firing line straight off the weapon model's own
+	// MUZZLE ATTACHMENT, which ref_gl fills in world space every frame
+	// (gl_studio.c:1227). This is what HLVR does (VRHelper.cpp GetGunPosition
+	// / GetAutoaimVector via viewent->attachment[]).
+	//
+	// Why not a tuned angle: reported live that no single pitch value could
+	// be made to line up. That is the tell that the error is NOT a constant
+	// pitch. The barrel sits inside the model at its own arbitrary
+	// orientation - generally pitch AND yaw AND roll - so a pitch-only
+	// correction can never converge, and every weapon would need different
+	// numbers anyway. The attachment is authored into each model, so it is
+	// exact and it is per-weapon for free.
+	//
+	// attachment[0] is the muzzle; attachment[1], where present, is a second
+	// point down the barrel, so [0]->[1] is the true bore line.
+	if( vr_aim_attachment.value && clgame.viewent.model )
+	{
+		const cl_entity_t *ve = &clgame.viewent;
+		vec3_t bore;
+
+		VectorSubtract( ve->attachment[1], ve->attachment[0], bore );
+
+		if( VectorLength( bore ) > 0.1f )
+		{
+			vec3_t va;
+
+			VectorNormalize( bore );
+			VectorAngles( bore, va );
+
+			// VectorAngles is pitch-positive-up; entity/usercmd angles use
+			// AngleVectors' positive-down convention.
+			ang[PITCH] = -va[PITCH];
+			ang[YAW]   = va[YAW];
+
+			// Muzzle itself is the shot origin, so tracers and decals leave
+			// the barrel rather than the grip.
+			VectorCopy( ve->attachment[0], org );
+		}
+	}
+
+	// Manual fallback for models with no usable attachments.
+	if( vr_aim_pitch_offset.value != 0.0f || vr_aim_yaw_offset.value != 0.0f )
+	{
+		vec3_t cal = { vr_aim_pitch_offset.value, vr_aim_yaw_offset.value, 0.0f };
+		VR_ApplyMeshCalibration( ang, cal );
+	}
+
+	VectorCopy( org, vr_fire_org );
+	VectorCopy( ang, vr_fire_ang );
+	vr_fire_valid = true;
+
+	if( vr_diag_aim.value > 0.0f )
+	{
+		vec3_t fwd;
+
+		Cvar_DirectSet( &vr_diag_aim, va( "%d", (int)vr_diag_aim.value - 1 ));
+		AngleVectors( vr_fire_ang, fwd, NULL, NULL );
+		VR_DiagPrintf( "FIRERAY org=(%.1f %.1f %.1f) ang=(p%.1f y%.1f r%.1f) "
+			"fwd=(%.2f %.2f %.2f) wpitch=%.0f melee=%d origin_ovr=%d\n",
+			vr_fire_org[0], vr_fire_org[1], vr_fire_org[2],
+			vr_fire_ang[PITCH], vr_fire_ang[YAW], vr_fire_ang[ROLL],
+			fwd[0], fwd[1], fwd[2],
+			vr_weapon_pitch_offset.value, VR_HoldingMelee() ? 1 : 0,
+			VR_WeaponOriginActive() ? 1 : 0 );
+	}
+}
+
+qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang )
+{
+	if( !vr_fire_valid )
+		return false;
+
+	if( out_org ) VectorCopy( vr_fire_org, out_org );
+	if( out_ang ) VectorCopy( vr_fire_ang, out_ang );
+	return true;
+}
+
 /*
 ================
 VR_GetAimAngles
@@ -1834,10 +1976,33 @@ qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang )
 {
 	vec3_t org, ang;
 
+	// Delegates to the cached per-frame fire ray so every consumer - laser,
+	// arc, usercmd, muzzle origin - reads the exact same numbers. See
+	// VR_UpdateFireRay for why they must not be recomputed independently.
+	if( VR_GetFireRay( out_org, out_ang ))
+		return true;
+
 	if( !VR_GetHandWorld( 1, org, ang ))
 		return false;
 
 	VR_ApplyTwoHandedAim( org, ang );
+
+	// APPLY the mesh correction, and that is the whole point.
+	//
+	// This was deliberately skipped at first, on the theory that the
+	// correction was purely cosmetic - that it only nudged the model into
+	// place while the raw aim pose remained the true pointing direction.
+	// Live testing proved that wrong: with the correction at -45, the laser
+	// sight and every bullet went 45 degrees UP from the barrel of the gun
+	// you could actually see.
+	//
+	// The correction is what rotates the visible weapon into alignment, so
+	// the direction the player sees the barrel pointing IS the calibrated
+	// forward. Aim must come from the same angles the model is drawn with,
+	// or the gun lies about where it shoots. Deriving it from the shared
+	// value rather than hardcoding a second 45 also means the two can never
+	// drift apart when the mesh angle is retuned.
+	VR_CalibrateWeaponAngles( ang );
 
 	if( out_org ) VectorCopy( org, out_org );
 	if( out_ang ) VectorCopy( ang, out_ang );
@@ -1854,6 +2019,31 @@ static qboolean VR_GetMuzzle( vec3_t out_org, vec3_t out_fwd )
 
 	AngleVectors( ang, out_fwd, NULL, NULL );
 	return true;
+}
+
+/*
+================
+VR_BindOverlayTexture
+
+TriBegin (ref/gl/gl_triapi.c:81) only calls glBegin - it sets NO texture
+state at all. Whatever texture happened to be bound from the previous draw
+is what gets modulated by our colour, so with additive blending and a dark
+world texture the overlay came out invisible. Reported live as the laser
+sight simply not being findable.
+
+Binding the engine's built-in flat white gives the colour something to
+multiply against, so the ribbons render as their actual colour.
+================
+*/
+static void VR_BindOverlayTexture( void )
+{
+	static int white = 0;
+
+	if( !white )
+		white = ref.dllFuncs.GL_FindTexture( REF_WHITE_TEXTURE );
+
+	if( white )
+		ref.dllFuncs.GL_Bind( XASH_TEXTURE0, white );
 }
 
 // One camera-facing quad between two points. refState.vieworg is the
@@ -1910,6 +2100,7 @@ static void VR_DrawLaser( void )
 	r = vr_laser_r.value; g = vr_laser_g.value; b = vr_laser_b.value;
 
 	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+	VR_BindOverlayTexture();
 
 	if( vr_laser.value >= 2.0f )
 	{
@@ -1973,6 +2164,7 @@ static void VR_DrawArc( void )
 	VectorScale( fwd, vr_arc_speed.value, vel );
 
 	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+	VR_BindOverlayTexture();
 	ref.dllFuncs.Color4f( vr_arc_r.value, vr_arc_g.value, vr_arc_b.value, vr_arc_alpha.value );
 	ref.dllFuncs.Begin( TRI_QUADS );
 
@@ -2015,6 +2207,19 @@ pass. Everything drawn here is additive and depth-tested against the world.
 */
 void VR_DrawOverlays( void )
 {
+	if( vr_diag_aim.value > 0.0f )
+	{
+		vec3_t m, a;
+		qboolean got = VR_GetWeaponAim( m, a );
+
+		Cvar_DirectSet( &vr_diag_aim, va( "%d", (int)vr_diag_aim.value - 1 ));
+		VR_DiagPrintf( "OVERLAY called: active=%d viewmodel=%d aim=%d "
+			"muzzle=(%.1f %.1f %.1f) ang=(p%.1f y%.1f r%.1f) laser=%.0f melee=%d\n",
+			VR_IsActive() ? 1 : 0, cl.local.viewmodel, got ? 1 : 0,
+			m[0], m[1], m[2], a[PITCH], a[YAW], a[ROLL],
+			vr_laser.value, VR_HoldingMelee() ? 1 : 0 );
+	}
+
 	if( !VR_IsActive() )
 		return;
 
@@ -2206,6 +2411,11 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_melee_speed );
 	Cvar_RegisterVariable( &vr_haptics );
 	Cvar_RegisterVariable( &vr_aim_from_weapon );
+	Cvar_RegisterVariable( &vr_weapon_origin );
+	Cvar_RegisterVariable( &vr_diag_aim );
+	Cvar_RegisterVariable( &vr_aim_attachment );
+	Cvar_RegisterVariable( &vr_aim_pitch_offset );
+	Cvar_RegisterVariable( &vr_aim_yaw_offset );
 	Cvar_RegisterVariable( &vr_flashlight_hand );
 	Cvar_RegisterVariable( &vr_weapon_pitch_offset );
 	Cvar_RegisterVariable( &vr_weapon_yaw_offset );

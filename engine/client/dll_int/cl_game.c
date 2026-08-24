@@ -37,6 +37,7 @@ GNU General Public License for more details.
 #include "vgui_draw.h"
 #include "sound.h"		// SND_STOP_LOOPING
 #include "platform/platform.h"
+#include "vr/vr_openxr.h"	// PCVR fork: client-side muzzle position for predicted weapon effects
 
 #define MAX_LINELENGTH	80
 #define TEXT_MSGNAME	"TextMessage"
@@ -2416,7 +2417,36 @@ pfnLocalPlayerViewheight
 */
 static void GAME_EXPORT pfnLocalPlayerViewheight( float *view_ofs )
 {
-	if( view_ofs ) VectorCopy( cl.viewheight, view_ofs );
+	if( !view_ofs )
+		return;
+
+	// PCVR fork: client-side muzzle position, the counterpart to the
+	// server-side view_ofs substitution in sv_pmove.c (see PCVR_LOG
+	// FINDING 017).
+	//
+	// The server fix alone is not enough. Half-Life predicts the local
+	// player's weapon effects in client.dll: EV_GetGunPosition() builds the
+	// trace start as player origin + this view height, and that is what
+	// places tracers, muzzle flashes and bullet impact decals. Left stock,
+	// the shot was authoritative from the controller but still *drew* from
+	// the player's eyes - reported live as decals coming out of the face.
+	//
+	// Returning the offset to the muzzle instead makes the predicted effects
+	// agree with the server's trace. Same reasoning as the server side: the
+	// mod only reads this value, the engine owns it, so no game DLL changes.
+	if( VR_WeaponOriginActive( ))
+	{
+		vec3_t muzzle;
+		cl_entity_t *player = CL_GetLocalPlayer();
+
+		if( player && VR_GetWeaponAim( muzzle, NULL ))
+		{
+			VectorSubtract( muzzle, player->origin, view_ofs );
+			return;
+		}
+	}
+
+	VectorCopy( cl.viewheight, view_ofs );
 }
 
 /*

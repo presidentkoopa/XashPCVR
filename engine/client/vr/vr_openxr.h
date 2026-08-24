@@ -170,6 +170,15 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang );
 // True when the equipped viewmodel is a melee weapon (crowbar and friends).
 qboolean VR_HoldingMelee( void );
 
+// Compute the frame's fire ray once (call early in CL_CreateCmd). Every
+// consumer then reads it via VR_GetFireRay/VR_GetWeaponAim so the laser and
+// the actual shot can never disagree.
+void     VR_UpdateFireRay( void );
+qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang );
+
+// True when the shot ORIGIN should be moved to the muzzle.
+qboolean VR_WeaponOriginActive( void );
+
 // True when firing should follow the weapon rather than the head.
 qboolean VR_AimFromWeapon( void );
 

@@ -1020,7 +1020,7 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		qboolean vr_muzzle = false;
 
 #if !XASH_DEDICATED
-		if( NET_IsLocalAddress( cl->netchan.remote_address ) && VR_IsActive( ))
+		if( NET_IsLocalAddress( cl->netchan.remote_address ) && VR_WeaponOriginActive( ))
 		{
 			vec3_t muzzle;
 
