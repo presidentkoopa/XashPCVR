@@ -226,6 +226,15 @@ static struct
 	int      fps_frames;
 } vrdiag;
 
+// Annotated so the compiler validates format/argument agreement. A mismatch
+// here previously shipped as a hard crash inside strnlen when %s consumed a
+// garbage pointer - a format specifier had been added without its argument.
+#ifdef _MSC_VER
+static void VR_DiagPrintf( _Printf_format_string_ const char *fmt, ... );
+#else
+static void VR_DiagPrintf( const char *fmt, ... ) __attribute__(( format( printf, 1, 2 )));
+#endif
+
 static void VR_DiagPrintf( const char *fmt, ... )
 {
 	va_list args;
@@ -360,15 +369,26 @@ static void VR_DiagSample( void )
 		if( vr.hmd_pose.origin[i] > vrdiag.pos_max[i] ) vrdiag.pos_max[i] = vr.hmd_pose.origin[i];
 	}
 
-	VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
-		"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  fps=%5.1f  hmd_hz=%4.1f  sub=%d%s\n",
-		host.realtime - vrdiag.session_start,
-		vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
-		vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
-		vr.world_origin[0], vr.world_origin[1], vr.world_origin[2], vr.world_yaw,
-		vrdiag.fps_frames ? vrdiag.fps_accum / vrdiag.fps_frames : 0.0f,
-		vr.frames_submitted,
-		frozen ? "  [FROZEN]" : "" );
+	// headset refresh, derived from the runtime's predicted display period (ns)
+	{
+		float hmd_hz = 0.0f;
+
+		if( vr.frame_state.predictedDisplayPeriod > 0 )
+			hmd_hz = 1000000000.0f / (float)vr.frame_state.predictedDisplayPeriod;
+
+		VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
+			"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  fps=%5.1f  hz=%5.1f"
+			"  stick=(%5.2f %5.2f) turn=%5.2f  sub=%d%s\n",
+			host.realtime - vrdiag.session_start,
+			vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
+			vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
+			vr.world_origin[0], vr.world_origin[1], vr.world_origin[2], vr.world_yaw,
+			vrdiag.fps_frames ? vrdiag.fps_accum / vrdiag.fps_frames : 0.0f,
+			hmd_hz,
+			vr.move_x, vr.move_y, vr.turn_x,
+			vr.frames_submitted,
+			frozen ? "  [FROZEN]" : "" );
+	}
 
 	vrdiag.fps_accum = 0.0f;
 	vrdiag.fps_frames = 0;
