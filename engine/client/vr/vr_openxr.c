@@ -118,10 +118,14 @@ typedef struct
 
 static struct
 {
-	qboolean      available;      // instance + system exist
+	qboolean      available;      // instance exists
+	qboolean      have_system;    // xrGetSystem succeeded (an HMD is present)
 	qboolean      session_ready;  // session created
 	qboolean      running;        // session state is running; frames may be submitted
 	qboolean      frame_started;  // between xrBeginFrame and xrEndFrame
+	qboolean      eyes_submitted; // at least one eye was rendered this frame
+	double        next_system_retry;
+	int           frames_submitted;
 
 	XrInstance    instance;
 	XrSystemId    system;
@@ -254,6 +258,152 @@ qboolean VR_IsAvailable( void ) { return vr.available; }
 qboolean VR_IsActive( void )    { return vr.available && vr.session_ready && vr.running; }
 int      VR_GetEyeCount( void ) { return vr.eye_count; }
 
+/*
+================
+VR_SessionStateName
+================
+*/
+static const char *VR_SessionStateName( XrSessionState s )
+{
+	switch( s )
+	{
+	case XR_SESSION_STATE_UNKNOWN:      return "UNKNOWN";
+	case XR_SESSION_STATE_IDLE:         return "IDLE";
+	case XR_SESSION_STATE_READY:        return "READY";
+	case XR_SESSION_STATE_SYNCHRONIZED: return "SYNCHRONIZED";
+	case XR_SESSION_STATE_VISIBLE:      return "VISIBLE";
+	case XR_SESSION_STATE_FOCUSED:      return "FOCUSED";
+	case XR_SESSION_STATE_STOPPING:     return "STOPPING";
+	case XR_SESSION_STATE_LOSS_PENDING: return "LOSS_PENDING";
+	case XR_SESSION_STATE_EXITING:      return "EXITING";
+	default:                            return "?";
+	}
+}
+
+/*
+================
+VR_Status_f - console diagnostic, "vr_status"
+================
+*/
+static void VR_Status_f( void )
+{
+	Con_Printf( "--- OpenXR status ---\n" );
+	Con_Printf( "  vr_enable      : %s\n", vr_enable.value ? "1" : "0" );
+	Con_Printf( "  instance       : %s\n", vr.available ? "created" : "NONE" );
+	Con_Printf( "  system (HMD)   : %s\n", vr.have_system ? "present" : "NOT FOUND" );
+	Con_Printf( "  session        : %s\n", vr.session_ready ? "created" : "not created" );
+	Con_Printf( "  session state  : %s\n", VR_SessionStateName( vr.session_state ));
+	Con_Printf( "  running        : %s\n", vr.running ? "YES" : "no" );
+	Con_Printf( "  frame started  : %s\n", vr.frame_started ? "yes" : "no" );
+	Con_Printf( "  frames submitted: %d\n", vr.frames_submitted );
+	Con_Printf( "  eyes           : %d\n", vr.eye_count );
+
+	if( vr.eye_count > 0 )
+	{
+		Con_Printf( "  eye 0 target   : %ux%u\n",
+			vr.swapchains[0].width, vr.swapchains[0].height );
+	}
+
+	Con_Printf( "  GL required    : %d.%d\n", vr.gl_major, vr.gl_minor );
+
+	if( vr.have_system )
+	{
+		Con_Printf( "  hmd pose       : %.1f %.1f %.1f  angles %.1f %.1f %.1f\n",
+			vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
+			vr.hmd_pose.angles[0], vr.hmd_pose.angles[1], vr.hmd_pose.angles[2] );
+	}
+
+	if( !vr.available )
+		Con_Printf( "  -> no instance. Runtime missing, or vr_enable 0, or -novr.\n" );
+	else if( !vr.have_system )
+		Con_Printf( "  -> instance OK but no HMD. Start the streamer/headset; it retries automatically.\n" );
+	else if( !vr.session_ready )
+		Con_Printf( "  -> HMD found but session failed. Check GL context version.\n" );
+	else if( !vr.running )
+		Con_Printf( "  -> session created, waiting for runtime to signal READY.\n" );
+	else
+		Con_Printf( "  -> VR is live.\n" );
+}
+
+/*
+================
+VR_AcquireSystem
+
+xrGetSystem fails while no HMD is connected. That is a NORMAL transient state -
+the streamer may not be running yet, or the headset may be asleep - so we keep the
+instance alive and retry rather than disabling VR for the whole session.
+================
+*/
+static qboolean VR_AcquireSystem( void )
+{
+	XrSystemGetInfo sgi = { XR_TYPE_SYSTEM_GET_INFO };
+	uint32_t count = 0;
+	int i;
+	XrResult res;
+
+	if( vr.have_system )
+		return true;
+
+	if( !vr.available )
+		return false;
+
+	// don't hammer the runtime every frame
+	if( host.realtime < vr.next_system_retry )
+		return false;
+	vr.next_system_retry = host.realtime + 2.0;
+
+	sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+	res = xrGetSystem( vr.instance, &sgi, &vr.system );
+	if( XR_FAILED( res ))
+	{
+		if( vr_debug.value )
+			Con_Printf( "VR: xrGetSystem: %s\n", VR_ResultString( res ));
+		return false;
+	}
+
+	// view configuration
+	if( XR_FAILED( xrEnumerateViewConfigurationViews( vr.instance, vr.system,
+		XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, NULL )) || !count )
+	{
+		Con_Printf( S_ERROR "VR: no stereo view configuration\n" );
+		return false;
+	}
+
+	vr.eye_count = Q_min((int)count, VR_MAX_EYES );
+	for( i = 0; i < vr.eye_count; i++ )
+		vr.view_configs[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
+
+	if( XR_FAILED( xrEnumerateViewConfigurationViews( vr.instance, vr.system,
+		XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, vr.eye_count, &count, vr.view_configs )))
+		return false;
+
+	for( i = 0; i < vr.eye_count; i++ )
+	{
+		Con_Printf( "VR: eye %d %ux%u\n", i,
+			vr.view_configs[i].recommendedImageRectWidth,
+			vr.view_configs[i].recommendedImageRectHeight );
+	}
+
+	// GL version requirement
+	if( XR_SUCCEEDED( xrGetInstanceProcAddr( vr.instance, "xrGetOpenGLGraphicsRequirementsKHR",
+		(PFN_xrVoidFunction *)&vr.pfnGetOpenGLGraphicsRequirementsKHR ))
+		&& vr.pfnGetOpenGLGraphicsRequirementsKHR )
+	{
+		XrGraphicsRequirementsOpenGLKHR gr = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
+
+		if( XR_SUCCEEDED( vr.pfnGetOpenGLGraphicsRequirementsKHR( vr.instance, vr.system, &gr )))
+		{
+			vr.gl_major = XR_VERSION_MAJOR( gr.minApiVersionSupported );
+			vr.gl_minor = XR_VERSION_MINOR( gr.minApiVersionSupported );
+			Con_Printf( "VR: runtime requires OpenGL >= %d.%d\n", vr.gl_major, vr.gl_minor );
+		}
+	}
+
+	vr.have_system = true;
+	Con_Printf( "VR: HMD acquired (%d eyes)\n", vr.eye_count );
+	return true;
+}
+
 const vr_pose_t *VR_GetHMDPose( void )        { return &vr.hmd_pose; }
 const vr_pose_t *VR_GetHandPose( int hand )   { return &vr.hand_pose[bound( 0, hand, 1 )]; }
 
@@ -283,6 +433,7 @@ qboolean VR_Init( void )
 
 	Cvar_RegisterVariable( &vr_enable );
 	Cvar_RegisterVariable( &vr_debug );
+	Cmd_AddCommand( "vr_status", VR_Status_f, "report OpenXR VR state" );
 
 	if( !vr_enable.value || Sys_CheckParm( "-novr" ))
 	{
@@ -353,65 +504,18 @@ qboolean VR_Init( void )
 			(unsigned)XR_VERSION_PATCH( ip.runtimeVersion ));
 	}
 
-	// --- system ---
-	sgi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
-	if( XR_FAILED( xrGetSystem( vr.instance, &sgi, &vr.system )))
-	{
-		Con_Printf( "VR: no HMD present, running flatscreen\n" );
-		xrDestroyInstance( vr.instance );
-		vr.instance = XR_NULL_HANDLE;
-		return false;
-	}
-
-	// --- view configuration ---
-	count = 0;
-	if( XR_FAILED( xrEnumerateViewConfigurationViews( vr.instance, vr.system,
-		XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, NULL )) || !count )
-	{
-		Con_Printf( S_ERROR "VR: no stereo view configuration\n" );
-		goto fail;
-	}
-
-	vr.eye_count = Q_min( (int)count, VR_MAX_EYES );
-	for( i = 0; i < (uint32_t)vr.eye_count; i++ )
-		vr.view_configs[i].type = XR_TYPE_VIEW_CONFIGURATION_VIEW;
-
-	if( XR_FAILED( xrEnumerateViewConfigurationViews( vr.instance, vr.system,
-		XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, vr.eye_count, &count, vr.view_configs )))
-		goto fail;
-
-	for( i = 0; i < (uint32_t)vr.eye_count; i++ )
-	{
-		Con_Printf( "VR: eye %u %ux%u\n", i,
-			vr.view_configs[i].recommendedImageRectWidth,
-			vr.view_configs[i].recommendedImageRectHeight );
-	}
-
-	// --- GL version requirement ---
-	if( XR_SUCCEEDED( xrGetInstanceProcAddr( vr.instance, "xrGetOpenGLGraphicsRequirementsKHR",
-		(PFN_xrVoidFunction *)&vr.pfnGetOpenGLGraphicsRequirementsKHR ))
-		&& vr.pfnGetOpenGLGraphicsRequirementsKHR )
-	{
-		XrGraphicsRequirementsOpenGLKHR gr = { XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR };
-
-		if( XR_SUCCEEDED( vr.pfnGetOpenGLGraphicsRequirementsKHR( vr.instance, vr.system, &gr )))
-		{
-			vr.gl_major = XR_VERSION_MAJOR( gr.minApiVersionSupported );
-			vr.gl_minor = XR_VERSION_MINOR( gr.minApiVersionSupported );
-			Con_Printf( "VR: runtime requires OpenGL >= %d.%d\n", vr.gl_major, vr.gl_minor );
-		}
-	}
-
 	vr.available = true;
-	Con_Printf( "VR: initialized (%d eyes)\n", vr.eye_count );
-	return true;
 
-fail:
-	if( vr.instance != XR_NULL_HANDLE )
-		xrDestroyInstance( vr.instance );
-	vr.instance = XR_NULL_HANDLE;
-	vr.available = false;
-	return false;
+	// --- system ---
+	// Do NOT tear down on failure: no HMD right now is a normal transient state
+	// (streamer not started, headset asleep). Keep the instance and retry.
+	if( !VR_AcquireSystem( ))
+	{
+		Con_Printf( "VR: instance created, waiting for an HMD (retrying in background)\n" );
+		Con_Printf( "VR: type 'vr_status' in console for details\n" );
+	}
+
+	return true;
 }
 
 /*
@@ -564,6 +668,7 @@ static void VR_PollEvents( void )
 			const XrEventDataSessionStateChanged *ss = (const XrEventDataSessionStateChanged *)&ev;
 
 			vr.session_state = ss->state;
+			Con_Printf( "VR: session state -> %s\n", VR_SessionStateName( ss->state ));
 
 			switch( ss->state )
 			{
@@ -613,9 +718,27 @@ qboolean VR_BeginFrame( void )
 	XrSpaceLocation loc = { XR_TYPE_SPACE_LOCATION };
 	uint32_t n = 0;
 
-	if( !vr.available || !vr.session_ready )
+	vr.eyes_submitted = false;
+
+	if( !vr.available )
 		return false;
 
+	// The HMD may appear after startup; pick it up and create the session lazily.
+	if( !vr.have_system )
+	{
+		if( !VR_AcquireSystem( ))
+			return false;
+	}
+
+	if( !vr.session_ready )
+	{
+		if( !VR_InitSession( ))
+			return false;
+	}
+
+	// NOTE: this must run unconditionally, NOT behind VR_IsActive(). vr.running is
+	// set only by this poll, so gating the poll on vr.running would deadlock the
+	// session in IDLE forever - it can never reach READY.
 	VR_PollEvents();
 
 	if( !vr.running )
@@ -630,6 +753,9 @@ qboolean VR_BeginFrame( void )
 	if( XR_FAILED( xrBeginFrame( vr.session, &bi )))
 		return false;
 
+	// From here on an XR frame is OPEN. Every path out of this function must be
+	// matched by VR_EndFrame(), which the caller now always invokes - otherwise
+	// xrWaitFrame blocks or errors on the following frame.
 	vr.frame_started = true;
 
 	if( !vr.frame_state.shouldRender )
@@ -763,6 +889,8 @@ void VR_EndEye( int eye )
 	vr.proj_views[eye].subImage.imageRect.extent.width  = sc->width;
 	vr.proj_views[eye].subImage.imageRect.extent.height = sc->height;
 	vr.proj_views[eye].subImage.imageArrayIndex = 0;
+
+	vr.eyes_submitted = true;
 }
 
 /*
@@ -776,6 +904,7 @@ void VR_EndFrame( void )
 	const XrCompositionLayerBaseHeader *layers[1];
 	XrFrameEndInfo ei = { XR_TYPE_FRAME_END_INFO };
 
+	// Safe to call unconditionally - no-ops unless an XR frame is actually open.
 	if( !vr.available || !vr.session_ready || !vr.frame_started )
 		return;
 
@@ -787,10 +916,14 @@ void VR_EndFrame( void )
 	ei.displayTime          = vr.frame_state.predictedDisplayTime;
 	ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
 
-	if( vr.frame_state.shouldRender )
+	// Only submit a layer if we really rendered the eyes. Submitting a projection
+	// layer referencing swapchain images that were never written is a protocol
+	// error and some runtimes will drop the session over it.
+	if( vr.frame_state.shouldRender && vr.eyes_submitted )
 	{
 		ei.layerCount = 1;
 		ei.layers     = layers;
+		vr.frames_submitted++;
 	}
 	else
 	{
@@ -800,6 +933,7 @@ void VR_EndFrame( void )
 
 	xrEndFrame( vr.session, &ei );
 	vr.frame_started = false;
+	vr.eyes_submitted = false;
 }
 
 /*

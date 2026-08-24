@@ -408,7 +408,11 @@ void V_RenderView( void )
 	// The mod's pfnCalcRefdef still computes the view exactly as it always does -
 	// we never touch it, which is what keeps this working for any GoldSrc mod.
 	// We then render the SAME scene once per eye, overriding only the viewpass.
-	if( VR_IsActive() && VR_BeginFrame( ))
+	// VR_BeginFrame drives the whole OpenXR lifecycle (HMD acquisition, lazy
+	// session creation, event polling). It must NOT be gated on VR_IsActive():
+	// vr.running is set only by the poll inside it, so gating would deadlock the
+	// session in IDLE and it could never reach READY.
+	if( VR_BeginFrame( ))
 	{
 		vec3_t base_origin;
 		int eye;
@@ -463,6 +467,11 @@ void V_RenderView( void )
 			viewnum++;
 
 		} while( rp.nextView );
+
+		// VR_BeginFrame may have opened an XR frame and then bailed (e.g. the
+		// runtime said shouldRender=false). An opened frame MUST still be ended
+		// or xrWaitFrame stalls next tick. This no-ops if nothing was opened.
+		VR_EndFrame();
 	}
 
 	// draw debug triangles on a server
