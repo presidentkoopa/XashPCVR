@@ -826,7 +826,19 @@ static void GAME_EXPORT pfnRenderScene( const ref_viewpass_t *rvp )
 	if( !rvp || rvp->fov_x <= 0.0f || rvp->fov_y <= 0.0f )
 		return;
 
-	copy = *rvp;
+	// PCVR fork: menu.dll is built against its own copy of ref_viewpass_t
+	// (3rdparty/mainui/sdk_includes/common/ref_params.h) which predates the VR
+	// fields appended here. A whole-struct assignment would read past the end of
+	// the caller's smaller struct and leave vr_active holding stack garbage,
+	// which could enable the asymmetric-frustum path with junk tangents.
+	// Copy only the prefix the caller actually owns and leave VR fields zeroed.
+	memset( &copy, 0, sizeof( copy ));
+	memcpy( copy.viewport, rvp->viewport, sizeof( copy.viewport ));
+	VectorCopy( rvp->vieworigin, copy.vieworigin );
+	VectorCopy( rvp->viewangles, copy.viewangles );
+	copy.viewentity = rvp->viewentity;
+	copy.fov_x = rvp->fov_x;
+	copy.fov_y = rvp->fov_y;
 
 	// don't allow special modes from menu
 	copy.flags = 0;

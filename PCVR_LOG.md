@@ -249,6 +249,105 @@ plumbing at `:838`. Must be raised to a **4.x compatibility** profile (FINDING 0
 also where we get the Win32 `HDC`/`HGLRC` for `XrGraphicsBindingOpenGLWin32KHR`
 (via `SDL_GetWindowWMInfo`).
 
+## FINDING 011 — OpenVR vs OpenXR: why HLVR works on Steam and we can't copy it
+
+HLVR uses **OpenVR**, not OpenXR — an entirely different, older, Valve-native API.
+Verified: `vr::VR_Init()` at `E:\HalfLifeVR\src\cl_dll\VRHelper.cpp:359`,
+`vr::IVRSystem*` at `:1487`, bundled `openvr_api.dll` is **x86**, and there are
+**zero** OpenXR call sites in the entire HLVR tree.
+
+SteamVR ships `bin/win32/openvr_api.dll` and a 32-bit `vrclient.dll`:
+
+| API | SteamVR 32-bit | SteamVR 64-bit |
+|---|---|---|
+| **OpenVR** (legacy, Valve-native) | YES | YES |
+| **OpenXR** (modern standard) | **NO** | YES |
+
+So FINDING 003 applies to **OpenXR only**. HLVR (32-bit + OpenVR) runs on SteamVR fine.
+
+**Decision: stay on OpenXR.** Rationale:
+- Proven working on this machine's hardware today (FINDING 007).
+- Lambda1VR's ~2000-line frame loop is OpenXR; going OpenVR discards that reference,
+  and HLVR's OpenVR code is entangled with its `opengl32`-hooking scaffolding.
+- `vr_openxr.h` is deliberately backend-agnostic (`VR_Init` / `VR_BeginFrame` /
+  `VR_BeginEye` / `VR_EndEye` / `VR_EndFrame`). An OpenVR backend later means
+  implementing those same functions, not redoing the engine integration.
+
+**Known cost:** a 32-bit OpenXR build cannot drive a native-SteamVR-only headset
+(Index, Vive). Quest/Pico via Virtual Desktop are fine. Revisit if a player has one.
+
+## FINDING 012 — **BUG FOUND AND FIXED** — mainui struct-size mismatch
+
+Adversarial recon caught a real defect introduced by extending `ref_viewpass_t`.
+
+`menu.dll` (mainui) is built against its **own private copy** of the struct at
+`3rdparty/mainui/sdk_includes/common/ref_params.h:97`, which lacks the VR fields.
+`pfnRenderScene` in `engine/client/dll_int/cl_gameui.c` did a whole-struct
+assignment `copy = *rvp;` using the **engine's larger** definition — reading past
+the end of the caller's smaller struct and leaving `vr_active` as stack garbage.
+Non-zero garbage would enable the asymmetric-frustum path with junk tangents on the
+menu player-model preview.
+
+Fixed by copying only the prefix the caller owns and zeroing the VR fields.
+**Lesson: `ref_viewpass_t` is not as private as it looks — mainui has a copy.**
+
+## FINDING 013 — Corrections to the integration map (FINDING 010)
+
+Recon re-verified FINDING 010 against source and corrected it. Retained here because
+these are the traps that would have cost real debugging time:
+
+- **`ref_interface_t` has NO `R_RenderFrame` member.** The engine's only scene-render
+  slot is `GL_RenderFrame` (`engine/ref_api.h:630`), wired at `ref/gl/gl_context.c:558`
+  to `ref/gl/gl_rmain.c:1076`. `R_RenderScene` (`ref_api.h:544`) is exported but the
+  engine **never calls it**. The engine-side wrapper
+  `engine/client/dll_int/ref_common.c:172` is the sole caller — it catches both
+  `cl_view.c:417` and the menu path `cl_gameui.c:835`. **Hook there, not in cl_view.c.**
+
+- **`R_SetupGL` y-flips the viewport against the WINDOW height**
+  (`gl_rmain.c:547-550`, effectively `pglViewport(x, H - y - h, w, h)`). Our eye FBO is
+  2496x2688, not the window size, so this flip is wrong for VR. Precedent exists: the
+  `RF_DRAW_CUBEMAP` branch at `:556-559` already bypasses the flip and uses
+  `RI.rvp.viewport` verbatim. VR needs the same treatment.
+
+- **Culling frustum is separate from the projection matrix.** `R_SetupFrustum`
+  (`gl_rmain.c:344`) builds it via `GL_FrustumInitProj(..., fov_x, fov_y)` at `:364`,
+  which hardcodes symmetry (`gl_frustum.c:37/40/44`). Our asymmetric projection fix does
+  **not** feed it, so culling will be subtly wrong per eye until this is addressed too.
+
+- **Per-eye double-fire hazards inside `R_RenderFrame`:**
+  - `R_RunViewmodelEvents()` (`gl_rmain.c:1119`) would fire twice per frame.
+  - `tr.realframecount++` (`:1122`, also `:1112`) is the same-frame dedupe key for
+    player gait (`gl_studio.c:2852`) and is exported to mods (`:398`) — it **must**
+    increment exactly once per frame, not once per eye.
+  - `tr.frametime` (`:965-967`) drives particle integration (`gl_rpart.c:102`) and
+    tracers (`:242`) — double-stepping would run effects at 2x speed.
+  - `tr.framecount` (per-surface `visframe`) **must** keep incrementing per eye.
+  - Beams are unaffected: `gl_beams.c:1240` recomputes its own delta.
+
+---
+
+## Test setup (how to run it)
+
+Assembled at `E:\XashVR`. Xash needs **no Steam and no SteamVR** — it reads the
+Half-Life `valve/` assets directly via `-rodir`, read-only, writing configs and saves
+into `E:\XashVR` instead. The Steam install is never modified.
+
+Contents: `xash3d.exe`, `xash.dll`, `ref_gl.dll`, `filesystem_stdio.dll`, `menu.dll`,
+`vgui_support.dll`, `SDL2.dll`, `openxr_loader.dll`, plus **`vgui.dll` copied from the
+Half-Life root** (required by HL's `client.dll`; not finding it is a hard startup error).
+
+```
+E:\XashVR\run.bat
+```
+which runs:
+```
+xash3d.exe -rodir "D:\SteamLibrary\steamapps\common\Half-Life" -game valve -console -dev 2
+```
+
+**Status: WORKS.** Engine boots, loads HL's real `cl_dlls/client.dll` and `dlls/hl.dll`
+(proving 32-bit mod-DLL loading), `ref_gl` initializes on the RTX 3080 Ti, no errors.
+Runs **flatscreen** — `VR_Init()` still has zero call sites.
+
 ---
 
 ## OPEN QUESTIONS
