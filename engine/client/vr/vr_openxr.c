@@ -38,6 +38,16 @@ See vr_openxr.h for the design rationale.
 CVAR_DEFINE_AUTO( vr_enable, "1", FCVAR_ARCHIVE, "enable OpenXR VR rendering" );
 static CVAR_DEFINE_AUTO( vr_debug, "0", 0, "verbose OpenXR logging" );
 
+// Axis-sign escape hatches. Converting an OpenXR quaternion into GoldSrc euler
+// angles has several sign conventions that can only really be confirmed by
+// wearing the headset. These let that be corrected live, in-game, instead of
+// requiring a rebuild per guess. Once the correct combination is known it should
+// be baked into VR_ConvertOrientation and these can go.
+static CVAR_DEFINE_AUTO( vr_pitch_sign, "1", FCVAR_ARCHIVE, "flip HMD pitch (1 or -1)" );
+static CVAR_DEFINE_AUTO( vr_yaw_sign, "1", FCVAR_ARCHIVE, "flip HMD yaw (1 or -1)" );
+static CVAR_DEFINE_AUTO( vr_roll_sign, "1", FCVAR_ARCHIVE, "flip HMD roll (1 or -1)" );
+static CVAR_DEFINE_AUTO( vr_compose_yaw, "1", FCVAR_ARCHIVE, "add the game's yaw to the HMD yaw" );
+
 /*
 =================================================================
 	minimal GL entry points
@@ -126,6 +136,10 @@ static struct
 	qboolean      eyes_submitted; // at least one eye was rendered this frame
 	double        next_system_retry;
 	int           frames_submitted;
+
+	// where the play space sits in the game world, refreshed each frame
+	vec3_t        world_origin;
+	float         world_yaw;
 
 	XrInstance    instance;
 	XrSystemId    system;
@@ -228,9 +242,19 @@ static void VR_ConvertOrientation( const XrQuaternionf *q, vec3_t angles )
 	CrossProduct( fwd, up, right );
 	VectorNormalize( right );
 
+	// Derived against AngleVectors() in public/xash3d_mathlib.h:431, which defines
+	//   forward[2] = -sin(pitch)
+	//   right[2]   = -sin(roll) * cos(pitch)
+	//   up[2]      =  cos(roll) * cos(pitch)
+	// so atan2( right[2], up[2] ) == -roll, hence the negation below.
 	angles[YAW]   = RAD2DEG( atan2f( fwd[1], fwd[0] ));
 	angles[PITCH] = RAD2DEG( -asinf( bound( -1.0f, fwd[2], 1.0f )));
-	angles[ROLL]  = RAD2DEG( atan2f( right[2], up[2] ));
+	angles[ROLL]  = RAD2DEG( -atan2f( right[2], up[2] ));
+
+	// runtime sign overrides, see the cvar declarations
+	if( vr_pitch_sign.value < 0.0f ) angles[PITCH] = -angles[PITCH];
+	if( vr_yaw_sign.value   < 0.0f ) angles[YAW]   = -angles[YAW];
+	if( vr_roll_sign.value  < 0.0f ) angles[ROLL]  = -angles[ROLL];
 }
 
 static void VR_ConvertPose( const XrPosef *pose, vr_pose_t *out )
@@ -406,6 +430,12 @@ static qboolean VR_AcquireSystem( void )
 
 const vr_pose_t *VR_GetHMDPose( void )        { return &vr.hmd_pose; }
 const vr_pose_t *VR_GetHandPose( int hand )   { return &vr.hand_pose[bound( 0, hand, 1 )]; }
+
+void VR_SetWorldReference( const vec3_t origin, float yaw )
+{
+	VectorCopy( origin, vr.world_origin );
+	vr.world_yaw = yaw;
+}
 
 /*
 ================
@@ -824,15 +854,33 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 		rvp->viewport[2] = sc->width;
 		rvp->viewport[3] = sc->height;
 
-		// OpenXR poses are in TRACKING space, not game world space. Emit the eye
-		// position as an OFFSET FROM HEAD CENTRE (i.e. essentially the IPD half-
-		// offset, already rotated by head orientation). The caller anchors it by
-		// adding the view origin the mod computed. That gives correct stereo and
-		// full head ORIENTATION tracking without yet claiming to solve room-scale
-		// POSITIONAL tracking, which needs the play-space<->world reconciliation
-		// that is tracked separately as priority item 2.
-		VectorSubtract( pose.origin, vr.hmd_pose.origin, rvp->vieworigin );
-		VectorCopy( pose.angles, rvp->viewangles );
+		// OpenXR poses live in the play space, which knows nothing about where the
+		// player stands in the map or which way their body faces. Compose the two.
+		//
+		// The eye offset from head centre (essentially the IPD half-offset) is
+		// expressed in play-space axes, so it must be rotated by the game's yaw
+		// before being added to the world anchor - otherwise the eyes separate
+		// along the wrong axis as soon as the player faces a different direction.
+		{
+			vec3_t rel;
+			float yaw_off = vr_compose_yaw.value ? vr.world_yaw : 0.0f;
+			float s, c;
+
+			VectorSubtract( pose.origin, vr.hmd_pose.origin, rel );
+			SinCos( DEG2RAD( yaw_off ), &s, &c );
+
+			rvp->vieworigin[0] = vr.world_origin[0] + ( rel[0] * c - rel[1] * s );
+			rvp->vieworigin[1] = vr.world_origin[1] + ( rel[0] * s + rel[1] * c );
+			rvp->vieworigin[2] = vr.world_origin[2] + rel[2];
+
+			// Head owns pitch and roll outright - letting the game pitch or roll a
+			// VR player's view is a reliable way to make them sick. Yaw is additive
+			// so scripted turns (the intro tram, trigger_camera, vehicles) still
+			// carry the player around while they remain free to look about.
+			rvp->viewangles[PITCH] = pose.angles[PITCH];
+			rvp->viewangles[YAW]   = anglemod( pose.angles[YAW] + yaw_off );
+			rvp->viewangles[ROLL]  = pose.angles[ROLL];
+		}
 
 		// fov_x/fov_y still feed the CULLING frustum (R_SetupFrustum ->
 		// GL_FrustumInitProj), which is symmetric and separate from the

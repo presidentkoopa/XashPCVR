@@ -422,8 +422,11 @@ void V_RenderView( void )
 		V_RefApplyOverview( &rvp );
 		V_ApplyRefUnderwater( &rvp );
 
-		// anchor point for the eyes: whatever the mod decided the view origin is
+		// Anchor the play space into the world using whatever the mod decided the
+		// view origin and body yaw are. VR_BeginEye composes the HMD pose onto
+		// this, so scripted turns still carry the player while the head stays free.
 		VectorCopy( rvp.vieworigin, base_origin );
+		VR_SetWorldReference( base_origin, rvp.viewangles[YAW] );
 
 		if( FBitSet( rvp.flags, RF_ONLY_CLIENTDRAW ))
 			ref.dllFuncs.R_ClearScreen();
@@ -434,10 +437,6 @@ void V_RenderView( void )
 
 			if( !VR_BeginEye( eye, &eye_rvp ))
 				continue;
-
-			// VR_BeginEye emits the eye position relative to head centre; anchor
-			// it to the mod's view origin to get a world-space eye position.
-			VectorAdd( base_origin, eye_rvp.vieworigin, eye_rvp.vieworigin );
 
 			GL_RenderFrame( &eye_rvp );
 			VR_EndEye( eye );

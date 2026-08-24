@@ -97,6 +97,19 @@ qboolean VR_BeginFrame( void );
 // Number of views to render this frame (2 for stereo).
 int      VR_GetEyeCount( void );
 
+// Anchor the tracking space into the game world for this frame.
+//
+// OpenXR poses are relative to the play space, which has no idea where the player
+// is standing in the map or which way their body faces. Call this once per frame
+// with the view origin and yaw the MOD computed, and VR_BeginEye will compose:
+//   final yaw    = game yaw + HMD yaw
+//   final pitch  = HMD pitch   (the game does not get to pitch a VR player)
+//   final roll   = HMD roll
+// Without this composition the view stays locked to the play space and the world
+// appears to rotate around the player whenever the game turns them - which is
+// exactly what a moving tram or any scripted camera does.
+void     VR_SetWorldReference( const vec3_t origin, float yaw );
+
 // Acquire this eye's swapchain image and bind an FBO around it, then fill in
 // rvp (viewport, vieworigin, viewangles, fov, asymmetric frustum tangents).
 // The caller then invokes the normal GL_RenderFrame( rvp ).
