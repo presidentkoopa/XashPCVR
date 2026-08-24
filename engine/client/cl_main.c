@@ -24,6 +24,7 @@ GNU General Public License for more details.
 #include "vid_common.h"
 #include "pm_local.h"
 #include "multi_emulator.h"
+#include "vr/vr_openxr.h"
 
 #define CL_CONNECTION_TIMEOUT 15.0f
 #define CL_CONNECTION_RETRIES 5
@@ -800,6 +801,33 @@ static void CL_CreateCmd( void )
 	Platform_PreCreateMove();
 	clgame.dllFuncs.CL_CreateMove( host.frametime, cmd, active );
 	IN_EngineAppendMove( host.frametime, cmd, active );
+
+	// PCVR fork: the mod just derived view angles from mouse input. In VR the
+	// head decides where the player looks, and cl.viewangles drives movement
+	// direction and weapon aim - so without this the player walks wherever the
+	// mouse points instead of where they are looking. The mod's yaw is kept as
+	// body facing, so mouse/stick turning still rotates the play space.
+	if( VR_IsActive( ))
+	{
+		float vr_fwd, vr_side;
+
+		// turn first: it rotates the play space, and the view angles below are
+		// composed against that rotation
+		VR_UpdateTurn( host.frametime );
+
+		VR_OverrideViewAngles( cmd->viewangles );
+		VectorCopy( cmd->viewangles, cl.viewangles );
+
+		// Thumbstick locomotion. Only override when the stick is actually being
+		// pushed, so keyboard movement still works alongside the controllers.
+		VR_GetMovement( &vr_fwd, &vr_side );
+		if( vr_fwd != 0.0f )  cmd->forwardmove = vr_fwd;
+		if( vr_side != 0.0f ) cmd->sidemove    = vr_side;
+
+		if( VR_GetButton( VR_BTN_JUMP ))   cmd->buttons |= IN_JUMP;
+		if( VR_GetButton( VR_BTN_ATTACK )) cmd->buttons |= IN_ATTACK;
+		if( VR_GetButton( VR_BTN_USE ))    cmd->buttons |= IN_USE;
+	}
 
 	CL_PopPMStates();
 

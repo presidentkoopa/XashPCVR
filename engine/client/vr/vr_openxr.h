@@ -97,18 +97,45 @@ qboolean VR_BeginFrame( void );
 // Number of views to render this frame (2 for stereo).
 int      VR_GetEyeCount( void );
 
-// Anchor the tracking space into the game world for this frame.
+// Anchor the play space at this world position for the current frame.
+// (The rotation used is the body yaw captured by VR_OverrideViewAngles.)
+void     VR_SetWorldReference( const vec3_t origin );
+
+// Replace the view angles the mod derived from mouse input with the VR ones.
 //
-// OpenXR poses are relative to the play space, which has no idea where the player
-// is standing in the map or which way their body faces. Call this once per frame
-// with the view origin and yaw the MOD computed, and VR_BeginEye will compose:
-//   final yaw    = game yaw + HMD yaw
-//   final pitch  = HMD pitch   (the game does not get to pitch a VR player)
-//   final roll   = HMD roll
-// Without this composition the view stays locked to the play space and the world
-// appears to rotate around the player whenever the game turns them - which is
-// exactly what a moving tram or any scripted camera does.
-void     VR_SetWorldReference( const vec3_t origin, float yaw );
+// This is what makes the player actually able to MOVE sensibly. cl.viewangles
+// drives movement direction and weapon aim, so if it stays mouse-controlled
+// while only the rendered view follows the head, WASD sends the player wherever
+// the mouse happens to point rather than where they are looking.
+//
+// The yaw the mod computed is treated as BODY facing (so mouse/stick turning
+// still works and can rotate the play space); head yaw is added on top:
+//   yaw   = body yaw + HMD yaw
+//   pitch = HMD only
+//   roll  = HMD only
+// Call after the mod's CL_CreateMove, passing the usercmd's viewangles.
+void     VR_OverrideViewAngles( vec3_t angles );
+
+// Body/play-space yaw in world space, as last captured.
+float    VR_GetBodyYaw( void );
+
+//
+// controller input
+//
+
+#define VR_BTN_JUMP    0
+#define VR_BTN_ATTACK  1
+#define VR_BTN_USE     2
+
+// Thumbstick locomotion, already deadzoned and scaled to HL move units.
+// Values are relative to the current view direction, matching how the engine
+// interprets usercmd forwardmove/sidemove.
+void     VR_GetMovement( float *forward, float *side );
+
+// Apply this frame's turn input to the play-space yaw (snap or smooth).
+void     VR_UpdateTurn( float frametime );
+
+qboolean VR_GetButton( int btn );
 
 // Acquire this eye's swapchain image and bind an FBO around it, then fill in
 // rvp (viewport, vieworigin, viewangles, fov, asymmetric frustum tangents).

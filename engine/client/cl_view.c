@@ -422,11 +422,12 @@ void V_RenderView( void )
 		V_RefApplyOverview( &rvp );
 		V_ApplyRefUnderwater( &rvp );
 
-		// Anchor the play space into the world using whatever the mod decided the
-		// view origin and body yaw are. VR_BeginEye composes the HMD pose onto
-		// this, so scripted turns still carry the player while the head stays free.
+		// Anchor the play space at the mod's view origin. The rotation used is the
+		// body yaw captured in VR_OverrideViewAngles, NOT rvp.viewangles - that
+		// already includes head yaw, so reusing it here would apply head rotation
+		// twice.
 		VectorCopy( rvp.vieworigin, base_origin );
-		VR_SetWorldReference( base_origin, rvp.viewangles[YAW] );
+		VR_SetWorldReference( base_origin );
 
 		if( FBitSet( rvp.flags, RF_ONLY_CLIENTDRAW ))
 			ref.dllFuncs.R_ClearScreen();
