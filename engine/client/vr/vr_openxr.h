@@ -158,6 +158,10 @@ qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang );
 // and the bare hand are never both shown at once.
 void     VR_DrawHands( qboolean draw_right );
 
+// Rotate the drawn weapon so its barrel lies on the actual firing line.
+// Call AFTER VR_CalibrateWeaponAngles, before pre-negating pitch.
+void     VR_AlignModelToFireRay( vec3_t ang );
+
 // Applies the weapon viewmodel's rest-pose correction (vr_weapon_*_offset).
 // Call on the PHYSICAL tracked angles, BEFORE pre-negating pitch.
 void     VR_CalibrateWeaponAngles( vec3_t ang );

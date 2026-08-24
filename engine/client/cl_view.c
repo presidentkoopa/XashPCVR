@@ -455,7 +455,27 @@ void V_RenderView( void )
 					// Live: with the hands correct, the gun still hung ~45 deg
 					// below horizontal. Applied on the PHYSICAL angles, before
 					// the pitch pre-negation below, exactly as VR_DrawHands does.
+					// Skipped while braced. The two-handed angles are already a
+					// finished world direction; applying the mesh rest-pose
+					// correction on top of them is what made the weapon fly off.
+					// Lambda1VR skips its equivalent correction identically
+					// (VrInputAlt2.c:183-204).
+					// ALWAYS applied, including while braced - this is the MODEL, not
+					// the aim. The correction is what rotates the mesh so its barrel
+					// lies along whatever angles it is handed; skipping it leaves the
+					// weapon in its uncorrected rest pose, drawn ~45 degrees below the
+					// firing line even though the shot itself was correct.
+					//
+					// The fire ray in VR_UpdateFireRay still skips it while braced,
+					// because there the hand-to-hand vector is already a finished world
+					// direction. Aim and model need opposite treatment here.
 					VR_CalibrateWeaponAngles( hand_ang );
+
+					// Close the residual: rotate the drawn weapon so its barrel sits
+					// exactly on the firing line. The rest-pose correction above gets
+					// it close, but every mesh carries its own leftover angle, which
+					// is why the gun was still drawn just under its own laser.
+					VR_AlignModelToFireRay( hand_ang );
 
 					// PRE-NEGATE PITCH, same as VR_DrawHands does for the bare
 					// hands. Studio rendering negates pitch (the old Quake

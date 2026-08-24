@@ -287,6 +287,8 @@ static CVAR_DEFINE_AUTO( vr_diag_aim, "0", 0, "log muzzle/aim/overlay state for 
 // Derive the firing line from the model's muzzle attachment (exact,
 // per-weapon, no tuning) rather than a hand-tuned angle. 0 falls back to
 // the vr_aim_*_offset values below.
+// Rotate the drawn weapon so its barrel lies on the actual firing line.
+static CVAR_DEFINE_AUTO( vr_model_align, "0.15", FCVAR_ARCHIVE, "align weapon model to the firing line; value is convergence gain per frame, 0 = off" );
 static CVAR_DEFINE_AUTO( vr_aim_attachment, "1", FCVAR_ARCHIVE, "aim from the weapon model's muzzle attachment" );
 static CVAR_DEFINE_AUTO( vr_aim_pitch_offset, "45", FCVAR_ARCHIVE, "aim pitch correction, degrees (tune until the laser lies on the barrel)" );
 static CVAR_DEFINE_AUTO( vr_aim_yaw_offset,   "0",  FCVAR_ARCHIVE, "aim yaw correction, degrees" );
@@ -653,6 +655,24 @@ static model_t   *vr_hand_model_labcoat;
 static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
 static qboolean    vr_hands_init_tried;
 
+// Last two-hand grip evaluation, for the periodic diagnostic line. Purely
+// observational - lets the failing condition be identified from the log
+// instead of guessed at.
+static struct
+{
+	qboolean grip;      // off-hand grip button down
+	qboolean offhand;   // off-hand pose tracked
+	float    dist;      // hand separation
+	float    gap;       // off hand's distance from the barrel axis
+	float    barrel;    // barrel length actually used
+	qboolean attach;    // barrel axis came from the muzzle attachment
+	float    blend;     // engage blend, 1 = fully two-handed
+	float    va_pitch, va_yaw;   // hand-to-hand direction as VectorAngles
+	float    out_pitch, out_yaw;  // what we hand back to the caller
+	qboolean braced;             // returned true (corrections skipped)
+} vr_th;
+
+
 static void VR_DiagSample( void )
 {
 	float dt;
@@ -707,7 +727,8 @@ static void VR_DiagSample( void )
 			VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
 				"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  sync=(%7.1f %7.1f %7.1f)%s lean=%6.1f"
 				"  fps=%5.1f  hz=%5.1f"
-				"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  weapon=%s  sub=%d%s\n",
+				"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  weapon=%s  sub=%d%s"
+				"  2H[grip=%d off=%d dist=%.1f gap=%.1f barrel=%.1f attach=%d blend=%.2f va=(p%.1f y%.1f) out=(p%.1f y%.1f) braced=%d]\n",
 				host.realtime - vrdiag.session_start,
 				vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
 				vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
@@ -721,7 +742,13 @@ static void VR_DiagSample( void )
 				vr.hand_pose[1].valid ? "ok" : "--",
 				cl.local.viewmodel ? "equipped" : "NONE",
 				vr.frames_submitted,
-				frozen ? "  [FROZEN]" : "" );
+				frozen ? "  [FROZEN]" : "",
+				vr_th.grip ? 1 : 0, vr_th.offhand ? 1 : 0,
+				vr_th.dist, vr_th.gap, vr_th.barrel,
+				vr_th.attach ? 1 : 0, vr_th.blend,
+				vr_th.va_pitch, vr_th.va_yaw,
+				vr_th.out_pitch, vr_th.out_yaw,
+				vr_th.braced ? 1 : 0 );
 		}
 	}
 
@@ -1376,11 +1403,17 @@ Returns true if two-handed aim was applied.
 qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 {
 	static float blend = 0.0f;	// 0 = one-handed, 1 = fully two-handed
+	static qboolean latched = false;	// see the hysteresis note below
 	vec3_t off_org, off_ang, delta, dir, fwd, aim, va;
 	float dist, target = 0.0f;
 
 	// The weapon's current forward, i.e. where the barrel already points.
 	AngleVectors( ang, fwd, NULL, NULL );
+
+	vr_th.grip    = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+	vr_th.offhand = false;
+	vr_th.dist = vr_th.gap = -1.0f;
+	vr_th.attach = false;
 
 	// Requires an actual grip press on the off hand, like Lambda1VR
 	// (VrInputAlt2.c:109-124). Proximity alone was tried and is wrong: the
@@ -1392,21 +1425,79 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	{
 		VectorSubtract( off_org, dom_org, delta );
 		dist = VectorLength( delta );
+		vr_th.offhand = true;
+		vr_th.dist = dist;
 
-		if( dist >= vr_twohand_min.value && dist <= vr_twohand_max.value )
+		// The hand-to-hand direction itself. This assignment went missing
+		// when the old cone test was replaced by the barrel-segment test,
+		// leaving `dir` as uninitialised stack garbage that was then blended
+		// into the aim - the real cause of the weapon flying off. The log
+		// made it plain: measured hand positions gave a hand-to-hand pitch
+		// of about -21 degrees while the code was reporting +87.5.
+		VectorCopy( delta, dir );
+		VectorNormalize( dir );
+
+		// HYSTERESIS - essential, not a refinement.
+		//
+		// Engaging rotates the weapon to follow the hand-to-hand line, which
+		// moves the muzzle attachment, which moves the barrel axis this very
+		// test measures against. So the instant it engaged it failed its own
+		// entry test, disengaged, snapped back and re-engaged - once per
+		// frame. Reported live as the gun having a seizure when grabbed.
+		//
+		// The geometry test is therefore an ENTRY condition only. Once
+		// latched, the hold depends only on intent (grip button) and a loose
+		// separation range - neither of which the weapon's own orientation
+		// can influence. That breaks the feedback loop.
+		if( latched
+		    ? ( dist >= vr_twohand_min.value * 0.5f && dist <= vr_twohand_max.value * 1.5f )
+		    : ( dist >= vr_twohand_min.value && dist <= vr_twohand_max.value ))
 		{
-			// Closest approach between the off hand and the barrel, modelled
-			// as the segment from the grip out along forward. Engaging on
-			// that distance means the hand has to physically meet the weapon,
-			// not merely be roughly in line with it.
-			float along = DotProduct( delta, fwd );
-			vec3_t closest, gap;
+			// Closest approach between the off hand and the barrel. Engaging
+			// on that distance means the hand has to physically meet the
+			// weapon, not merely be roughly in line with it.
+			//
+			// The barrel axis is taken from the weapon model's MUZZLE
+			// ATTACHMENT when there is one: grip (dom_org) -> muzzle. That is
+			// the gun the player can actually see, at its true length, so no
+			// direction or length has to be assumed.
+			//
+			// Deriving it from AngleVectors( ang ) instead was a real bug:
+			// `ang` is the raw controller pose, while the rendered weapon
+			// points along the attachment bore, which is a different
+			// direction entirely. The test measured against an imaginary
+			// barrel roughly 45 degrees off the visible one, so putting a
+			// hand on the actual foregrip never engaged - reported live as
+			// two-handing simply not working on the rifle.
+			float barrel_len = vr_twohand_barrel.value;
+			float along;
+			vec3_t axis, closest, gap;
 
-			along = bound( 0.0f, along, vr_twohand_barrel.value );
-			VectorMA( dom_org, along, fwd, closest );
+			VectorCopy( fwd, axis );
+
+			if( vr_aim_attachment.value && clgame.viewent.model )
+			{
+				vec3_t to_muzzle;
+
+				VectorSubtract( clgame.viewent.attachment[0], dom_org, to_muzzle );
+
+				if( VectorLength( to_muzzle ) > 1.0f )
+				{
+					barrel_len = VectorLength( to_muzzle );
+					VectorCopy( to_muzzle, axis );
+					VectorNormalize( axis );
+					vr_th.attach = true;
+				}
+			}
+
+			along = DotProduct( delta, axis );
+			along = bound( 0.0f, along, barrel_len );
+			VectorMA( dom_org, along, axis, closest );
 			VectorSubtract( off_org, closest, gap );
+			vr_th.gap = VectorLength( gap );
+			vr_th.barrel = barrel_len;
 
-			if( VectorLength( gap ) <= vr_twohand_radius.value )
+			if( latched || VectorLength( gap ) <= vr_twohand_radius.value )
 				target = 1.0f;
 		}
 	}
@@ -1421,28 +1512,60 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	}
 	else blend = target;
 
+	// Latch tracks the target: releasing the grip or pulling the hands
+	// apart drops it, and re-entry requires the full geometry test again.
+	latched = ( target > 0.0f );
+
+	vr_th.blend = blend;
+
 	if( blend <= 0.001f )
 		return false;
 
-	// Blend the DIRECTION VECTORS, not the euler angles - lerping angles
-	// wraps badly through +-180 and would produce a spin.
+	// SET the angles absolutely from the hand-to-hand line - do not steer
+	// toward it, and do not let any further correction be applied on top.
+	//
+	// Ported from Lambda1VR (VrInputAlt2.c:183-204), which is the reference
+	// that actually works. Its stabilised branch does:
+	//
+	//   VectorSet( weaponangles[ADJUSTED],
+	//              RAD2DEG( atanf( y / zxDist ) ),
+	//              forwardYaw - RAD2DEG( atan2f( x, -z ) ),
+	//              weaponangles[ADJUSTED][ROLL] );
+	//
+	// i.e. pitch and yaw are overwritten outright and only ROLL survives.
+	// The decisive detail is what that branch does NOT do: the one-handed
+	// else-branch right below it applies `YAW += (viewyaw - hmdyaw)` and
+	// `PITCH *= -1`, and the stabilised branch skips both. It also discards
+	// vr_weapon_pitchadjust, the rest-pose correction baked in further up,
+	// simply by overwriting the value.
+	//
+	// That is the whole lesson: once the hand-to-hand vector is in hand it is
+	// already a finished WORLD direction, so every correction meant for a
+	// controller-derived angle has to be dropped, not layered on. Steering by
+	// a delta while the mesh correction still applied downstream is what sent
+	// the gun wild; the caller now skips VR_CalibrateWeaponAngles whenever
+	// this returns true.
 	VectorLerp( fwd, blend, dir, aim );
 	if( VectorNormalizeLength( aim ) == 0.0f )
 		return false;
 
 	VectorAngles( aim, va );
 
-	// VectorAngles reports pitch POSITIVE-UP (public/xash3d_mathlib.c:198
-	// uses atan2(forward[2], horiz)), while entity angles follow
-	// AngleVectors, where forward[2] = -sin(pitch) and positive pitch is
-	// DOWN. Mixing the two conventions is the exact class of sign bug that
-	// cost so much on the hand orientation - negate here.
+	// VectorAngles is pitch-positive-UP; entity angles follow AngleVectors,
+	// where positive pitch is DOWN.
 	ang[PITCH] = -va[PITCH];
 	ang[YAW]   = va[YAW];
-	// ROLL deliberately left alone: it still comes from the firing hand, so
-	// twisting that wrist still rolls the weapon while two-handing.
 
-	return true;
+	vr_th.va_pitch  = va[PITCH];
+	vr_th.va_yaw    = va[YAW];
+	vr_th.out_pitch = ang[PITCH];
+	vr_th.out_yaw   = ang[YAW];
+	vr_th.braced    = ( blend >= 0.999f );
+	// ROLL deliberately preserved, exactly as Lambda1VR does - wrist twist on
+	// the firing hand still rolls the weapon while braced.
+
+	return ( blend >= 0.999f );
+
 }
 
 qboolean VR_HoldingMelee( void )
@@ -1458,6 +1581,89 @@ qboolean VR_HoldingMelee( void )
 	    || Q_stristr( name, "knife" )   != NULL
 	    || Q_stristr( name, "wrench" )  != NULL
 	    || Q_stristr( name, "pipe" )    != NULL;
+}
+
+/*
+================
+VR_AlignModelToFireRay
+
+Rotate the weapon MODEL so its visible barrel lies along the actual firing
+line, by measuring the difference rather than assuming a constant.
+
+The rest-pose correction gets the model roughly right, but a residual always
+remains - the barrel sits inside each mesh at its own angle, so no single
+number lines every weapon up. Reported live as the gun drawn slightly below
+its own laser.
+
+Both quantities here are measurable, so nothing has to be guessed: the fire
+ray is known exactly, and the model's real bore comes from its muzzle
+attachment, which ref_gl recomputes in world space every frame. Steering by
+the difference converges regardless of what the rest-pose correction did, and
+needs no per-weapon tuning.
+
+No feedback risk while braced: aim comes from the hand-to-hand vector, which
+this cannot influence. When not braced the fire ray is itself derived from
+the attachment, so the difference is zero and this is a no-op.
+================
+*/
+void VR_AlignModelToFireRay( vec3_t ang )
+{
+	vec3_t fire_ang, bore, cur, want, fwd;
+	float dp, dy;
+
+	if( !vr_model_align.value || !VR_IsActive() )
+		return;
+
+	if( !clgame.viewent.model || !VR_GetFireRay( NULL, fire_ang ))
+		return;
+
+	VectorSubtract( clgame.viewent.attachment[1], clgame.viewent.attachment[0], bore );
+	if( VectorLength( bore ) < 0.1f )
+		return;	// no usable attachment on this model
+
+	VectorNormalize( bore );
+	VectorAngles( bore, cur );
+
+	AngleVectors( fire_ang, fwd, NULL, NULL );
+	VectorAngles( fwd, want );
+
+	dp = want[PITCH] - cur[PITCH];
+	dy = want[YAW]   - cur[YAW];
+
+	// Yaw wraps; take the short way round or a small correction becomes a spin.
+	while( dy >  180.0f ) dy -= 360.0f;
+	while( dy < -180.0f ) dy += 360.0f;
+
+	// CONVERGE on the correction rather than re-applying it every frame.
+	//
+	// attachment[] reflects the model as drawn LAST frame, so correcting the
+	// full measured error each frame is a feedback loop with a one-frame
+	// delay and unity gain - it overshoots and rings. Reported live as the
+	// firing line being right but the gun shaking hard.
+	//
+	// The true correction is a CONSTANT for a given mesh (the bore's fixed
+	// offset inside the model), so integrate toward it with a small gain
+	// instead. The residual falls to zero as it converges and the held value
+	// simply stays there - no steady-state shake, and still no per-weapon
+	// tuning. Reset on weapon change, since the next mesh has its own offset.
+	{
+		static const model_t *last_model = NULL;
+		static float corr_p = 0.0f, corr_y = 0.0f;
+		float gain = bound( 0.01f, vr_model_align.value, 1.0f );
+
+		if( clgame.viewent.model != last_model )
+		{
+			last_model = clgame.viewent.model;
+			corr_p = corr_y = 0.0f;
+		}
+
+		corr_p = bound( -180.0f, corr_p + dp * gain, 180.0f );
+		corr_y = bound( -180.0f, corr_y + dy * gain, 180.0f );
+
+		// VectorAngles is pitch-positive-UP, entity angles pitch-positive-DOWN.
+		ang[PITCH] -= corr_p;
+		ang[YAW]   += corr_y;
+	}
 }
 
 void VR_CalibrateWeaponAngles( vec3_t ang )
@@ -1821,7 +2027,7 @@ void VR_UpdateFireRay( void )
 	if( !VR_IsActive() || !VR_GetHandWorld( 1, org, ang ))
 		return;
 
-	VR_ApplyTwoHandedAim( org, ang );
+	qboolean braced = VR_ApplyTwoHandedAim( org, ang );
 
 	// PREFERRED: take the firing line straight off the weapon model's own
 	// MUZZLE ATTACHMENT, which ref_gl fills in world space every frame
@@ -1838,7 +2044,7 @@ void VR_UpdateFireRay( void )
 	//
 	// attachment[0] is the muzzle; attachment[1], where present, is a second
 	// point down the barrel, so [0]->[1] is the true bore line.
-	if( vr_aim_attachment.value && clgame.viewent.model )
+	if( !braced && vr_aim_attachment.value && clgame.viewent.model )
 	{
 		const cl_entity_t *ve = &clgame.viewent;
 		vec3_t bore;
@@ -1864,7 +2070,10 @@ void VR_UpdateFireRay( void )
 	}
 
 	// Manual fallback for models with no usable attachments.
-	if( vr_aim_pitch_offset.value != 0.0f || vr_aim_yaw_offset.value != 0.0f )
+	// Skipped while braced: the two-handed angles are already a finished
+	// world direction, so layering a rest-pose correction on top is what
+	// sent the weapon wild. Lambda1VR skips its equivalent the same way.
+	if( !braced && ( vr_aim_pitch_offset.value != 0.0f || vr_aim_yaw_offset.value != 0.0f ))
 	{
 		vec3_t cal = { vr_aim_pitch_offset.value, vr_aim_yaw_offset.value, 0.0f };
 		VR_ApplyMeshCalibration( ang, cal );
@@ -2413,6 +2622,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_aim_from_weapon );
 	Cvar_RegisterVariable( &vr_weapon_origin );
 	Cvar_RegisterVariable( &vr_diag_aim );
+	Cvar_RegisterVariable( &vr_model_align );
 	Cvar_RegisterVariable( &vr_aim_attachment );
 	Cvar_RegisterVariable( &vr_aim_pitch_offset );
 	Cvar_RegisterVariable( &vr_aim_yaw_offset );
