@@ -434,21 +434,29 @@ void V_RenderView( void )
 
 		// Pin the weapon to the right controller. The mod positioned the
 		// viewmodel relative to a mouse-look camera; in VR the hand owns it.
-		if( vr_hands.value )
 		{
-			vec3_t hand_org, hand_ang;
+			qboolean weapon_equipped = ( cl.local.viewmodel != 0 );
 
-			if( VR_GetHandWorld( 1, hand_org, hand_ang ))
+			if( vr_hands.value && weapon_equipped )
 			{
-				cl_entity_t *view = &clgame.viewent;
+				vec3_t hand_org, hand_ang;
 
-				VectorCopy( hand_org, view->origin );
-				VectorCopy( hand_org, view->curstate.origin );
-				VectorCopy( hand_org, view->latched.prevorigin );
-				VectorCopy( hand_ang, view->angles );
-				VectorCopy( hand_ang, view->curstate.angles );
-				VectorCopy( hand_ang, view->latched.prevangles );
+				if( VR_GetHandWorld( 1, hand_org, hand_ang ))
+				{
+					cl_entity_t *view = &clgame.viewent;
+
+					VectorCopy( hand_org, view->origin );
+					VectorCopy( hand_org, view->curstate.origin );
+					VectorCopy( hand_org, view->latched.prevorigin );
+					VectorCopy( hand_ang, view->angles );
+					VectorCopy( hand_ang, view->curstate.angles );
+					VectorCopy( hand_ang, view->latched.prevangles );
+				}
 			}
+
+			// Left hand always; right hand only when no weapon is filling
+			// that slot this frame, so the gun and a bare hand never overlap.
+			VR_DrawHands( !weapon_equipped );
 		}
 
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )

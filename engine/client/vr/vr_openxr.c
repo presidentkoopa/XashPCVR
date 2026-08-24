@@ -18,6 +18,8 @@ See vr_openxr.h for the design rationale.
 #include "common.h"
 #include "client.h"
 #include "ref_common.h"
+#include "mod_local.h"		// Mod_ForName - engine-internal model loading, for bare-hand models
+#include "entity_types.h"	// ET_NORMAL
 #include "vr_openxr.h"
 
 #if XASH_WIN32 && !XASH_DEDICATED
@@ -427,7 +429,7 @@ static void VR_DiagSample( void )
 
 		VR_DiagPrintf( "t=%7.2f  hmd pos=(%7.1f %7.1f %7.1f)  ang=(p%7.2f y%7.2f r%7.2f)"
 			"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  fps=%5.1f  hz=%5.1f"
-			"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  sub=%d%s\n",
+			"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  weapon=%s  sub=%d%s\n",
 			host.realtime - vrdiag.session_start,
 			vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
 			vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
@@ -437,6 +439,7 @@ static void VR_DiagSample( void )
 			vr.move_x, vr.move_y, vr.turn_x, vr.turn_active ? "" : "[UNBOUND]",
 			vr.hand_pose[0].valid ? "ok" : "--",
 			vr.hand_pose[1].valid ? "ok" : "--",
+			cl.local.viewmodel ? "equipped" : "NONE",
 			vr.frames_submitted,
 			frozen ? "  [FROZEN]" : "" );
 	}
@@ -787,6 +790,131 @@ qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang )
 
 	VR_PlayToWorld( &vr.hand_pose[hand], out_org, out_ang );
 	return true;
+}
+
+/*
+=================================================================
+	bare-hand visuals
+
+The weapon viewmodel (clgame.viewent) already gets pinned to the right
+controller by cl_view.c when a weapon is equipped - that draws a gun, not a
+hand. This fills the two gaps: the LEFT hand, which has no weapon slot at
+all, and the RIGHT hand when nothing is equipped (weapon=NONE), where
+otherwise nothing is drawn.
+
+These are client-only synthetic entities, added to the per-frame visible list
+via CL_AddVisibleEntity - the same mechanism every normal entity in the game
+goes through - rather than anything server/mod-specific, so this works
+identically regardless of which GoldSrc mod is loaded.
+
+Assets: models/v_hand_hevsuit.mdl and v_hand_labcoat.mdl are not part of
+stock Half-Life. They are placed in the writable game directory (an overlay
+on top of the read-only -rodir base) for local testing.
+=================================================================
+*/
+static model_t   *vr_hand_model_suit;
+static model_t   *vr_hand_model_labcoat;
+static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
+static qboolean    vr_hands_init_tried;
+
+static void VR_InitHandModels( void )
+{
+	int i;
+
+	if( vr_hands_init_tried )
+		return;
+	vr_hands_init_tried = true;
+
+	vr_hand_model_suit    = Mod_ForName( "models/v_hand_hevsuit.mdl", false, false );
+	vr_hand_model_labcoat = Mod_ForName( "models/v_hand_labcoat.mdl", false, false );
+
+	if( !vr_hand_model_suit && !vr_hand_model_labcoat )
+	{
+		Con_Printf( S_WARN "VR: no bare-hand models found (models/v_hand_hevsuit.mdl / "
+			"v_hand_labcoat.mdl) - hands will be invisible when unarmed\n" );
+	}
+	else
+	{
+		Con_Printf( "VR: bare-hand models loaded (suit=%s labcoat=%s)\n",
+			vr_hand_model_suit ? "yes" : "no", vr_hand_model_labcoat ? "yes" : "no" );
+	}
+
+	for( i = 0; i < 2; i++ )
+	{
+		memset( &vr_hand_ent[i], 0, sizeof( vr_hand_ent[i] ));
+		// CRASHED HERE with an arbitrary large index (0x7FFE): something in the
+		// studio render path indexes a per-entity array directly with ->index,
+		// with no bounds check, and clgame.maxEntities is a modest engine-sized
+		// value (GI->max_edicts + headroom, see cl_parse.c) - nowhere near
+		// 0x7FFE. That corrupted memory and the crash dump's stack walk landed
+		// on the wreckage, not the real cause. Use the top of the array the
+		// engine actually allocated, which is guaranteed in-bounds and, being
+		// far above any real networked entity, effectively never collides.
+		vr_hand_ent[i].index = clgame.maxEntities - 1 - i;
+		vr_hand_ent[i].curstate.rendermode = kRenderNormal;
+		vr_hand_ent[i].curstate.renderamt  = 255;
+	}
+}
+
+/*
+================
+VR_DrawHands
+
+Called once per frame (not per eye - the visible-entity list persists across
+both eye passes within a frame, same as every other entity). Draws the left
+hand always, and the right hand only when VR_ShouldDrawWeapon determines no
+weapon viewmodel is being shown this frame.
+================
+*/
+void VR_DrawHands( qboolean draw_right )
+{
+	int hand;
+
+	if( !VR_IsActive() || !vr_hands.value )
+		return;
+
+	VR_InitHandModels();
+
+	for( hand = 0; hand < 2; hand++ )
+	{
+		vec3_t org, ang;
+		cl_entity_t *e = &vr_hand_ent[hand];
+		model_t *mdl;
+
+		if( hand == 1 && !draw_right )
+			continue;
+
+		if( !VR_GetHandWorld( hand, org, ang ))
+			continue;
+
+		// TODO: switch to the labcoat model before the player has picked up
+		// the suit. No verified way to query that state from here yet -
+		// defaults to whichever asset is actually present.
+		mdl = vr_hand_model_suit ? vr_hand_model_suit : vr_hand_model_labcoat;
+		if( !mdl ) continue;
+
+		if( e->model != mdl )
+		{
+			// modelindex is a precache-slot correlation used for network
+			// delta compression; this entity is synthesized locally and never
+			// networked, so it is left at 0 - only the model pointer matters
+			// for rendering a client-only entity like this.
+			e->model = mdl;
+			e->curstate.sequence = 0;
+			e->curstate.frame = 0;
+			e->curstate.animtime = host.realtime;
+			e->curstate.framerate = 1.0f;
+		}
+
+		VectorCopy( org, e->origin );
+		VectorCopy( org, e->curstate.origin );
+		VectorCopy( org, e->latched.prevorigin );
+		VectorCopy( ang, e->angles );
+		VectorCopy( ang, e->curstate.angles );
+		VectorCopy( ang, e->latched.prevangles );
+
+		CL_AddVisibleEntity( e, ET_NORMAL );
+	}
 }
 
 /*
@@ -1278,7 +1406,7 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",	// PREVWEAP
 			"/user/hand/left/input/menu/click",		// MENU
 		},
-		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
 	},
 	{
 		"/interaction_profiles/valve/index_controller",
@@ -1296,7 +1424,7 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/system/click",
 		},
-		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
 	},
 	{
 		"/interaction_profiles/microsoft/motion_controller",
@@ -1314,7 +1442,7 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/menu/click",
 		},
-		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
 	},
 	{
 		"/interaction_profiles/htc/vive_controller",
@@ -1332,7 +1460,7 @@ static const vr_profile_t vr_profiles[] =
 			NULL,
 			"/user/hand/left/input/menu/click",
 		},
-		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
+		"/user/hand/left/input/aim/pose", "/user/hand/right/input/aim/pose"
 	},
 };
 

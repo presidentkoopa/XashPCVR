@@ -150,6 +150,13 @@ qboolean VR_GetButton( int btn );
 // Returns false if that controller is not currently tracked.
 qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang );
 
+// Draws a bare-hand model at each tracked controller, client-side only (never
+// networked, works identically regardless of which mod is loaded). Call once
+// per frame, not per eye. draw_right should be false when the weapon
+// viewmodel is already being drawn for the right hand this frame, so the gun
+// and the bare hand are never both shown at once.
+void     VR_DrawHands( qboolean draw_right );
+
 // Constrain 2D drawing to a readable rect inside the current eye texture.
 // The engine's 2D pass sets up an ortho for the WINDOW, which would otherwise
 // splatter the HUD across the full eye at the wrong aspect. Call after
