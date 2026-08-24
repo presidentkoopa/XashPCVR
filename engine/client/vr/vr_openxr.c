@@ -193,6 +193,8 @@ static struct
 	float         world_yaw;
 	float         body_yaw;       // play-space rotation in world (mouse/stick turn)
 	float         injected_yaw;   // head yaw written into cl.viewangles last frame
+	float         turn_delta;     // stick turn accumulated this frame, consumed by
+	                              // VR_OverrideViewAngles
 
 	XrInstance    instance;
 	XrSystemId    system;
@@ -228,6 +230,7 @@ static struct
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
 	qboolean      snap_pending;
+	qboolean      turn_active;	// turn action reported bound+active by the runtime
 
 	// PFN cache
 	PFN_xrGetOpenGLGraphicsRequirementsKHR pfnGetOpenGLGraphicsRequirementsKHR;
@@ -422,7 +425,7 @@ static void VR_DiagSample( void )
 			vr.world_origin[0], vr.world_origin[1], vr.world_origin[2], vr.world_yaw,
 			vrdiag.fps_frames ? vrdiag.fps_accum / vrdiag.fps_frames : 0.0f,
 			hmd_hz,
-			vr.move_x, vr.move_y, vr.turn_x,
+			vr.move_x, vr.move_y, vr.turn_x, vr.turn_active ? "" : "[UNBOUND]",
 			vr.frames_submitted,
 			frozen ? "  [FROZEN]" : "" );
 	}
@@ -754,7 +757,11 @@ void VR_OverrideViewAngles( vec3_t angles )
 	// injected. Treating it as body facing therefore re-adds head yaw every
 	// frame, compounding into an uncontrollable horizontal spin. Subtract what
 	// we injected to recover the true body facing.
-	vr.body_yaw = anglemod( angles[YAW] - vr.injected_yaw );
+	// Recover body facing, then fold in this frame's stick turn. body_yaw
+	// persists across frames via cl.viewangles: what we write below comes back
+	// next frame as angles[YAW], and subtracting injected_yaw recovers it.
+	vr.body_yaw = anglemod( angles[YAW] - vr.injected_yaw + vr.turn_delta );
+	vr.turn_delta = 0.0f;	// consumed
 
 	hmd_yaw = vr.hmd_pose.angles[YAW];
 	vr.injected_yaw = hmd_yaw;
@@ -1296,8 +1303,10 @@ static void VR_SyncInput( void )
 	}
 
 	gi.action = vr.actions[VRA_TURN];
+	vr.turn_active = false;
 	if( XR_SUCCEEDED( xrGetActionStateVector2f( vr.session, &gi, &v2 )) && v2.isActive )
 	{
+		vr.turn_active = true;
 		vr.turn_x = v2.currentState.x;
 		vr.turn_y = v2.currentState.y;
 	}
@@ -1382,6 +1391,10 @@ void VR_UpdateTurn( float frametime )
 	if( !VR_IsActive() || !vr.input_ready )
 		return;
 
+	// NOTE: this accumulates a DELTA rather than writing body_yaw directly.
+	// VR_OverrideViewAngles recomputes body_yaw from the mod's yaw every frame
+	// (to strip the head yaw we injected), so a direct write here would be
+	// discarded one call later - which is exactly why turning did nothing.
 	if( vr_snap_turn.value )
 	{
 		// discrete steps: much more comfortable for most people than smooth yaw
@@ -1394,14 +1407,13 @@ void VR_UpdateTurn( float frametime )
 			return;
 
 		vr.snap_pending = true;
-		vr.body_yaw = anglemod( vr.body_yaw -
-			(( vr.turn_x > 0.0f ) ? vr_snap_angle.value : -vr_snap_angle.value ));
+		vr.turn_delta -= ( vr.turn_x > 0.0f ) ? vr_snap_angle.value : -vr_snap_angle.value;
 	}
 	else
 	{
 		if( fabs( vr.turn_x ) < dead )
 			return;
-		vr.body_yaw = anglemod( vr.body_yaw - vr.turn_x * vr_turnspeed.value * frametime );
+		vr.turn_delta -= vr.turn_x * vr_turnspeed.value * frametime;
 	}
 }
 
