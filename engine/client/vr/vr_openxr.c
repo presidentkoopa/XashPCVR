@@ -2135,15 +2135,15 @@ cover. The log line names the exact spot to widen to. Silence across a mod is
 positive evidence that PostThink covers it.
 ================
 */
-static qboolean vr_fire_window;		// inside the substituted PostThink call
+static int      vr_fire_phase;		// VR_FIRE_PHASE_*
 static qboolean vr_fire_eye_valid;
 static vec3_t   vr_fire_eye;		// VR player's real (unsubstituted) eye
 static int      vr_fire_buttons;
 static double   vr_fire_warn_time;
 
-void VR_SetFireWindow( qboolean active, const float *eye, int buttons )
+void VR_SetFirePhase( int phase, const float *eye, int buttons )
 {
-	vr_fire_window = active;
+	vr_fire_phase = phase;
 	vr_fire_buttons = buttons;
 
 	if( eye )
@@ -2158,7 +2158,17 @@ void VR_CheckTraceOutsideWindow( const float *start )
 {
 	vec3_t delta;
 
-	if( !vr_debug.value || vr_fire_window || !vr_fire_eye_valid || !start )
+	if( !vr_debug.value || !vr_fire_eye_valid || !start )
+		return;
+
+	// ONLY PreThink. Not "anything outside PostThink" - that first version
+	// stayed armed for the whole server frame and flagged AI and physics
+	// traces that merely began near the player's eye, which is noise, not a
+	// weapon. PreThink is the one other place the game DLL is handed this
+	// usercmd, so it is the only realistic uncovered fire path (a mod
+	// overriding ItemPreFrame). Everything outside SV_RunCmd entirely is AI
+	// and physics and cannot be usercmd-driven weapon fire.
+	if( vr_fire_phase != VR_FIRE_PHASE_PRETHINK )
 		return;
 
 	if( !FBitSet( vr_fire_buttons, IN_ATTACK ))
@@ -2178,8 +2188,8 @@ void VR_CheckTraceOutsideWindow( const float *start )
 	vr_fire_warn_time = host.realtime;
 
 	VR_DiagPrintf( "VR: fire outside window - trace from eye (%.1f %.1f %.1f) "
-		"with IN_ATTACK held, outside the PostThink substitution. This mod "
-		"fires somewhere we do not cover.\n",
+		"with IN_ATTACK held, during PreThink. This mod fires from a path the "
+		"PostThink substitution does not cover (ItemPreFrame?).\n",
 		vr_fire_eye[0], vr_fire_eye[1], vr_fire_eye[2] );
 }
 

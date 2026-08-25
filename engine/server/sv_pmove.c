@@ -945,7 +945,27 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	if( ucmd->impulse ) clent->v.impulse = ucmd->impulse;
 
 	svgame.globals->time = cl->timebase;
+
+#if !XASH_DEDICATED
+	// PCVR fork, diagnostic only: PreThink is the other point the game DLL is
+	// handed this usercmd, and the view_ofs substitution below does NOT cover
+	// it. A shot leaving the eye in here is a real gap - see
+	// VR_CheckTraceOutsideWindow.
+	if( NET_IsLocalAddress( cl->netchan.remote_address ))
+	{
+		vec3_t eye;
+
+		VectorAdd( clent->v.origin, clent->v.view_ofs, eye );
+		VR_SetFirePhase( VR_FIRE_PHASE_PRETHINK, eye, ucmd->buttons );
+	}
+#endif
+
 	svgame.dllFuncs.pfnPlayerPreThink( clent );
+
+#if !XASH_DEDICATED
+	VR_SetFirePhase( VR_FIRE_PHASE_NONE, NULL, 0 );
+#endif
+
 	SV_PlayerRunThink( clent, frametime, cl->timebase );
 
 	// If conveyor, or think, set basevelocity, then send to client asap too.
@@ -1040,18 +1060,17 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			}
 		}
 
-		// Open the diagnostic window. Anything firing from the eye while this
-		// is open is covered by us; anything firing from it while closed is not.
+		// Mark the covered phase. Firing from the eye in here is expected and
+		// is exactly what the substitution above redirects to the muzzle.
 		if( vr_local )
-			VR_SetFireWindow( true, vr_eye, ucmd->buttons );
+			VR_SetFirePhase( VR_FIRE_PHASE_POSTTHINK, vr_eye, ucmd->buttons );
 #endif
 
 		// run post-think
 		svgame.dllFuncs.pfnPlayerPostThink( clent );
 
 #if !XASH_DEDICATED
-		if( vr_local )
-			VR_SetFireWindow( false, vr_eye, ucmd->buttons );
+		VR_SetFirePhase( VR_FIRE_PHASE_NONE, NULL, 0 );
 
 		if( vr_muzzle )
 			VectorCopy( saved_view_ofs, clent->v.view_ofs );

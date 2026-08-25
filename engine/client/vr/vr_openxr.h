@@ -183,11 +183,15 @@ qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang );
 // True when the shot ORIGIN should be moved to the muzzle.
 qboolean VR_WeaponOriginActive( void );
 
-// Diagnostic only, no behaviour change. VR_SetFireWindow brackets the
-// pfnPlayerPostThink call where view_ofs is substituted; VR_CheckTraceOutsideWindow
-// is called from pfnTraceLine and logs when a mod fires from the eye OUTSIDE that
-// bracket - i.e. a weapon path our substitution does not cover. Gated on vr_debug.
-void     VR_SetFireWindow( qboolean active, const float *eye, int buttons );
+// Diagnostic only, no behaviour change. SV_RunCmd tags which game-DLL call it is
+// currently inside; VR_CheckTraceOutsideWindow, called from pfnTraceLine, logs a
+// shot leaving the player's eye during PreThink - the one place a mod could fire
+// that the PostThink view_ofs substitution does not cover. Gated on vr_debug.
+#define VR_FIRE_PHASE_NONE      0	// not inside the game DLL's per-command calls
+#define VR_FIRE_PHASE_PRETHINK  1	// inside pfnPlayerPreThink - NOT covered
+#define VR_FIRE_PHASE_POSTTHINK 2	// inside the substituted window - covered
+
+void     VR_SetFirePhase( int phase, const float *eye, int buttons );
 void     VR_CheckTraceOutsideWindow( const float *start );
 
 // True when firing should follow the weapon rather than the head.
