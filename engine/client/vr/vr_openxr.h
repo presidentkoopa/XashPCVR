@@ -183,6 +183,18 @@ qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang );
 // True when the shot ORIGIN should be moved to the muzzle.
 qboolean VR_WeaponOriginActive( void );
 
+// VR akimbo. The off hand fires the equipped weapon a second time on its own
+// cooldown. The engine only supplies WHERE that shot comes from, via
+// pev->vuser1/vuser2; the second shot itself is the game DLL's
+// (CBasePlayer::DualWieldPostFrame). Needs our hl.dll - the one VR feature
+// that is not mod-agnostic, so it stays off by default.
+qboolean VR_DualWieldActive( void );
+qboolean VR_GetOffhandFire( vec3_t out_org, vec3_t out_dir );
+
+// Draws the second gun (a mirrored copy of the viewmodel) at the off hand.
+// Client-side only, nothing networked. Call alongside VR_DrawHands.
+void     VR_DrawOffhandWeapon( void );
+
 // Diagnostic only, no behaviour change. SV_RunCmd tags which game-DLL call it is
 // currently inside; VR_CheckTraceOutsideWindow, called from pfnTraceLine, logs a
 // shot leaving the player's eye during PreThink - the one place a mod could fire

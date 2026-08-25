@@ -523,6 +523,10 @@ void V_RenderView( void )
 			// is ever actually posed onto the grip (the model carries
 			// fullgrab/halfgrab sequences that are currently unused).
 			VR_DrawHands( !weapon_equipped );
+
+			// Second gun, while dual wielding. Drawn after the hands so the
+			// off hand shows a weapon rather than an empty fist.
+			VR_DrawOffhandWeapon();
 		}
 
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )

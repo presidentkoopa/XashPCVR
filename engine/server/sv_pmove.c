@@ -1060,6 +1060,27 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			}
 		}
 
+		// VR akimbo: hand the off hand's muzzle and aim to the game DLL.
+		// vuser1/vuser2 are entvars_t fields reserved "For mods" that stock
+		// Half-Life never reads, so a DLL that does not understand them is
+		// simply unaffected. Cleared when not dual wielding so a stale pose
+		// can never be picked up.
+		if( vr_local )
+		{
+			vec3_t off_org, off_dir;
+
+			if( VR_GetOffhandFire( off_org, off_dir ))
+			{
+				VectorCopy( off_org, clent->v.vuser1 );
+				VectorCopy( off_dir, clent->v.vuser2 );
+			}
+			else
+			{
+				VectorClear( clent->v.vuser1 );
+				VectorClear( clent->v.vuser2 );
+			}
+		}
+
 		// Mark the covered phase. Firing from the eye in here is expected and
 		// is exactly what the substitution above redirects to the muzzle.
 		if( vr_local )

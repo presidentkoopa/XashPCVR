@@ -269,6 +269,8 @@ static CVAR_DEFINE_AUTO( vr_aim_from_weapon, "1", FCVAR_ARCHIVE, "fire along the
 // vr_aim_from_weapon, which only changes DIRECTION, so the two can be
 // bisected independently when something breaks.
 static CVAR_DEFINE_AUTO( vr_weapon_origin, "1", FCVAR_ARCHIVE, "shot ORIGIN at the muzzle (0 = stock, from the eye)" );
+static CVAR_DEFINE_AUTO( vr_dual_wield, "0", FCVAR_ARCHIVE, "VR akimbo: off hand fires the same weapon (needs our hl.dll)" );
+static CVAR_DEFINE_AUTO( vr_offhand_muzzle, "8", FCVAR_ARCHIVE, "units forward of the off hand the second shot leaves from" );
 
 // One-shot dump of the actual numbers going into aim, to vr_diag.log.
 static CVAR_DEFINE_AUTO( vr_diag_aim, "0", 0, "log muzzle/aim/overlay state for N frames" );
@@ -653,6 +655,12 @@ static qboolean VR_GetHandGripWorld( int hand, vec3_t out_org, vec3_t out_ang );
 static model_t   *vr_hand_model_suit;
 static model_t   *vr_hand_model_labcoat;
 static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
+
+// The second gun while dual wielding. File scope rather than local to
+// VR_DrawOffhandWeapon because the aim path reads it back: the renderer fills
+// attachment[] as it draws, which is the ONLY exact source for where this
+// weapon's barrel actually points.
+static cl_entity_t vr_offhand_ent;
 static qboolean    vr_hands_init_tried;
 
 // Last two-hand grip evaluation, for the periodic diagnostic line. Purely
@@ -1822,6 +1830,12 @@ void VR_DrawHands( qboolean draw_right )
 		if( hand == 1 && !draw_right )
 			continue;
 
+		// While dual wielding the off hand holds a gun (VR_DrawOffhandWeapon),
+		// so the bare hand must not also be drawn there - reported live as
+		// "2 hands on offhand", the mesh and the weapon stacked on each other.
+		if( hand == 0 && VR_DualWieldActive( ))
+			continue;
+
 		// AIM pose, not grip - grip pose made the hand face the wrong way
 		// entirely when tried. Aim pose plus a per-mesh calibration offset
 		// (below) is what actually got the bare hand pointing forward,
@@ -1925,6 +1939,74 @@ void VR_DrawHands( qboolean draw_right )
 
 		CL_AddVisibleEntity( e, ET_NORMAL );
 	}
+}
+
+/*
+================
+VR_DrawOffhandWeapon
+
+Draws the second gun while dual wielding.
+
+There is no second weapon ENTITY to render - GoldSrc has one active weapon and
+the game DLL owns it. So this draws another copy of the same viewmodel at the
+off-hand controller, mirrored, purely client side. Nothing is networked and no
+game state is touched: the shot it appears to fire is the DLL's business
+(CBasePlayer::DualWieldPostFrame), this is only what you see.
+
+Mirroring is the same trick the left hand already uses - curstate.scale < 0
+makes R_StudioSetUpTransform negate matrix column 1 - so the off-hand gun reads
+as a left-handed weapon rather than a clone facing the wrong way.
+================
+*/
+void VR_DrawOffhandWeapon( void )
+{
+
+	vec3_t org, ang;
+	model_t *mdl;
+
+	if( !VR_DualWieldActive() || !vr_hands.value )
+		return;
+
+	mdl = clgame.viewent.model;
+	if( !mdl )
+		return;
+
+	if( !VR_GetHandWorld( 0, org, ang ))	// 0 = left
+		return;
+
+	// Same rest-pose correction the drawn main weapon gets, so both guns hang
+	// in the hand the same way. Deliberately NOT VR_AlignModelToFireRay: that
+	// closes the residual against the MAIN hand's fire ray, which has nothing
+	// to do with where this one points.
+	VR_CalibrateWeaponAngles( ang );
+
+	// Pre-negate pitch, as every studio model drawn from here must - see the
+	// long note in VR_DrawHands for why the engine negates it again downstream.
+	ang[PITCH] = -ang[PITCH];
+
+	if( vr_offhand_ent.model != mdl )
+	{
+		vr_offhand_ent.model = mdl;
+		vr_offhand_ent.curstate.sequence = 0;
+		vr_offhand_ent.curstate.frame = 0;
+		vr_offhand_ent.curstate.animtime = host.realtime;
+		vr_offhand_ent.curstate.framerate = 1.0f;
+		vr_offhand_ent.curstate.rendermode = kRenderNormal;
+		vr_offhand_ent.curstate.renderamt = 255;
+	}
+
+	vr_offhand_ent.curstate.scale = -1.0f;		// mirror: left-handed copy
+	vr_offhand_ent.curstate.body = clgame.viewent.curstate.body;
+	vr_offhand_ent.curstate.skin = clgame.viewent.curstate.skin;
+
+	VectorCopy( org, vr_offhand_ent.origin );
+	VectorCopy( org, vr_offhand_ent.curstate.origin );
+	VectorCopy( org, vr_offhand_ent.latched.prevorigin );
+	VectorCopy( ang, vr_offhand_ent.angles );
+	VectorCopy( ang, vr_offhand_ent.curstate.angles );
+	VectorCopy( ang, vr_offhand_ent.latched.prevangles );
+
+	CL_AddVisibleEntity( &vr_offhand_ent, ET_NORMAL );
 }
 
 /*
@@ -2108,6 +2190,80 @@ qboolean VR_AimFromWeapon( void )
 qboolean VR_WeaponOriginActive( void )
 {
 	return ( VR_IsActive() && vr_weapon_origin.value != 0.0f ) ? true : false;
+}
+
+/*
+================
+VR_DualWieldActive / VR_GetOffhandFire
+
+VR akimbo. The off hand fires the equipped weapon a second time, from its own
+controller, on its own cooldown.
+
+The engine cannot create a second weapon - GoldSrc has one m_pActiveItem and
+one refire timer, and both live in the game DLL. So the split is: the DLL owns
+the second shot (CBasePlayer::DualWieldPostFrame in hlsdk-portable), and the
+engine owns WHERE that shot comes from, handed over in pev->vuser1/vuser2 -
+vec3 fields entvars_t reserves "For mods" and nothing in stock Half-Life reads.
+Same shape as the view_ofs substitution that moves the main hand's shot to the
+muzzle, just aimed at fields the DLL is free to interpret.
+
+Requires our own hl.dll, so this is the one VR feature that is NOT mod-
+agnostic. It stays off unless a game DLL that understands it is loaded.
+================
+*/
+qboolean VR_DualWieldActive( void )
+{
+	if( !VR_IsActive() || vr_dual_wield.value == 0.0f )
+		return false;
+
+	// Only while actually holding something.
+	return ( clgame.viewent.model != NULL ) ? true : false;
+}
+
+qboolean VR_GetOffhandFire( vec3_t out_org, vec3_t out_dir )
+{
+	vec3_t org, ang, fwd;
+
+	if( !VR_DualWieldActive( ))
+		return false;
+
+	if( !VR_GetHandWorld( 0, org, ang ))	// 0 = left
+		return false;
+
+	// EXACT path: read the off-hand gun's own muzzle attachment, filled by the
+	// renderer as it drew vr_offhand_ent. This is the same fix that got the
+	// main hand's laser onto its barrel, and for the same reason - no tuned
+	// angle can ever converge, because each model's barrel sits at its own
+	// arbitrary orientation, so the error is not a constant rotation.
+	//
+	// Without this the off hand fell back to the calibrated-angle path below,
+	// which is precisely the path that used to send the main hand's laser
+	// straight up. Reported live as exactly that.
+	if( vr_aim_attachment.value != 0.0f && vr_offhand_ent.model )
+	{
+		vec3_t bore;
+
+		VectorSubtract( vr_offhand_ent.attachment[1], vr_offhand_ent.attachment[0], bore );
+
+		if( VectorLength( bore ) > 0.01f )
+		{
+			VectorNormalize( bore );
+			VectorCopy( vr_offhand_ent.attachment[0], out_org );
+			VectorCopy( bore, out_dir );
+			return true;
+		}
+	}
+
+	// FALLBACK, for a model carrying no usable attachment: rest-pose
+	// correction on the tracked angles, and push the origin forward out of the
+	// fist so the shot leaves a barrel rather than the palm.
+	VR_CalibrateWeaponAngles( ang );
+	AngleVectors( ang, fwd, NULL, NULL );
+
+	VectorMA( org, vr_offhand_muzzle.value, fwd, out_org );
+	VectorCopy( fwd, out_dir );
+
+	return true;
 }
 
 /*
@@ -2518,14 +2674,11 @@ static void VR_Marker( const vec3_t at, float radius )
 	VectorAdd( at, right, p ); VectorSubtract( p, up, p );   ref.dllFuncs.Vertex3fv( p );
 }
 
-static void VR_DrawLaser( void )
+static void VR_DrawLaserBeam( const vec3_t org, const vec3_t fwd )
 {
-	vec3_t org, fwd, end;
+	vec3_t end;
 	pmtrace_t tr;
 	float r, g, b;
-
-	if( vr_laser.value <= 0.0f || !VR_GetMuzzle( org, fwd ))
-		return;
 
 	VectorMA( org, vr_laser_range.value, fwd, end );
 	tr = CL_TraceLine( org, end, PM_STUDIO_BOX );
@@ -2550,6 +2703,23 @@ static void VR_DrawLaser( void )
 	ref.dllFuncs.Begin( TRI_QUADS );
 	VR_Marker( end, vr_laser_dot.value );
 	ref.dllFuncs.End();
+}
+
+static void VR_DrawLaser( void )
+{
+	vec3_t org, fwd;
+
+	if( vr_laser.value <= 0.0f )
+		return;
+
+	if( VR_GetMuzzle( org, fwd ))
+		VR_DrawLaserBeam( org, fwd );
+
+	// The second gun gets its own sight. One laser across two guns tells you
+	// nothing about where the off hand is pointed, which is the whole reason
+	// the sight exists in VR.
+	if( VR_GetOffhandFire( org, fwd ))
+		VR_DrawLaserBeam( org, fwd );
 }
 
 /*
@@ -2855,6 +3025,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_haptics );
 	Cvar_RegisterVariable( &vr_aim_from_weapon );
 	Cvar_RegisterVariable( &vr_weapon_origin );
+	Cvar_RegisterVariable( &vr_dual_wield );
+	Cvar_RegisterVariable( &vr_offhand_muzzle );
 	Cvar_RegisterVariable( &vr_diag_aim );
 	Cvar_RegisterVariable( &vr_model_align );
 	Cvar_RegisterVariable( &vr_aim_attachment );

@@ -865,7 +865,17 @@ static void CL_CreateCmd( void )
 		if( VR_GetButton( VR_BTN_CROUCH ))  cmd->buttons |= IN_DUCK;
 		if( VR_GetButton( VR_BTN_ATTACK ))  cmd->buttons |= IN_ATTACK;
 		if( VR_GetButton( VR_BTN_ATTACK2 )) cmd->buttons |= IN_ATTACK2;
-		if( VR_GetButton( VR_BTN_USE ))     cmd->buttons |= IN_USE;
+		// Off-hand trigger is USE normally, and the second gun's trigger while
+		// dual wielding. Sharing the input rather than claiming a new binding
+		// keeps every controller profile untouched, and USE is not something
+		// you reach for mid-firefight anyway.
+		if( VR_GetButton( VR_BTN_USE ))
+		{
+			if( VR_DualWieldActive( ))
+				cmd->buttons |= IN_ALT1;	// read by CBasePlayer::DualWieldPostFrame
+			else
+				cmd->buttons |= IN_USE;
+		}
 		if( VR_GetButton( VR_BTN_RELOAD ))  cmd->buttons |= IN_RELOAD;
 
 		// Swing-to-hit for melee. Injected as IN_ATTACK - the same button
