@@ -123,6 +123,22 @@ typedef struct
 CVAR_DEFINE_AUTO( r_studio_sort_textures, "0", FCVAR_GLCONFIG, "change draw order for additive meshes" );
 CVAR_DEFINE_AUTO( r_studio_drawelements, "1", FCVAR_GLCONFIG, "use glDrawElements for studiomodels" );
 CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model renderer instead of the one provided by client library (debugging)" );
+
+// PCVR fork: hide the arms welded into weapon viewmodels.
+//
+// GoldSrc viewmodels ship the player's arms as part of the gun mesh, so in VR
+// you get a rigid pair of arms bolted to the weapon that cannot track your
+// controllers. They are not a separate bodypart on the models we have (all
+// three bodyparts of v_9mmhandgun are literally named "studio" with one
+// submodel each), so entity->curstate.body cannot switch them off. What DOES
+// separate them reliably is the texture: arm meshes are skinned with
+// glove/sleeve/hand art, the weapon is not.
+//
+// The token list is a cvar rather than a hardcoded table because mod authors
+// name their textures whatever they like, and this has to work on content we
+// have never seen. Substring match, ';' separated, case insensitive.
+CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
+CVAR_DEFINE_AUTO( r_vr_arm_textures, "glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
 static cvar_t			*cl_righthand = NULL;
 
 static r_studio_interface_t	*pStudioDraw;
@@ -2000,6 +2016,39 @@ static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, 
 
 /*
 ===============
+R_StudioIsArmTexture
+
+True if this mesh's texture is arm/glove art rather than weapon art.
+Substring match against the ';' separated r_vr_arm_textures list.
+===============
+*/
+static qboolean R_StudioIsArmTexture( const char *texname )
+{
+	const char *list = r_vr_arm_textures.string;
+	char token[64];
+	int n;
+
+	if( !texname || !texname[0] || !list || !list[0] )
+		return false;
+
+	while( *list )
+	{
+		while( *list == ';' || *list == ' ' )
+			list++;
+
+		for( n = 0; *list && *list != ';' && n < sizeof( token ) - 1; n++ )
+			token[n] = *list++;
+		token[n] = '\0';
+
+		if( n > 0 && Q_stristr( texname, token ))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+===============
 R_StudioDrawPoints
 
 ===============
@@ -2152,6 +2201,14 @@ static void R_StudioDrawPoints( void )
 
 		pmesh = g_studio.meshes[j].mesh;
 		short *ptricmds = (short *)((byte *)m_pStudioHeader + pmesh->triindex);
+
+		// PCVR fork: drop the arms welded into the weapon viewmodel, so the
+		// tracked hand models can be drawn at the real controller poses
+		// instead. Viewmodel only - the same art appears on world models and
+		// other players, where it must stay.
+		if( r_vr_hide_arms.value && RI.currententity == tr.viewent &&
+			R_StudioIsArmTexture( ptexture[pskinref[pmesh->skinref]].name ))
+			continue;
 
 		g_nFaceFlags = ptexture[pskinref[pmesh->skinref]].flags | g_nForceFaceFlags;
 

@@ -512,8 +512,16 @@ void V_RenderView( void )
 			// the pivot bug fix needs a different mechanism.
 			ClearBits( view->curstate.effects, EF_VR_PINNED_VIEWMODEL );
 
-			// Left hand always; right hand only when no weapon is filling
-			// that slot this frame, so the gun and a bare hand never overlap.
+			// Left hand always; right hand only when no weapon is filling that
+			// slot this frame.
+			//
+			// Tried drawing the tracked hand on the weapon once the welded arms
+			// were stripped. It looks wrong: the hand model is posed open and
+			// sits beside the grip rather than around it, because nothing lines
+			// the hand up with the weapon or plays its grip sequence. A floating
+			// gun reads better than a flat hand next to one. Revisit if the hand
+			// is ever actually posed onto the grip (the model carries
+			// fullgrab/halfgrab sequences that are currently unused).
 			VR_DrawHands( !weapon_equipped );
 		}
 
