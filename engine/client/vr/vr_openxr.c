@@ -269,6 +269,28 @@ static CVAR_DEFINE_AUTO( vr_aim_from_weapon, "1", FCVAR_ARCHIVE, "fire along the
 // vr_aim_from_weapon, which only changes DIRECTION, so the two can be
 // bisected independently when something breaks.
 static CVAR_DEFINE_AUTO( vr_weapon_origin, "1", FCVAR_ARCHIVE, "shot ORIGIN at the muzzle (0 = stock, from the eye)" );
+// ---------------------------------------------------------------------
+// Room-scale, comfort and handedness.
+//
+// Everything here is engine-side and reads only tracking data, so it works on
+// any mod. That is the line this fork holds: HLVR and Lambda1VR get physical
+// ladders and grabbing by forking the game SDK, which then only fixes the one
+// mod it was built for.
+// ---------------------------------------------------------------------
+static CVAR_DEFINE_AUTO( vr_roomscale, "1", FCVAR_ARCHIVE, "walking in your room walks in the game" );
+static CVAR_DEFINE_AUTO( vr_roomscale_gain, "10", FCVAR_ARCHIVE, "how hard the body chases your real position" );
+static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-scale move speed" );
+static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
+static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye height in units, ~1 unit per inch" );
+static CVAR_DEFINE_AUTO( vr_height_offset, "0", FCVAR_ARCHIVE, "shift the view up or down from the tracked height" );
+static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
+static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of standing height that counts as crouched" );
+static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
+static CVAR_DEFINE_AUTO( vr_ladder_speed, "8", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
+static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
+static CVAR_DEFINE_AUTO( vr_vignette_size, "0.62", FCVAR_ARCHIVE, "how much of the view stays clear at full speed" );
+static CVAR_DEFINE_AUTO( vr_vignette_fade, "6", FCVAR_ARCHIVE, "how fast the vignette opens and closes" );
+
 static CVAR_DEFINE_AUTO( vr_dual_wield, "0", FCVAR_ARCHIVE, "VR akimbo: off hand fires the same weapon (needs our hl.dll)" );
 static CVAR_DEFINE_AUTO( vr_offhand_muzzle, "8", FCVAR_ARCHIVE, "units forward of the off hand the second shot leaves from" );
 
@@ -1429,7 +1451,7 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	// way to just rest a hand there. Holding the grip is the deliberate
 	// "I am supporting the weapon" signal; releasing drops back to one hand.
 	if( VR_IsActive() && vr_twohand.value && VR_GetButton( VR_BTN_OFFGRIP ) &&
-	    VR_GetHandWorld( 0, off_org, off_ang ))	// hand 0 = left = off hand
+	    VR_GetHandWorld( VR_OffHand(), off_org, off_ang ))
 	{
 		VectorSubtract( off_org, dom_org, delta );
 		dist = VectorLength( delta );
@@ -1971,7 +1993,7 @@ void VR_DrawOffhandWeapon( void )
 	if( !mdl )
 		return;
 
-	if( !VR_GetHandWorld( 0, org, ang ))	// 0 = left
+	if( !VR_GetHandWorld( VR_OffHand(), org, ang ))
 		return;
 
 	// Same rest-pose correction the drawn main weapon gets, so both guns hang
@@ -2102,7 +2124,7 @@ static qboolean VR_UpdateMelee( void )
 		return false;
 	}
 
-	if( !VR_GetHandWorld( 1, org, ang ))
+	if( !VR_GetHandWorld( VR_DominantHand(), org, ang ))
 	{
 		have_prev = false;
 		return false;
@@ -2123,7 +2145,7 @@ static qboolean VR_UpdateMelee( void )
 	if( !swinging && speed >= vr_melee_speed.value )
 	{
 		swinging = true;
-		VR_Haptic( 1, 0.09f, 0.0f, 0.85f );
+		VR_Haptic( VR_DominantHand(), 0.09f, 0.0f, 0.85f );
 		return true;
 	}
 
@@ -2193,6 +2215,232 @@ qboolean VR_WeaponOriginActive( void )
 }
 
 /*
+=================================================================
+	Room-scale, comfort, handedness
+=================================================================
+*/
+
+/*
+================
+VR_DominantHand / VR_OffHand
+
+Which controller holds the weapon. Everything that used to say "1" for the
+weapon hand asks here instead, so left-handed play is a cvar rather than a
+fork. 0 = left, 1 = right.
+================
+*/
+int VR_DominantHand( void )
+{
+	return ( vr_lefthand.value != 0.0f ) ? 0 : 1;
+}
+
+int VR_OffHand( void )
+{
+	return ( vr_lefthand.value != 0.0f ) ? 1 : 0;
+}
+
+/*
+================
+VR_GetPhysicalCrouch
+
+Duck by ducking. The HMD's height above the tracking floor is compared with
+the standing height in vr_height, and dropping below vr_crouch_ratio of it
+raises IN_DUCK.
+
+A ratio rather than an absolute number, because players differ by a foot or
+more and a fixed "crouched is below 40 units" is either unreachable for a
+short player or triggered by good posture in a tall one. vr_height is what
+gets calibrated (see vr_calibrate); the ratio then holds for everyone.
+================
+*/
+qboolean VR_GetPhysicalCrouch( void )
+{
+	float standing, head;
+
+	if( !VR_IsActive() || vr_crouch.value == 0.0f )
+		return false;
+
+	standing = vr_height.value;
+	if( standing < 1.0f )
+		return false;
+
+	head = vr.hmd_pose.origin[2];
+
+	return ( head < standing * vr_crouch_ratio.value ) ? true : false;
+}
+
+/*
+================
+VR_CalibrateHeight_f
+
+Take your current headset height as standing height. Console command rather
+than a cvar you type a number into, because nobody knows their own eye height
+in Half-Life units, and in a headset you cannot read a number off a screen and
+do arithmetic anyway. Stand up straight, run it once.
+================
+*/
+static void VR_CalibrateHeight_f( void )
+{
+	float head;
+
+	if( !VR_IsActive( ))
+	{
+		Con_Printf( "VR is not running\n" );
+		return;
+	}
+
+	head = vr.hmd_pose.origin[2];
+
+	if( head < 8.0f )
+	{
+		Con_Printf( "VR: headset is at %.1f units - too low to be standing height, ignoring\n", head );
+		return;
+	}
+
+	Cvar_SetValue( "vr_height", head );
+	Con_Printf( "VR: standing height calibrated to %.1f units (crouch below %.1f)\n",
+		head, head * vr_crouch_ratio.value );
+}
+
+/*
+================
+VR_GetRoomScaleMove
+
+Walking in your room walks in the game.
+
+Without this the play space is anchored to the player entity and physical
+movement offsets only the EYE and the HANDS. You can lean through a wall, your
+hitbox never leaves the spot you teleported it to with the stick, and NPCs aim
+at where the entity stands rather than where you are actually crouched. The
+view is room-scale; the body is not.
+
+The fix is to stop treating physical movement as a view offset and start
+treating it as INPUT: measure how far the headset has drifted from the point
+the body was last synced to, and ask the body to walk there. The entity then
+collides with the world normally, because it is moving through the ordinary
+movement path rather than being teleported.
+
+That collision is the entire point, and it is also what makes walking into a
+real wall behave: the body stops, the offset persists, and you are standing
+with your face in geometry until you step back - which is correct, and is what
+every room-scale game does short of fading the screen out.
+
+Output is in the usercmd's own frame, so it needs the yaw that cmd will carry.
+================
+*/
+void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
+{
+	vec3_t rel, world;
+	float s, c, gain, len, cap;
+
+	*forward = *side = 0.0f;
+
+	if( !VR_IsActive() || vr_roomscale.value == 0.0f )
+		return;
+
+	if( !vr.hmd_origin_at_sync_valid )
+		return;
+
+	// How far the headset has drifted from where the body was last synced.
+	VectorSubtract( vr.hmd_pose.origin, vr.hmd_origin_at_sync, rel );
+	rel[2] = 0.0f;	// horizontal only - ducking is VR_GetPhysicalCrouch
+
+	if( VectorLength( rel ) < 0.5f )
+		return;		// inside the tracking noise floor, leave it alone
+
+	// Play space -> world, by the same body yaw the eyes use.
+	SinCos( DEG2RAD( vr.body_yaw ), &s, &c );
+	world[0] = rel[0] * c - rel[1] * s;
+	world[1] = rel[0] * s + rel[1] * c;
+	world[2] = 0.0f;
+
+	// World -> the usercmd's frame. forwardmove/sidemove are interpreted
+	// along cmd->viewangles, which is NOT necessarily the head yaw: while
+	// aiming from the weapon it carries the WEAPON yaw instead, so using the
+	// head's would send the body off at an angle.
+	SinCos( DEG2RAD( view_yaw ), &s, &c );
+	*forward = world[0] * c + world[1] * s;
+	*side = -world[0] * s + world[1] * c;
+
+	gain = vr_roomscale_gain.value;
+	*forward *= gain;
+	*side *= gain;
+
+	// Cap it. A tracking glitch that reports the headset several metres away
+	// would otherwise fire the player across the map in one frame.
+	cap = vr_roomscale_max.value;
+	len = sqrt( *forward * *forward + *side * *side );
+	if( len > cap && len > 0.0f )
+	{
+		*forward *= cap / len;
+		*side *= cap / len;
+	}
+}
+
+/*
+================
+VR_GetLadderMove
+
+Hand-over-hand ladder climbing.
+
+Worth doing here rather than writing it off as game-DLL territory: ladder
+movement in Xash lives in pm_shared, which is ENGINE code, and the climb is
+driven by usercmd upmove. So the whole thing is expressible as input, and stays
+mod-agnostic - both reference ports needed an SDK fork for this.
+
+The gesture is the physical one: grab with a grip button and pull down, and you
+go up. Vertical hand velocity in tracking space drives it, which means it is
+independent of where you are looking or facing.
+
+Returns 0 when not climbing.
+================
+*/
+float VR_GetLadderMove( void )
+{
+	static float last_z[2];
+	static qboolean have_last[2];
+	float move = 0.0f;
+	int hand;
+
+	if( !VR_IsActive() || vr_ladder.value == 0.0f )
+	{
+		have_last[0] = have_last[1] = false;
+		return 0.0f;
+	}
+
+	for( hand = 0; hand < 2; hand++ )
+	{
+		const vr_pose_t *pose = VR_GetHandPose( hand );
+		qboolean gripping;
+		float z;
+
+		if( !pose || !pose->valid )
+		{
+			have_last[hand] = false;
+			continue;
+		}
+
+		// Either grip counts. The off-hand grip already means "grab" for
+		// two-handing a weapon, and the same gesture reading as "grab" on a
+		// ladder is what a player expects.
+		gripping = ( hand == VR_OffHand() ) ? VR_GetButton( VR_BTN_OFFGRIP ) : VR_GetButton( VR_BTN_ATTACK2 );
+
+		z = pose->origin[2];
+
+		if( gripping && have_last[hand] )
+		{
+			// Pulling the hand DOWN (z decreasing) climbs UP.
+			move += ( last_z[hand] - z ) * vr_ladder_speed.value;
+		}
+
+		last_z[hand] = z;
+		have_last[hand] = gripping;
+	}
+
+	return move;
+}
+
+/*
 ================
 VR_DualWieldActive / VR_GetOffhandFire
 
@@ -2227,7 +2475,7 @@ qboolean VR_GetOffhandFire( vec3_t out_org, vec3_t out_dir )
 	if( !VR_DualWieldActive( ))
 		return false;
 
-	if( !VR_GetHandWorld( 0, org, ang ))	// 0 = left
+	if( !VR_GetHandWorld( VR_OffHand(), org, ang ))
 		return false;
 
 	// EXACT path: read the off-hand gun's own muzzle attachment, filled by the
@@ -2377,7 +2625,7 @@ void VR_UpdateFireRay( void )
 
 	vr_fire_valid = false;
 
-	if( !VR_IsActive() || !VR_GetHandWorld( 1, org, ang ))
+	if( !VR_IsActive() || !VR_GetHandWorld( VR_DominantHand(), org, ang ))
 		return;
 
 	qboolean braced = VR_ApplyTwoHandedAim( org, ang );
@@ -2572,7 +2820,7 @@ qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang )
 	if( VR_GetFireRay( out_org, out_ang ))
 		return true;
 
-	if( !VR_GetHandWorld( 1, org, ang ))
+	if( !VR_GetHandWorld( VR_DominantHand(), org, ang ))
 		return false;
 
 	VR_ApplyTwoHandedAim( org, ang );
@@ -2705,6 +2953,100 @@ static void VR_DrawLaserBeam( const vec3_t org, const vec3_t fwd )
 	ref.dllFuncs.End();
 }
 
+/*
+================
+VR_DrawVignette
+
+Comfort vignette. Darkens the periphery while you move and opens back up when
+you stop.
+
+This is the standard mitigation for the mismatch that causes VR motion
+sickness - your eyes report motion your inner ear does not - and it works by
+cutting the peripheral optical flow the vestibular system reacts most strongly
+to. Not cosmetic: this project has already produced one real bout of motion
+sickness, so it is on by default.
+
+Drawn as a ring of camera-facing quads a short distance in front of the eye,
+so it sits in the world at a fixed apparent size in both eyes rather than
+being a 2D overlay that would break stereo.
+================
+*/
+static void VR_DrawVignette( void )
+{
+	static float amount = 0.0f;
+	float fwd_move, side_move, speed, target;
+	vec3_t fwd, right, up, center;
+	int i;
+	const int SEGMENTS = 32;
+	const float DIST = 6.0f;	// units in front of the eye
+
+	if( vr_vignette.value == 0.0f )
+	{
+		amount = 0.0f;
+		return;
+	}
+
+	VR_GetMovement( &fwd_move, &side_move );
+	speed = sqrt( fwd_move * fwd_move + side_move * side_move );
+
+	// Normalised against the configured move speed, so it reads the same
+	// whether the player runs fast or slow.
+	target = ( vr_movespeed.value > 1.0f ) ? ( speed / vr_movespeed.value ) : 0.0f;
+	if( target > 1.0f ) target = 1.0f;
+
+	// Ease toward the target - snapping the vignette on and off is itself
+	// uncomfortable, and worse than not having one.
+	amount += ( target - amount ) * ( vr_vignette_fade.value * host.frametime );
+	if( amount < 0.001f )
+		return;
+
+	AngleVectors( refState.viewangles, fwd, right, up );
+	VectorMA( refState.vieworg, DIST, fwd, center );
+
+	// Inner edge of the dark ring. At full speed it closes to
+	// vr_vignette_size of the way out; at rest it is fully open.
+	{
+		float open = 1.0f - ( 1.0f - vr_vignette_size.value ) * amount;
+		float inner = DIST * open * 1.2f;
+		float outer = inner * 3.0f;
+
+		ref.dllFuncs.GL_SetRenderMode( kRenderTransTexture );
+		VR_BindOverlayTexture();
+		ref.dllFuncs.Begin( TRI_QUADS );
+
+		for( i = 0; i < SEGMENTS; i++ )
+		{
+			float a0 = ( i / (float)SEGMENTS ) * M_PI2;
+			float a1 = ( ( i + 1 ) / (float)SEGMENTS ) * M_PI2;
+			vec3_t p;
+			int k;
+			const float ca[2] = { cos( a0 ), cos( a1 ) };
+			const float sa[2] = { sin( a0 ), sin( a1 ) };
+
+			// Inner verts transparent, outer verts opaque, so the darkness
+			// fades in rather than showing a hard black circle edge.
+			for( k = 0; k < 2; k++ )
+			{
+				ref.dllFuncs.Color4f( 0.0f, 0.0f, 0.0f, 0.0f );
+				VectorCopy( center, p );
+				VectorMA( p, ca[k] * inner, right, p );
+				VectorMA( p, sa[k] * inner, up, p );
+				ref.dllFuncs.Vertex3fv( p );
+			}
+			for( k = 1; k >= 0; k-- )
+			{
+				ref.dllFuncs.Color4f( 0.0f, 0.0f, 0.0f, 1.0f );
+				VectorCopy( center, p );
+				VectorMA( p, ca[k] * outer, right, p );
+				VectorMA( p, sa[k] * outer, up, p );
+				ref.dllFuncs.Vertex3fv( p );
+			}
+		}
+
+		ref.dllFuncs.End();
+	}
+}
+
 static void VR_DrawLaser( void )
 {
 	vec3_t org, fwd;
@@ -2835,6 +3177,10 @@ void VR_DrawOverlays( void )
 
 	if( !VR_IsActive() )
 		return;
+
+	// BEFORE the viewmodel check below: comfort does not depend on holding a
+	// weapon, and being unarmed is exactly when you tend to be running around.
+	VR_DrawVignette();
 
 	// Nothing to aim with when no weapon is up.
 	if( cl.local.viewmodel == 0 )
@@ -3025,6 +3371,20 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_haptics );
 	Cvar_RegisterVariable( &vr_aim_from_weapon );
 	Cvar_RegisterVariable( &vr_weapon_origin );
+	Cvar_RegisterVariable( &vr_roomscale );
+	Cvar_RegisterVariable( &vr_roomscale_gain );
+	Cvar_RegisterVariable( &vr_roomscale_max );
+	Cvar_RegisterVariable( &vr_lefthand );
+	Cvar_RegisterVariable( &vr_height );
+	Cvar_RegisterVariable( &vr_height_offset );
+	Cvar_RegisterVariable( &vr_crouch );
+	Cvar_RegisterVariable( &vr_crouch_ratio );
+	Cvar_RegisterVariable( &vr_ladder );
+	Cvar_RegisterVariable( &vr_ladder_speed );
+	Cvar_RegisterVariable( &vr_vignette );
+	Cvar_RegisterVariable( &vr_vignette_size );
+	Cvar_RegisterVariable( &vr_vignette_fade );
+	Cmd_AddCommand( "vr_calibrate", VR_CalibrateHeight_f, "set standing height from your current headset height" );
 	Cvar_RegisterVariable( &vr_dual_wield );
 	Cvar_RegisterVariable( &vr_offhand_muzzle );
 	Cvar_RegisterVariable( &vr_diag_aim );
@@ -4062,7 +4422,13 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 
 			rvp->vieworigin[0] = vr.world_origin[0] + ( rel[0] * c - rel[1] * s );
 			rvp->vieworigin[1] = vr.world_origin[1] + ( rel[0] * s + rel[1] * c );
-			rvp->vieworigin[2] = vr.world_origin[2] + rel[2];
+			// vr_height_offset shifts the whole play space vertically. Rooms
+			// with a raised floor, a seated player, or a tracking origin that
+			// simply reads low all show up as standing in the ground or
+			// floating above it, and none of that is fixable from the game
+			// side. Applied to the EYE only, so shot origins and hand poses,
+			// which are anchored to the same reference, move with it.
+			rvp->vieworigin[2] = vr.world_origin[2] + rel[2] + vr_height_offset.value;
 
 			// Head owns pitch and roll outright - letting the game pitch or roll a
 			// VR player's view is a reliable way to make them sick. Yaw is additive

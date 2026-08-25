@@ -861,8 +861,40 @@ static void CL_CreateCmd( void )
 			}
 		}
 
+		// Room-scale: walking in your room walks in the game. ADDED to stick
+		// movement rather than replacing it, so you can step physically while
+		// also pushing the stick.
+		//
+		// Must come after the weapon-aim block above, and must use the FINAL
+		// cmd->viewangles yaw: forwardmove/sidemove are interpreted along
+		// whatever that ends up being, which is the WEAPON yaw while aiming
+		// from the muzzle, not the head's.
+		{
+			float rs_fwd, rs_side;
+
+			VR_GetRoomScaleMove( cmd->viewangles[YAW], &rs_fwd, &rs_side );
+
+			cmd->forwardmove += rs_fwd;
+			cmd->sidemove    += rs_side;
+		}
+
 		if( VR_GetButton( VR_BTN_JUMP ))    cmd->buttons |= IN_JUMP;
-		if( VR_GetButton( VR_BTN_CROUCH ))  cmd->buttons |= IN_DUCK;
+
+		// Duck by pressing the button OR by physically ducking. Both, rather
+		// than one replacing the other: crouching for a whole corridor is
+		// exhausting, and the button has to stay available for that.
+		if( VR_GetButton( VR_BTN_CROUCH ) || VR_GetPhysicalCrouch( ))
+			cmd->buttons |= IN_DUCK;
+
+		// Hand-over-hand ladder climbing. Ladder movement reads usercmd
+		// upmove and lives in pm_shared, which is engine code, so this needs
+		// nothing from the mod.
+		{
+			float climb = VR_GetLadderMove();
+
+			if( climb != 0.0f )
+				cmd->upmove += climb;
+		}
 		if( VR_GetButton( VR_BTN_ATTACK ))  cmd->buttons |= IN_ATTACK;
 		if( VR_GetButton( VR_BTN_ATTACK2 )) cmd->buttons |= IN_ATTACK2;
 		// Off-hand trigger is USE normally, and the second gun's trigger while

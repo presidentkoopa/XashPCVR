@@ -183,6 +183,27 @@ qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang );
 // True when the shot ORIGIN should be moved to the muzzle.
 qboolean VR_WeaponOriginActive( void );
 
+// Which controller holds the weapon, and which is free. 0 = left, 1 = right.
+// Follows vr_lefthand, so left-handed play is a cvar rather than a fork.
+int      VR_DominantHand( void );
+int      VR_OffHand( void );
+
+// Room-scale. True while the player is physically ducked below
+// vr_crouch_ratio of their calibrated standing height (vr_height).
+qboolean VR_GetPhysicalCrouch( void );
+
+// Room-scale. Walking in your room walks in the game: returns the movement
+// needed for the player entity to chase your real physical position, so the
+// body collides with the world instead of the view sliding through it.
+// view_yaw must be the yaw the usercmd will actually carry, since
+// forwardmove/sidemove are interpreted along it.
+void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side );
+
+// Hand-over-hand ladder climbing, returned as a usercmd upmove contribution.
+// 0 when not climbing. Ladder movement lives in pm_shared (engine code) and is
+// driven by upmove, so this needs nothing from the mod.
+float    VR_GetLadderMove( void );
+
 // VR akimbo. The off hand fires the equipped weapon a second time on its own
 // cooldown. The engine only supplies WHERE that shot comes from, via
 // pev->vuser1/vuser2; the second shot itself is the game DLL's
