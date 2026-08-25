@@ -23,6 +23,9 @@ GNU General Public License for more details.
 #include "const.h"
 #include "render_api.h"	// modelstate_t
 #include "ref_common.h" // decals
+#if !XASH_DEDICATED
+#include "client/vr/vr_openxr.h"	// PCVR fork: out-of-window fire detector
+#endif
 
 // GameAPI functions declarations
 static int GAME_EXPORT pfnModelIndex( const char *m );
@@ -2097,6 +2100,13 @@ pfnTraceLine
 static void GAME_EXPORT pfnTraceLine( const float *v1, const float *v2, int fNoMonsters, edict_t *pentToSkip, TraceResult *ptr )
 {
 	trace_t	trace;
+
+#if !XASH_DEDICATED
+	// PCVR fork, diagnostic only: notice a mod firing from the player's eye
+	// outside the window where we substitute view_ofs. Read-only - the trace
+	// itself is untouched.
+	VR_CheckTraceOutsideWindow( v1 );
+#endif
 
 	trace = SV_Move( v1, vec3_origin, vec3_origin, v2, fNoMonsters, pentToSkip, false );
 	if( !SV_IsValidEdict( trace.ent ))

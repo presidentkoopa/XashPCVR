@@ -183,6 +183,13 @@ qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang );
 // True when the shot ORIGIN should be moved to the muzzle.
 qboolean VR_WeaponOriginActive( void );
 
+// Diagnostic only, no behaviour change. VR_SetFireWindow brackets the
+// pfnPlayerPostThink call where view_ofs is substituted; VR_CheckTraceOutsideWindow
+// is called from pfnTraceLine and logs when a mod fires from the eye OUTSIDE that
+// bracket - i.e. a weapon path our substitution does not cover. Gated on vr_debug.
+void     VR_SetFireWindow( qboolean active, const float *eye, int buttons );
+void     VR_CheckTraceOutsideWindow( const float *start );
+
 // True when firing should follow the weapon rather than the head.
 qboolean VR_AimFromWeapon( void );
 

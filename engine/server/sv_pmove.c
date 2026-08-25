@@ -1020,7 +1020,15 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		qboolean vr_muzzle = false;
 
 #if !XASH_DEDICATED
-		if( NET_IsLocalAddress( cl->netchan.remote_address ) && VR_WeaponOriginActive( ))
+		qboolean vr_local = NET_IsLocalAddress( cl->netchan.remote_address );
+		vec3_t vr_eye;
+
+		// The REAL eye, captured before any substitution - this is where the
+		// mod would fire from if it fired outside the bracket below.
+		if( vr_local )
+			VectorAdd( clent->v.origin, clent->v.view_ofs, vr_eye );
+
+		if( vr_local && VR_WeaponOriginActive( ))
 		{
 			vec3_t muzzle;
 
@@ -1031,12 +1039,20 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 				vr_muzzle = true;
 			}
 		}
+
+		// Open the diagnostic window. Anything firing from the eye while this
+		// is open is covered by us; anything firing from it while closed is not.
+		if( vr_local )
+			VR_SetFireWindow( true, vr_eye, ucmd->buttons );
 #endif
 
 		// run post-think
 		svgame.dllFuncs.pfnPlayerPostThink( clent );
 
 #if !XASH_DEDICATED
+		if( vr_local )
+			VR_SetFireWindow( false, vr_eye, ucmd->buttons );
+
 		if( vr_muzzle )
 			VectorCopy( saved_view_ofs, clent->v.view_ofs );
 #endif

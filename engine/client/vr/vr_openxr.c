@@ -1568,12 +1568,126 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 
 }
 
+/*
+=================================================================
+	Universal weapon profiling
+
+VR behaviour needs to know things about the weapon in the player's hand: is
+it melee, is it thrown, where is the muzzle. Hardcoding lists of Half-Life
+weapon names answers that for exactly one mod and silently mis-handles every
+other, which defeats the point of a mod-agnostic VR layer.
+
+Instead the answers are read out of the MODEL, which every mod must ship and
+which already carries the metadata:
+
+  numattachments  - ranged weapons carry a muzzle attachment for their flash;
+                    melee weapons generally carry none
+  sequence labels - authored by whoever built the weapon: "fire", "shoot",
+                    "reload", "throw", "pinpull", "holster"
+
+None of that is Half-Life specific, so a mod's custom weapons classify
+themselves with no per-mod table and no rebuild.
+
+Cached per model pointer, so the parse happens once per weapon rather than
+every frame.
+=================================================================
+*/
+typedef struct
+{
+	const model_t *model;
+	qboolean       valid;
+	qboolean       melee;       // no muzzle, nothing that fires
+	qboolean       throwable;   // has throw/pin style sequences
+	qboolean       has_muzzle;  // at least one attachment
+} vr_wprofile_t;
+
+static vr_wprofile_t vr_wprof;
+
+static qboolean VR_SeqLabelContains( const studiohdr_t *hdr, const char *needle )
+{
+	const mstudioseqdesc_t *seq;
+	int i;
+
+	if( !hdr || hdr->numseq <= 0 )
+		return false;
+
+	seq = (const mstudioseqdesc_t *)((const byte *)hdr + hdr->seqindex);
+
+	for( i = 0; i < hdr->numseq; i++ )
+	{
+		if( Q_stristr( seq[i].label, needle ))
+			return true;
+	}
+	return false;
+}
+
+static const vr_wprofile_t *VR_GetWeaponProfile( void )
+{
+	const model_t *mod = clgame.viewent.model;
+	studiohdr_t *hdr;
+
+	if( vr_wprof.model == mod )
+		return &vr_wprof;	// cached
+
+	memset( &vr_wprof, 0, sizeof( vr_wprof ));
+	vr_wprof.model = mod;
+
+	if( !mod || mod->type != mod_studio )
+		return &vr_wprof;
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( (model_t *)mod );
+	if( !hdr )
+		return &vr_wprof;
+
+	vr_wprof.valid      = true;
+	vr_wprof.has_muzzle = ( hdr->numattachments > 0 );
+
+	// Thrown weapons are the clearest signal: you cannot animate throwing
+	// something without a sequence that says so.
+	vr_wprof.throwable =
+		VR_SeqLabelContains( hdr, "throw" ) ||
+		VR_SeqLabelContains( hdr, "pinpull" ) ||
+		VR_SeqLabelContains( hdr, "lob" );
+
+	// Melee by absence: no muzzle to flash from, and nothing that fires.
+	// Deliberately not "is it named crowbar" - a mod's pipe wrench, katana or
+	// fire axe classifies correctly without being listed anywhere.
+	if( !vr_wprof.throwable )
+	{
+		qboolean fires =
+			vr_wprof.has_muzzle ||
+			VR_SeqLabelContains( hdr, "fire" ) ||
+			VR_SeqLabelContains( hdr, "shoot" );
+
+		vr_wprof.melee = !fires;
+	}
+
+	if( vr_debug.value )
+	{
+		Con_Printf( "VR: weapon profile %s -> muzzle=%d melee=%d throwable=%d seqs=%d\n",
+			mod->name, vr_wprof.has_muzzle, vr_wprof.melee,
+			vr_wprof.throwable, hdr->numseq );
+	}
+
+	return &vr_wprof;
+}
+
 qboolean VR_HoldingMelee( void )
 {
 	const char *name;
 
 	if( !clgame.viewent.model || !clgame.viewent.model->name[0] )
 		return false;
+
+	// Model-derived first: works for any mod's custom melee weapon without
+	// it appearing in any list. Name matching is kept only as a hint for
+	// models that carry no usable metadata.
+	{
+		const vr_wprofile_t *wp = VR_GetWeaponProfile();
+
+		if( wp->valid )
+			return wp->melee;
+	}
 
 	name = clgame.viewent.model->name;
 
@@ -1998,6 +2112,79 @@ qboolean VR_WeaponOriginActive( void )
 
 /*
 ================
+VR_SetFireWindow / VR_CheckTraceOutsideWindow
+
+Diagnostic only - never changes a trace, a position or an angle.
+
+"Fire from the controller" works by substituting entvars_t.view_ofs around the
+pfnPlayerPostThink call (sv_pmove.c). That is correct for every weapon path
+verified against real SDK source: hitscan, and the projectile weapons too, since
+RPG/crossbow/hornet/snark/satchel all derive their spawn point from
+GetGunPosition() inside PrimaryAttack/WeaponIdle -> ItemPostFrame -> PostThink.
+
+But that cannot be PROVEN for arbitrary mods. A mod is free to override
+ItemPreFrame, or fire out of a custom think, and then its shot would leave the
+eye with our substitution not in scope. Rather than guess - or, worse, start
+heuristically rewriting pfnTraceLine, which would corrupt every monster's
+FVisible() line-of-sight, since that traces to EyePosition() = origin + view_ofs
+- just WATCH for it and say so.
+
+If a trace begins at the VR player's eye while the trigger is held and we are
+NOT inside the substitution window, that is a mod firing somewhere we do not
+cover. The log line names the exact spot to widen to. Silence across a mod is
+positive evidence that PostThink covers it.
+================
+*/
+static qboolean vr_fire_window;		// inside the substituted PostThink call
+static qboolean vr_fire_eye_valid;
+static vec3_t   vr_fire_eye;		// VR player's real (unsubstituted) eye
+static int      vr_fire_buttons;
+static double   vr_fire_warn_time;
+
+void VR_SetFireWindow( qboolean active, const float *eye, int buttons )
+{
+	vr_fire_window = active;
+	vr_fire_buttons = buttons;
+
+	if( eye )
+	{
+		VectorCopy( eye, vr_fire_eye );
+		vr_fire_eye_valid = true;
+	}
+	else vr_fire_eye_valid = false;
+}
+
+void VR_CheckTraceOutsideWindow( const float *start )
+{
+	vec3_t delta;
+
+	if( !vr_debug.value || vr_fire_window || !vr_fire_eye_valid || !start )
+		return;
+
+	if( !FBitSet( vr_fire_buttons, IN_ATTACK ))
+		return;
+
+	VectorSubtract( start, vr_fire_eye, delta );
+
+	// Anything further than this is ordinary world tracing, not a shot
+	// originating at the player's eye.
+	if( VectorLength( delta ) > 2.0f )
+		return;
+
+	// A mod that does this every frame would otherwise flood the log.
+	if( host.realtime - vr_fire_warn_time < 1.0 )
+		return;
+
+	vr_fire_warn_time = host.realtime;
+
+	VR_DiagPrintf( "VR: fire outside window - trace from eye (%.1f %.1f %.1f) "
+		"with IN_ATTACK held, outside the PostThink substitution. This mod "
+		"fires somewhere we do not cover.\n",
+		vr_fire_eye[0], vr_fire_eye[1], vr_fire_eye[2] );
+}
+
+/*
+================
 VR_UpdateFireRay / VR_GetFireRay
 
 THE single source of truth for where the weapon shoots.
@@ -2028,6 +2215,7 @@ void VR_UpdateFireRay( void )
 		return;
 
 	qboolean braced = VR_ApplyTwoHandedAim( org, ang );
+	qboolean used_attachment = false;
 
 	// PREFERRED: take the firing line straight off the weapon model's own
 	// MUZZLE ATTACHMENT, which ref_gl fills in world space every frame
@@ -2066,10 +2254,22 @@ void VR_UpdateFireRay( void )
 			// Muzzle itself is the shot origin, so tracers and decals leave
 			// the barrel rather than the grip.
 			VectorCopy( ve->attachment[0], org );
+			used_attachment = true;
 		}
 	}
 
-	// Manual fallback for models with no usable attachments.
+	// FALLBACK for models with no usable muzzle attachment.
+	//
+	// Stock Half-Life viewmodels all carry one, but a MOD's custom weapons
+	// may not - and without this the angles would be left as the raw
+	// controller pose, roughly 45 degrees off, so every custom gun in every
+	// mod would shoot wide. Falling back to the mesh rest-pose correction
+	// restores the pre-attachment behaviour, which was close, so an
+	// unattributed mod weapon degrades gracefully instead of breaking.
+	if( !braced && !used_attachment )
+		VR_CalibrateWeaponAngles( ang );
+
+	// Manual per-axis override, for dialling in one weapon by hand.
 	// Skipped while braced: the two-handed angles are already a finished
 	// world direction, so layering a rest-pose correction on top is what
 	// sent the weapon wild. Lambda1VR skips its equivalent the same way.
@@ -2145,6 +2345,21 @@ qboolean VR_GetAimAngles( vec3_t out_ang )
 
 	if( !VR_GetWeaponAim( muzzle, ang ))
 		return false;
+
+	// The eye convergence below exists ONLY for the case where the shot origin
+	// is stuck at the eye. With vr_weapon_origin on, sv_pmove.c has already
+	// moved the origin to the muzzle, so the barrel's own direction is already
+	// correct and converging on top of it stacks two corrections instead of
+	// cancelling them: the shot then leaves the MUZZLE along an EYE-relative
+	// direction. That is a roughly constant lateral miss equal to the
+	// muzzle-eye offset (~20-25 units) - under a degree across a room, but
+	// ~20 degrees at contact range, which is what "emptied a magazine into him
+	// point blank and he took no damage" looks like.
+	if( VR_WeaponOriginActive( ))
+	{
+		VectorCopy( ang, out_ang );
+		return true;
+	}
 
 	AngleVectors( ang, fwd, NULL, NULL );
 
@@ -2350,6 +2565,15 @@ static qboolean VR_HoldingThrowable( void )
 
 	// Stock Half-Life throwables. Matched by viewmodel name so no game-DLL
 	// knowledge is needed; unknown mods simply will not match.
+	// Model-derived first - a mod's custom throwable announces itself
+	// through its own animation names, so nothing needs listing here.
+	{
+		const vr_wprofile_t *wp = VR_GetWeaponProfile();
+
+		if( wp->valid && wp->throwable )
+			return true;
+	}
+
 	return Q_stristr( name, "v_grenade" ) != NULL
 	    || Q_stristr( name, "v_satchel" ) != NULL
 	    || Q_stristr( name, "v_tripmine" ) != NULL
