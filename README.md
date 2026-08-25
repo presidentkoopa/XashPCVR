@@ -16,7 +16,7 @@ Instead: **`entvars_t` is engine memory — the game DLL only *reads* `view_ofs`
 points `view_ofs` at the controller for exactly the one call that fires the weapon
 (`PostThink` → `ItemPostFrame`) and restores it immediately after.
 
-Consequences:
+Goals:
 
 * **Any mod works** — stock `hl.dll` untouched, no per-mod rebuild.
 * **Co-op with desktop players works** — nothing added to the network protocol, so vanilla
