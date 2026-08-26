@@ -425,13 +425,41 @@ void V_RenderView( void )
 	// session in IDLE and it could never reach READY.
 	if( VR_BeginFrame( ))
 	{
+		// MULTI-PASS RENDERING.
+		//
+		// A mod signals "render the scene again from another camera" by setting
+		// rp.nextView, and the flatscreen path honours it with a do/while.
+		// This path did not - it called pfnCalcRefdef once and rendered once -
+		// so every extra pass was silently dropped. Stock Half-Life barely uses
+		// the mechanism, which is why nothing looked wrong; but it is what
+		// drives security-camera monitors, mirrors, portals and render-to-
+		// texture scopes, so mods that use it came out blank.
+		//
+		// The passes cannot simply be rendered inside the eye loop: pfnCalcRefdef
+		// advances the mod's own state and must be called exactly once per view
+		// per frame, not once per view per EYE. So collect the views first,
+		// exactly as the flatscreen loop would produce them, then replay that
+		// list into each eye.
+#define MAX_VR_VIEWS 8
+		ref_viewpass_t views[MAX_VR_VIEWS];
 		vec3_t base_origin;
-		int eye;
+		int eye, v, nviews = 0;
 
-		clgame.dllFuncs.pfnCalcRefdef( &rp );
-		V_GetRefParams( &rp, &rvp );
-		V_RefApplyOverview( &rvp );
-		V_ApplyRefUnderwater( &rvp );
+		do
+		{
+			clgame.dllFuncs.pfnCalcRefdef( &rp );
+			V_GetRefParams( &rp, &rvp );
+			V_RefApplyOverview( &rvp );
+			V_ApplyRefUnderwater( &rvp );
+
+			views[nviews++] = rvp;
+
+		} while( rp.nextView && nviews < MAX_VR_VIEWS );
+
+		// The FIRST view is the player's own camera: it anchors the play space,
+		// owns the viewmodel and the hands, and is the one the per-eye pose
+		// replaces. Later views are the mod's other cameras and keep theirs.
+		rvp = views[0];
 
 		// Anchor the play space at the mod's view origin. The rotation used is the
 		// body yaw captured in VR_OverrideViewAngles, NOT rvp.viewangles - that
@@ -598,12 +626,22 @@ void V_RenderView( void )
 
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )
 		{
-			ref_viewpass_t eye_rvp = rvp;	// inherit flags/viewentity from the mod
+			ref_viewpass_t eye_rvp = views[0];	// inherit flags/viewentity from the mod
 
 			if( !VR_BeginEye( eye, &eye_rvp ))
 				continue;
 
 			GL_RenderFrame( &eye_rvp );
+
+			// The mod's additional passes, in the order it produced them -
+			// matching the flatscreen do/while. These keep the mod's OWN
+			// camera rather than taking the eye pose, because they are not
+			// the player's viewpoint: a monitor showing a corridor should
+			// show that corridor, not a second copy of the room. They are
+			// therefore not stereo-separated, which for a screen inside the
+			// world is the right trade.
+			for( v = 1; v < nviews; v++ )
+				GL_RenderFrame( &views[v] );
 
 			// Composite the 2D layer into this eye while its FBO is still bound.
 			// Without this the HUD, console and menu only ever reach the flat
