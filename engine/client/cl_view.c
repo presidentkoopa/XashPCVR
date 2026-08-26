@@ -443,12 +443,16 @@ void V_RenderView( void )
 			{
 				vec3_t hand_org, hand_ang;
 
-				if( VR_GetHandWorld( 1, hand_org, hand_ang ))
+				if( VR_GetHandWorld( VR_DominantHand(), hand_org, hand_ang ))
 				{
+					vec3_t dbg_raw, dbg_cal, dbg_align;
+					qboolean braced;
+
+					VectorCopy( hand_ang, dbg_raw );
 					// Two-handed stabilisation, before any mesh correction so
 					// it operates on physical tracked angles like everything
 					// else. No-op unless the off hand is up at the weapon.
-					VR_ApplyTwoHandedAim( hand_org, hand_ang );
+					braced = VR_ApplyTwoHandedAim( hand_org, hand_ang );
 
 					// Weapon meshes rest at a different angle than the bare-hand
 					// mesh, so they get their own correction (vr_weapon_*_offset).
@@ -469,13 +473,63 @@ void V_RenderView( void )
 					// The fire ray in VR_UpdateFireRay still skips it while braced,
 					// because there the hand-to-hand vector is already a finished world
 					// direction. Aim and model need opposite treatment here.
-					VR_CalibrateWeaponAngles( hand_ang );
+					// NOT while braced.
+					//
+					// Two-handed aiming has already produced a finished world
+					// direction, and VR_AlignModelToFireRay below measures the
+					// mesh's real bore offset and removes it. Adding the
+					// hand-tuned rest-pose constant on top is then pure error:
+					//
+					//   drawn = hand_to_hand + cal - offset
+					//   bore  = drawn + offset  =  hand_to_hand + cal
+					//
+					// The measured offset converges to the mesh's true offset
+					// no matter what else was applied, so `cal` survives intact
+					// and tilts the barrel off the firing line by exactly that
+					// much. Reported live as the model pitching down on grab
+					// while the laser stayed correct.
+					//
+					// FALLBACK ONLY, and applied after the measurement below.
+					//
+					// vr_weapon_pitch_offset is a single hand-tuned constant
+					// standing in for the mesh's real bore offset. Now that
+					// the offset is measured per model, the constant is not a
+					// partner to it - it is a duplicate, and applying both
+					// double-corrects. That is what put the gun 90 degrees up
+					// while the braced path, which already skipped it, aimed
+					// straight.
+					//
+					// It still earns its place for a mesh carrying no muzzle
+					// attachment, where there is nothing to measure.
+					VectorCopy( hand_ang, dbg_cal );
 
 					// Close the residual: rotate the drawn weapon so its barrel sits
 					// exactly on the firing line. The rest-pose correction above gets
 					// it close, but every mesh carries its own leftover angle, which
 					// is why the gun was still drawn just under its own laser.
-					VR_AlignModelToFireRay( hand_ang );
+					// ALWAYS, braced or not.
+					//
+					// This is what makes the visible barrel actually point
+					// along the angles above. Skipping it while braced left
+					// the model carrying only the hand-tuned rest-pose
+					// constant, so the drawn barrel sat well off the line to
+					// the off hand - the hand ended up inside the weapon and
+					// the firing line looked tilted.
+					//
+					// Safe to run here now that it measures the mesh's fixed
+					// bore offset instead of steering toward an error with a
+					// feedback loop. A measurement has nothing to oscillate
+					// against, which is what made the earlier version shake
+					// the moment two-handed aiming drove the same angles.
+					if( !VR_AlignModelToFireRay( hand_ang ))
+					{
+						// No attachment on this mesh - nothing to measure,
+						// so fall back to the tuned constant.
+						if( !braced )
+							VR_CalibrateWeaponAngles( hand_ang );
+					}
+
+					VectorCopy( hand_ang, dbg_align );
 
 					// PRE-NEGATE PITCH, same as VR_DrawHands does for the bare
 					// hands. Studio rendering negates pitch (the old Quake
@@ -492,6 +546,8 @@ void V_RenderView( void )
 					// equipped weapon stayed net inverted - raising the hand
 					// pitched the gun down and eventually behind the player.
 					hand_ang[PITCH] = -hand_ang[PITCH];
+
+					VR_DiagModelAngles( dbg_raw, dbg_cal, dbg_align, hand_ang );
 
 					view->curstate.movetype = MOVETYPE_NONE; // UNVERIFIED hypothesis: avoid stale interpolation blend in R_StudioSetUpTransform if viewent's movetype happens to be MOVETYPE_STEP
 					VectorCopy( hand_org, view->origin );
@@ -688,6 +744,69 @@ V_PostRender
 
 ==================
 */
+/*
+===============
+V_RenderVRMenu
+
+Puts the main menu in the headset.
+
+SCR_UpdateScreen only calls V_RenderView() in ca_active. At the main menu the
+state is ca_disconnected, so the entire OpenXR frame loop - and with it every
+eye submission - is skipped, and the headset shows a frozen or black view while
+the menu is perfectly visible on the desktop. Reported as "the main menu
+doesn't work in VR", and it was never a menu problem: no frame was being
+submitted at all.
+
+There is no world to draw here, so this submits eyes containing only the 2D
+layer over a cleared background.
+===============
+*/
+qboolean V_RenderVRMenu( void )
+{
+	int eye;
+
+	VR_SetMenuFrame( true );
+
+	if( !VR_IsAvailable( ))
+		return false;
+
+	if( !VR_BeginFrame( ))
+	{
+		// An opened XR frame must still be ended or xrWaitFrame stalls next
+		// tick. No-ops when nothing was opened.
+		VR_EndFrame();
+		VR_SetMenuFrame( false );
+		return false;
+	}
+
+	for( eye = 0; eye < VR_GetEyeCount(); eye++ )
+	{
+		ref_viewpass_t eye_rvp;
+
+		memset( &eye_rvp, 0, sizeof( eye_rvp ));
+
+		if( !VR_BeginEye( eye, &eye_rvp ))
+			continue;
+
+		// Nothing rendered the world into this eye, so whatever the swapchain
+		// image held last frame is still in it.
+		ref.dllFuncs.R_ClearScreen();
+
+		ref.dllFuncs.R_Set2DMode( true );
+		VR_Begin2D();
+		UI_UpdateMenu( host.realtime );
+		Con_DrawConsole();
+		VR_End2D();
+		ref.dllFuncs.R_Set2DMode( false );
+
+		VR_EndEye( eye );
+	}
+
+	VR_EndFrame();
+	VR_SetMenuFrame( false );
+	return true;
+}
+
 void V_PostRender( void )
 {
 	qboolean		draw_2d = false;

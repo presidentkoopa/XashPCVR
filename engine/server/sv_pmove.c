@@ -960,10 +960,41 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	}
 #endif
 
-	svgame.dllFuncs.pfnPlayerPreThink( clent );
-
 #if !XASH_DEDICATED
+	// Touch to interact. CBasePlayer::PlayerUse() runs inside PreThink and
+	// searches from pev->origin + pev->view_ofs along pev->v_angle, so
+	// pointing those at the hand makes the mod's OWN use logic run from your
+	// fingertips - no knowledge of which entities that mod considers usable,
+	// which the engine could not have anyway.
+	//
+	// Scoped to frames where USE is actually pressed. v_angle is read by more
+	// of PreThink than view_ofs is, so it is not something to leave swapped.
+	{
+		vec3_t use_org, use_ang;
+		vec3_t saved_ofs, saved_ang;
+		qboolean touched = false;
+
+		if( NET_IsLocalAddress( cl->netchan.remote_address ) && FBitSet( ucmd->buttons, IN_USE ) && VR_GetUseSource( use_org, use_ang ))
+		{
+			VectorCopy( clent->v.view_ofs, saved_ofs );
+			VectorCopy( clent->v.v_angle, saved_ang );
+			VectorSubtract( use_org, clent->v.origin, clent->v.view_ofs );
+			VectorCopy( use_ang, clent->v.v_angle );
+			touched = true;
+		}
+
+		svgame.dllFuncs.pfnPlayerPreThink( clent );
+
+		if( touched )
+		{
+			VectorCopy( saved_ofs, clent->v.view_ofs );
+			VectorCopy( saved_ang, clent->v.v_angle );
+		}
+	}
+
 	VR_SetFirePhase( VR_FIRE_PHASE_NONE, NULL, 0 );
+#else
+	svgame.dllFuncs.pfnPlayerPreThink( clent );
 #endif
 
 	SV_PlayerRunThink( clent, frametime, cl->timebase );

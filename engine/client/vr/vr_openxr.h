@@ -160,7 +160,15 @@ void     VR_DrawHands( qboolean draw_right );
 
 // Rotate the drawn weapon so its barrel lies on the actual firing line.
 // Call AFTER VR_CalibrateWeaponAngles, before pre-negating pitch.
-void     VR_AlignModelToFireRay( vec3_t ang );
+// Returns true if it applied a MEASURED correction. When false the mesh had no
+// usable attachment, and the caller should fall back to the tuned rest-pose
+// constant (VR_CalibrateWeaponAngles) instead.
+qboolean VR_AlignModelToFireRay( vec3_t ang );
+
+// Drop the accumulated model-alignment correction. Call when the two-handed
+// hold takes over, since that path sets angles absolutely and leaves no
+// residual for the integrator to close.
+void     VR_ResetModelAlign( void );
 
 // Applies the weapon viewmodel's rest-pose correction (vr_weapon_*_offset).
 // Call on the PHYSICAL tracked angles, BEFORE pre-negating pitch.
@@ -192,6 +200,17 @@ int      VR_OffHand( void );
 // vr_crouch_ratio of their calibrated standing height (vr_height).
 qboolean VR_GetPhysicalCrouch( void );
 
+// Touch to interact. Returns the off hand's pose so the mod's own PlayerUse()
+// search can be run from your fingertips instead of your face - see
+// VR_GetUseSource in vr_openxr.c for why no per-mod knowledge is needed.
+// True while the off hand is physically in contact with something. Raise
+// IN_USE from this and the mod's own PlayerUse() decides whether anything is
+// actually usable there - no button press, no per-mod knowledge.
+// Traces the drawn weapon angles through each stage into vr_diag.log, sampled.
+void     VR_DiagModelAngles( const vec3_t raw, const vec3_t after_cal, const vec3_t after_align, const vec3_t final );
+qboolean VR_GetTouchContact( void );
+qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang );
+
 // Room-scale. Walking in your room walks in the game: returns the movement
 // needed for the player entity to chase your real physical position, so the
 // body collides with the world instead of the view sliding through it.
@@ -202,6 +221,9 @@ void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side );
 // Hand-over-hand ladder climbing, returned as a usercmd upmove contribution.
 // 0 when not climbing. Ladder movement lives in pm_shared (engine code) and is
 // driven by upmove, so this needs nothing from the mod.
+// True while standing on/at a ladder brush (CONTENTS_LADDER). Engine-side, so
+// no mod involvement - see VR_GetLadderMove for why that matters.
+qboolean VR_OnLadder( void );
 float    VR_GetLadderMove( void );
 
 // VR akimbo. The off hand fires the equipped weapon a second time on its own
@@ -224,6 +246,8 @@ void     VR_DrawOffhandWeapon( void );
 #define VR_FIRE_PHASE_PRETHINK  1	// inside pfnPlayerPreThink - NOT covered
 #define VR_FIRE_PHASE_POSTTHINK 2	// inside the substituted window - covered
 
+// Marks a menu-only frame, so the desktop mirror does not fight V_PostRender.
+void     VR_SetMenuFrame( qboolean on );
 void     VR_SetFirePhase( int phase, const float *eye, int buttons );
 void     VR_CheckTraceOutsideWindow( const float *start );
 

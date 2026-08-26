@@ -908,6 +908,13 @@ static void CL_CreateCmd( void )
 			else
 				cmd->buttons |= IN_USE;
 		}
+
+		// Actually touching something raises IN_USE on its own - putting your
+		// hand on a button IS the press, with no button of your own to hold.
+		// The trigger above stays as a reach extender for things behind glass
+		// or out of arm's length.
+		if( VR_GetTouchContact( ))
+			cmd->buttons |= IN_USE;
 		if( VR_GetButton( VR_BTN_RELOAD ))  cmd->buttons |= IN_RELOAD;
 
 		// Swing-to-hit for melee. Injected as IN_ATTACK - the same button

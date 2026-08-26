@@ -697,6 +697,12 @@ void SCR_UpdateScreen( void )
 		break;
 	}
 
+	// PCVR fork: with no level loaded V_RenderView() never runs, so no eye is
+	// ever submitted and the headset sits frozen while the menu is fine on the
+	// desktop. Submit a menu-only frame for those states.
+	if( cls.state != ca_active )
+		V_RenderVRMenu();
+
 	// during changelevel we might have a few frames when we have nothing to draw
 	// (assuming levelshots are off) and drawing 2d on top of nothing or cleared screen
 	// is ugly, specifically with Adreno and ImgTec GPUs

@@ -277,6 +277,19 @@ static CVAR_DEFINE_AUTO( vr_weapon_origin, "1", FCVAR_ARCHIVE, "shot ORIGIN at t
 // ladders and grabbing by forking the game SDK, which then only fixes the one
 // mod it was built for.
 // ---------------------------------------------------------------------
+static CVAR_DEFINE_AUTO( vr_grip_offset_up, "-2", FCVAR_ARCHIVE, "draw the grip hand this far above/below the barrel line, units" );
+static CVAR_DEFINE_AUTO( vr_grip_offset_fwd, "0", FCVAR_ARCHIVE, "draw the grip hand this far along the barrel, units" );
+static CVAR_DEFINE_AUTO( vr_grip_offset_side, "0", FCVAR_ARCHIVE, "draw the grip hand this far to the side of the barrel, units" );
+static CVAR_DEFINE_AUTO( vr_grip_pose, "1", FCVAR_ARCHIVE, "close the supporting hand and wrap it around the barrel" );
+static CVAR_DEFINE_AUTO( vr_grip_pose_pitch, "0", FCVAR_ARCHIVE, "grip pose pitch offset" );
+static CVAR_DEFINE_AUTO( vr_grip_pose_yaw, "0", FCVAR_ARCHIVE, "grip pose yaw offset" );
+static CVAR_DEFINE_AUTO( vr_grip_pose_roll, "0", FCVAR_ARCHIVE, "grip pose roll offset" );
+static CVAR_DEFINE_AUTO( vr_grip_snap, "1", FCVAR_ARCHIVE, "post the supporting hand onto the barrel while two-handing (0-1)" );
+static CVAR_DEFINE_AUTO( vr_touch_hold, "0.3", FCVAR_ARCHIVE, "seconds contact is held after the hand stops touching" );
+static CVAR_DEFINE_AUTO( vr_touch_backoff, "24", FCVAR_ARCHIVE, "units behind the hand the use ray starts, so large objects still register" );
+static CVAR_DEFINE_AUTO( vr_touch_reach, "3", FCVAR_ARCHIVE, "how far past your hand counts as touching, units" );
+static CVAR_DEFINE_AUTO( vr_touch_use, "1", FCVAR_ARCHIVE, "press buttons and levers with your hand instead of the crosshair" );
+static CVAR_DEFINE_AUTO( vr_step_smooth, "12", FCVAR_ARCHIVE, "ease the view up steps instead of snapping (0 = off)" );
 static CVAR_DEFINE_AUTO( vr_roomscale, "1", FCVAR_ARCHIVE, "walking in your room walks in the game" );
 static CVAR_DEFINE_AUTO( vr_roomscale_gain, "10", FCVAR_ARCHIVE, "how hard the body chases your real position" );
 static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-scale move speed" );
@@ -285,6 +298,7 @@ static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye heig
 static CVAR_DEFINE_AUTO( vr_height_offset, "0", FCVAR_ARCHIVE, "shift the view up or down from the tracked height" );
 static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
 static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of standing height that counts as crouched" );
+static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
 static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
 static CVAR_DEFINE_AUTO( vr_ladder_speed, "8", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
 static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
@@ -467,12 +481,22 @@ static struct
 	qboolean      running;        // session state is running; frames may be submitted
 	qboolean      frame_started;  // between xrBeginFrame and xrEndFrame
 	qboolean      eyes_submitted; // at least one eye was rendered this frame
+	qboolean      menu_frame;     // this frame is the menu-only path (no world)
 	double        next_system_retry;
 	int           frames_submitted;
 
 	// where the play space sits in the game world, refreshed each frame
 	vec3_t        world_origin;
 	float         world_yaw;
+
+	// Eased vertical position of the play space. GoldSrc resolves a step by
+	// snapping the player up the full step height in a single frame, which on
+	// a monitor reads as a small jolt and in a headset reads as your whole
+	// body teleporting upward - one of the more reliable ways to make someone
+	// ill. Only the EYE is eased; the entity still steps instantly, so nothing
+	// about collision or movement changes.
+	float         smooth_z;
+	qboolean      smooth_z_valid;
 	vec3_t        hmd_origin_at_sync;  // real HMD position when world_origin last
 	                                    // moved (the player actually walked) - see
 	                                    // VR_SetWorldReference. Hand/eye offsets are
@@ -683,6 +707,25 @@ static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
 // attachment[] as it draws, which is the ONLY exact source for where this
 // weapon's barrel actually points.
 static cl_entity_t vr_offhand_ent;
+
+// VR_AlignModelToFireRay's integrator, at file scope so the periodic diagnostic
+// can report it. It winding to its clamp is what inverts the weapon, and that
+// happens while DEAD - when the viewmodel is not drawn and any diagnostic
+// inside the drawing path therefore never runs.
+static float corr_p = 0.0f, corr_y = 0.0f;
+
+// Measured bore offset: the fixed angle between the mesh's barrel and the
+// angles the entity is drawn with. See VR_AlignModelToFireRay.
+static vec3_t   vr_bore_local;	// bore direction in the MODEL's own frame - a true constant
+static vec3_t   vr_bore_last_ang;
+static qboolean vr_bore_valid;
+static qboolean vr_bore_have_last;
+
+// Where the off hand meets the barrel while two-handing, so the drawn hand can
+// be posted onto the weapon instead of passing through it.
+static vec3_t   vr_grip_org;
+static vec3_t   vr_grip_axis;	// barrel direction at the grip point
+static qboolean vr_grip_valid;
 static qboolean    vr_hands_init_tried;
 
 // Last two-hand grip evaluation, for the periodic diagnostic line. Purely
@@ -758,7 +801,8 @@ static void VR_DiagSample( void )
 				"  world=(%7.1f %7.1f %7.1f) yaw=%6.1f  sync=(%7.1f %7.1f %7.1f)%s lean=%6.1f"
 				"  fps=%5.1f  hz=%5.1f"
 				"  stick=(%5.2f %5.2f) turn=%5.2f%s  hands=L%s/R%s  weapon=%s  sub=%d%s"
-				"  2H[grip=%d off=%d dist=%.1f gap=%.1f barrel=%.1f attach=%d blend=%.2f va=(p%.1f y%.1f) out=(p%.1f y%.1f) braced=%d]\n",
+				"  2H[grip=%d off=%d dist=%.1f gap=%.1f barrel=%.1f attach=%d blend=%.2f va=(p%.1f y%.1f) out=(p%.1f y%.1f) braced=%d]"
+				"  ALIGN[corr_p=%7.2f corr_y=%7.2f health=%d]\n",
 				host.realtime - vrdiag.session_start,
 				vr.hmd_pose.origin[0], vr.hmd_pose.origin[1], vr.hmd_pose.origin[2],
 				vr.hmd_pose.angles[PITCH], vr.hmd_pose.angles[YAW], vr.hmd_pose.angles[ROLL],
@@ -778,7 +822,8 @@ static void VR_DiagSample( void )
 				vr_th.attach ? 1 : 0, vr_th.blend,
 				vr_th.va_pitch, vr_th.va_yaw,
 				vr_th.out_pitch, vr_th.out_yaw,
-				vr_th.braced ? 1 : 0 );
+				vr_th.braced ? 1 : 0 ,
+				corr_p, corr_y, cl.local.health );
 		}
 	}
 
@@ -1188,6 +1233,38 @@ void VR_SetWorldReference( const vec3_t origin )
 	VectorCopy( origin, vr.world_origin );
 	vr.world_yaw = vr.body_yaw;
 
+	// Ease the eye up a step instead of snapping it.
+	//
+	// Only smooth changes small enough to BE a step. Anything larger is a
+	// teleport, a level change, a lift, or a fall, and easing those would
+	// leave the view visibly detached from the body for a long moment - much
+	// worse than the jolt this exists to remove. MAX_STEP is GoldSrc's own
+	// step height.
+	{
+		const float MAX_STEP = 18.0f;
+		float dz;
+
+		if( !vr.smooth_z_valid )
+		{
+			vr.smooth_z = origin[2];
+			vr.smooth_z_valid = true;
+		}
+
+		dz = origin[2] - vr.smooth_z;
+
+		if( fabs( dz ) > MAX_STEP || vr_step_smooth.value <= 0.0f )
+		{
+			vr.smooth_z = origin[2];		// snap: not a step
+		}
+		else
+		{
+			float t = vr_step_smooth.value * host.frametime;
+
+			if( t > 1.0f ) t = 1.0f;
+			vr.smooth_z += dz * t;
+		}
+	}
+
 	if( body_moved )
 	{
 		VectorCopy( vr.hmd_pose.origin, vr.hmd_origin_at_sync );
@@ -1444,6 +1521,7 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	vr_th.offhand = false;
 	vr_th.dist = vr_th.gap = -1.0f;
 	vr_th.attach = false;
+	vr_grip_valid = false;
 
 	// Requires an actual grip press on the off hand, like Lambda1VR
 	// (VrInputAlt2.c:109-124). Proximity alone was tried and is wrong: the
@@ -1526,6 +1604,16 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 			VectorSubtract( off_org, closest, gap );
 			vr_th.gap = VectorLength( gap );
 			vr_th.barrel = barrel_len;
+
+			// Remember where on the barrel the hand actually met it, so the
+			// drawn hand can be put THERE rather than wherever the controller
+			// physically is. Your real hand closes on empty air while the
+			// virtual barrel is a solid object, so the two disagree by
+			// however far you over-reached - and the hand is drawn inside the
+			// weapon. Snapping to the barrel line hides that.
+			VectorCopy( closest, vr_grip_org );
+			VectorCopy( axis, vr_grip_axis );
+			vr_grip_valid = true;
 
 			if( latched || VectorLength( gap ) <= vr_twohand_radius.value )
 				target = 1.0f;
@@ -1750,64 +1838,135 @@ this cannot influence. When not braced the fire ray is itself derived from
 the attachment, so the difference is zero and this is a no-op.
 ================
 */
-void VR_AlignModelToFireRay( vec3_t ang )
+/*
+================
+VR_ResetModelAlign
+
+Drop the accumulated correction. Called when entering a braced two-handed
+hold, so releasing the grip does not hand the one-handed path a value that was
+integrated under completely different conditions.
+================
+*/
+void VR_ResetModelAlign( void )
 {
-	vec3_t fire_ang, bore, cur, want, fwd;
-	float dp, dy;
+	corr_p = corr_y = 0.0f;
+	vr_bore_valid = false;
+}
+
+/*
+================
+VR_AlignModelToFireRay
+
+Draw the weapon so its BORE lies along the angles it was handed.
+
+Every viewmodel's barrel sits at some arbitrary angle inside the mesh, so
+handing the entity a direction does not make the visible barrel point that way.
+That offset is a FIXED PROPERTY OF THE MODEL, and it can simply be measured:
+
+    drawing with angles A produced bore B   ->   offset = B - A
+    to make the bore point at D             ->   draw with D - offset
+
+ref_gl recomputes attachment[] in world space every frame, and we know what
+angles we passed last frame, so both halves are already in hand.
+
+This replaces a feedback integrator that steered toward the error with a small
+per-frame gain. That was the wrong tool: an integrator has to be tuned, it lags
+by the frame that attachment[] is behind, and it can ring, saturate or wind up.
+All three happened - it shook on grip, it pinned at its clamp for whole runs,
+and with the clamp originally used it wound to 180 degrees and drew the weapon
+upside down. There is no error signal to chase here, only a constant to look
+up, and a measurement cannot oscillate.
+
+Light smoothing only, to reject a frame where attachment[] has not caught up
+after a weapon change.
+================
+*/
+qboolean VR_AlignModelToFireRay( vec3_t ang )
+{
+	vec3_t bore;
+	int i;
 
 	if( !vr_model_align.value || !VR_IsActive() )
-		return;
+		return false;
 
-	if( !clgame.viewent.model || !VR_GetFireRay( NULL, fire_ang ))
-		return;
+	if( !clgame.viewent.model )
+	{
+		vr_bore_valid = false;
+		return false;
+	}
 
+	// Where the barrel ACTUALLY pointed, given what we drew last frame.
 	VectorSubtract( clgame.viewent.attachment[1], clgame.viewent.attachment[0], bore );
 	if( VectorLength( bore ) < 0.1f )
-		return;	// no usable attachment on this model
+		return false;			// no usable attachment on this mesh
 
 	VectorNormalize( bore );
-	VectorAngles( bore, cur );
 
-	AngleVectors( fire_ang, fwd, NULL, NULL );
-	VectorAngles( fwd, want );
-
-	dp = want[PITCH] - cur[PITCH];
-	dy = want[YAW]   - cur[YAW];
-
-	// Yaw wraps; take the short way round or a small correction becomes a spin.
-	while( dy >  180.0f ) dy -= 360.0f;
-	while( dy < -180.0f ) dy += 360.0f;
-
-	// CONVERGE on the correction rather than re-applying it every frame.
+	// Express the bore in the MODEL'S OWN frame, not the world's.
 	//
-	// attachment[] reflects the model as drawn LAST frame, so correcting the
-	// full measured error each frame is a feedback loop with a one-frame
-	// delay and unity gain - it overshoots and rings. Reported live as the
-	// firing line being right but the gun shaking hard.
+	// This is the part that has to be right. Stored as world pitch/yaw deltas,
+	// the offset is only correct while roll is zero: Euler components do not
+	// compose, so once the weapon carries roll - which it always does while
+	// braced, since two-handed aiming preserves wrist roll - a fixed mesh
+	// offset stops mapping to fixed pitch/yaw. It swings with roll, and where
+	// the decomposition folds it jumps about a quarter turn. Reported live as
+	// the model pitching down 90 degrees the instant the grabbing hand moved.
 	//
-	// The true correction is a CONSTANT for a given mesh (the bore's fixed
-	// offset inside the model), so integrate toward it with a small gain
-	// instead. The residual falls to zero as it converges and the held value
-	// simply stays there - no steady-state shake, and still no per-weapon
-	// tuning. Reset on weapon change, since the next mesh has its own offset.
+	// In the model's own frame the bore direction is a genuine constant, so
+	// measure it there and apply it back as a LOCAL PRE-ROTATION, which does
+	// compose. Same reason VR_ApplyMeshCalibration is a matrix concat rather
+	// than an angle addition.
+	if( vr_bore_have_last )
 	{
-		static const model_t *last_model = NULL;
-		static float corr_p = 0.0f, corr_y = 0.0f;
-		float gain = bound( 0.01f, vr_model_align.value, 1.0f );
+		vec3_t fwd, right, up, local;
 
-		if( clgame.viewent.model != last_model )
+		AngleVectors( vr_bore_last_ang, fwd, right, up );
+
+		// AngleVectors' `right` is the image of model -Y, so model +Y is -right.
+		local[0] = DotProduct( bore, fwd );
+		local[1] = -DotProduct( bore, right );
+		local[2] = DotProduct( bore, up );
+
+		VectorNormalize( local );
+
+		if( !vr_bore_valid )
 		{
-			last_model = clgame.viewent.model;
-			corr_p = corr_y = 0.0f;
+			VectorCopy( local, vr_bore_local );
+			vr_bore_valid = true;
 		}
-
-		corr_p = bound( -180.0f, corr_p + dp * gain, 180.0f );
-		corr_y = bound( -180.0f, corr_y + dy * gain, 180.0f );
-
-		// VectorAngles is pitch-positive-UP, entity angles pitch-positive-DOWN.
-		ang[PITCH] -= corr_p;
-		ang[YAW]   += corr_y;
+		else
+		{
+			// A constant in principle; smoothing only rejects the odd frame
+			// where attachment[] has not caught up after a weapon change.
+			for( i = 0; i < 3; i++ )
+				vr_bore_local[i] += ( local[i] - vr_bore_local[i] ) * 0.25f;
+			VectorNormalize( vr_bore_local );
+		}
 	}
+
+	if( vr_bore_valid )
+	{
+		vec3_t cal;
+
+		// The rotation that puts the mesh's bore onto model-forward is the
+		// INVERSE of the bore's own local orientation.
+		//
+		// Two sign conventions meet here: VectorAngles is pitch-positive-UP
+		// while entity angles are pitch-positive-DOWN (one negation), and we
+		// want the inverse rotation (a second). For pitch those cancel, so it
+		// is left alone; yaw takes only the inverse.
+		VectorAngles( vr_bore_local, cal );
+		cal[YAW]  = -cal[YAW];
+		cal[ROLL] = 0.0f;
+
+		VR_ApplyMeshCalibration( ang, cal );
+	}
+
+	// Remember what we are about to draw, so next frame can measure against it.
+	VectorCopy( ang, vr_bore_last_ang );
+	vr_bore_have_last = true;
+
+	return vr_bore_valid;
 }
 
 void VR_CalibrateWeaponAngles( vec3_t ang )
@@ -1832,6 +1991,43 @@ void VR_CalibrateWeaponAngles( vec3_t ang )
 	cal[ROLL]  = vr_weapon_roll_offset.value;
 
 	VR_ApplyMeshCalibration( ang, cal );
+}
+
+/*
+================
+VR_FindHandSequence
+
+Sequence index on the hand model whose label contains `needle`, or -1.
+
+By LABEL, not by index. The hand model here happens to put fullgrab at 7, but
+hardcoding that breaks the moment anyone swaps in a different hand model - and
+this fork exists to work with content it has never seen. Every studio model
+carries its sequence labels, so asking by name costs nothing and never goes
+stale. Same principle as the weapon profiler.
+================
+*/
+static int VR_FindHandSequence( const model_t *mod, const char *needle )
+{
+	studiohdr_t *hdr;
+	const mstudioseqdesc_t *seq;
+	int i;
+
+	if( !mod || mod->type != mod_studio )
+		return -1;
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( (model_t *)mod );
+	if( !hdr || hdr->numseq <= 0 )
+		return -1;
+
+	seq = (const mstudioseqdesc_t *)((const byte *)hdr + hdr->seqindex);
+
+	for( i = 0; i < hdr->numseq; i++ )
+	{
+		if( Q_stristr( seq[i].label, needle ))
+			return i;
+	}
+
+	return -1;
 }
 
 void VR_DrawHands( qboolean draw_right )
@@ -1867,6 +2063,79 @@ void VR_DrawHands( qboolean draw_right )
 		// conventions and are calibrated independently.
 		if( !VR_GetHandWorld( hand, org, ang ))
 			continue;
+
+		// POST the supporting hand onto the barrel while two-handing.
+		//
+		// Your real hand closes on empty air, so it keeps travelling past
+		// where the virtual barrel is - and gets drawn buried inside the
+		// weapon. Drawing it at the point on the barrel it actually met
+		// instead reads as gripping the gun, and costs nothing in accuracy:
+		// aiming uses the REAL controller position, which is untouched. Only
+		// the visual moves.
+		//
+		// Eased rather than snapped, so releasing hands it back to the
+		// tracked position without a jump.
+		if( hand == VR_OffHand() && vr_grip_snap.value > 0.0f )
+		{
+			static float  posted = 0.0f;
+			static vec3_t last_grip;
+			float step = ( host.frametime > 0.0f ) ? (float)host.frametime * 8.0f : 1.0f;
+
+			if( vr_grip_valid )
+			{
+				VectorCopy( vr_grip_org, last_grip );
+				posted = Q_min( posted + step, 1.0f );
+			}
+			else posted = Q_max( posted - step, 0.0f );
+
+			// Eases BOTH ways. Letting go has to hand the hand back to its
+			// tracked position gradually too, or releasing the grip snaps it
+			// across the gap you had over-reached by.
+			if( posted > 0.0f )
+			{
+				vec3_t gf, gr, gu, gang;
+
+				VectorLerp( org, posted * bound( 0.0f, vr_grip_snap.value, 1.0f ), last_grip, org );
+
+				// Cosmetic nudge off the barrel line. The barrel axis is the
+				// centre of the gun, so a hand centred on it reads as being
+				// inside the weapon rather than wrapped under it - sitting it
+				// slightly low looks like a grip. Purely where the hand is
+				// DRAWN: engagement, aim and the fire ray all still use the
+				// real controller position and are untouched.
+				VectorAngles( vr_grip_axis, gang );
+				gang[PITCH] = -gang[PITCH];
+				AngleVectors( gang, gf, gr, gu );
+
+				VectorMA( org, vr_grip_offset_fwd.value * posted,  gf, org );
+				VectorMA( org, vr_grip_offset_side.value * posted, gr, org );
+				VectorMA( org, vr_grip_offset_up.value * posted,   gu, org );
+			}
+
+			// Wrap the hand AROUND the barrel instead of leaving it in
+			// whatever direction the controller happens to face. Aligning the
+			// hand's forward with the barrel axis is what makes it read as a
+			// grip rather than a hand that happens to be nearby.
+			//
+			// Tracked ROLL is kept, so twisting your wrist still rolls the
+			// hand on the barrel, and the offsets below exist because no
+			// single rotation suits every hand mesh - the same reason the
+			// rest-pose corrections exist elsewhere in this file.
+			if( posted > 0.5f && vr_grip_pose.value )
+			{
+				vec3_t axis_ang;
+
+				VectorAngles( vr_grip_axis, axis_ang );
+				axis_ang[PITCH] = -axis_ang[PITCH];	// VectorAngles is pitch-up
+				axis_ang[ROLL]  = ang[ROLL];
+
+				axis_ang[PITCH] += vr_grip_pose_pitch.value;
+				axis_ang[YAW]   += vr_grip_pose_yaw.value;
+				axis_ang[ROLL]  += vr_grip_pose_roll.value;
+
+				VectorCopy( axis_ang, ang );
+			}
+		}
 
 		// `ang` is the PHYSICAL controller orientation. The MESH, however,
 		// does not rest along its own +X: bone-chain measurement puts the
@@ -1950,6 +2219,34 @@ void VR_DrawHands( qboolean draw_right )
 			e->curstate.frame = 0;
 			e->curstate.animtime = host.realtime;
 			e->curstate.framerate = 1.0f;
+		}
+
+		// Close the hand when it is actually holding something. The model
+		// ships fullgrab/halfgrab poses and we were drawing idle, which is
+		// why a hand posted onto a barrel still read as an open palm laid
+		// against it rather than a grip.
+		{
+			int want_seq = 0;
+
+			if( hand == VR_OffHand() && vr_grip_valid && vr_grip_pose.value )
+			{
+				int grab = VR_FindHandSequence( mdl, "fullgrab" );
+
+				if( grab < 0 )
+					grab = VR_FindHandSequence( mdl, "halfgrab" );
+				if( grab < 0 )
+					grab = VR_FindHandSequence( mdl, "grab" );	// any grip pose at all
+
+				if( grab >= 0 )
+					want_seq = grab;
+			}
+
+			if( e->curstate.sequence != want_seq )
+			{
+				e->curstate.sequence = want_seq;
+				e->curstate.animtime = host.realtime;
+				e->curstate.frame = 0.0f;
+			}
 		}
 
 		VectorCopy( org, e->origin );
@@ -2304,6 +2601,167 @@ static void VR_CalibrateHeight_f( void )
 
 /*
 ================
+VR_GetUseSource
+
+Reach out and touch things.
+
+Half-Life is full of buttons, levers, keypads and valves, and pointing at them
+from across the room with a crosshair is the least VR thing left in this port.
+
+No new interaction code is needed for it, though - and crucially, no knowledge
+of which entities a mod considers usable, which the engine cannot have.
+CBasePlayer::PlayerUse() already does the search, and it does it from
+pev->origin + pev->view_ofs along pev->v_angle. Point those at the HAND for
+the duration of that one call and the mod's own use logic runs from your
+fingertips instead of your face, whatever mod it is.
+
+Same substitution the weapon origin uses, aimed at a different call:
+PlayerUse runs inside PreThink, not PostThink.
+
+Returns the off hand's pose - the free hand, the one you would actually reach
+out with.
+================
+*/
+/*
+================
+VR_DiagModelAngles
+
+Traces the drawn weapon's angles through every stage that touches them, so a
+wrong orientation can be attributed to a stage instead of guessed at. Sampled,
+not per frame.
+
+Exists because "the weapon is upside down" has now survived three fixes aimed
+at three different suspected causes. Each stage below can plausibly invert a
+model, and reading four numbers settles which one does.
+================
+*/
+void VR_DiagModelAngles( const vec3_t raw, const vec3_t after_cal, const vec3_t after_align, const vec3_t final )
+{
+	static double next = 0.0;
+
+	if( !vr_debug.value )
+		return;
+
+	if( host.realtime < next )
+		return;
+
+	next = host.realtime + 0.5;
+
+	VR_DiagPrintf( "MODEL raw=(p%7.1f y%7.1f r%7.1f) cal=(p%7.1f y%7.1f r%7.1f) "
+		"align=(p%7.1f y%7.1f r%7.1f) final=(p%7.1f y%7.1f r%7.1f) health=%d\n",
+		raw[PITCH], raw[YAW], raw[ROLL],
+		after_cal[PITCH], after_cal[YAW], after_cal[ROLL],
+		after_align[PITCH], after_align[YAW], after_align[ROLL],
+		final[PITCH], final[YAW], final[ROLL],
+		cl.local.health );
+}
+
+qboolean VR_GetTouchContact( void )
+{
+	vec3_t org, ang, fwd, start, end;
+	pmtrace_t tr;
+	static qboolean was_touching = false;
+	qboolean touching;
+
+	if( !VR_IsActive() || vr_touch_use.value == 0.0f )
+	{
+		was_touching = false;
+		return false;
+	}
+
+	if( !VR_GetHandWorld( VR_OffHand(), org, ang ))
+	{
+		was_touching = false;
+		return false;
+	}
+
+	VR_ApplyMeshCalibration( ang, (vec3_t){ vr_hand_pitch_offset.value,
+		vr_hand_yaw_offset.value, vr_hand_roll_offset.value } );
+	AngleVectors( ang, fwd, NULL, NULL );
+
+	// Short probe through the hand. Which entities are USABLE is the mod's
+	// business and the engine cannot know it - so do not try. Detect only that
+	// the hand is in contact with something, raise IN_USE, and let the mod's
+	// own PlayerUse() decide whether anything happens. Touching a bare wall
+	// costs nothing, because there is nothing there to use.
+	VectorMA( org, -vr_touch_reach.value, fwd, start );
+	VectorMA( org, vr_touch_reach.value, fwd, end );
+
+	tr = CL_TraceLine( start, end, PM_STUDIO_BOX );
+	touching = ( tr.fraction < 1.0f ) ? true : false;
+
+	// HOLD contact briefly after the probe stops hitting.
+	//
+	// Health and HEV chargers are FCAP_CONTINUOUS_USE: PlayerUse() charges
+	// only while pev->button still has IN_USE, every frame. A hand resting on
+	// a wall is never perfectly still, so the raw probe drops out for a frame
+	// here and there - enough to keep re-triggering the "found something"
+	// select sound (an EDGE, so it fires on every re-entry) while never
+	// holding long enough to actually charge. Reported exactly that way: the
+	// interact sound plays but no juice is given.
+	//
+	// Buttons were unaffected because they are FCAP_IMPULSE_USE and fire on
+	// the edge, which flicker supplies plenty of.
+	{
+		static double hold_until = 0.0;
+
+		if( touching )
+			hold_until = host.realtime + vr_touch_hold.value;
+		else if( host.realtime < hold_until )
+			touching = true;
+	}
+
+	// Buzz on the frame contact begins. Without this you are reaching for
+	// things you cannot feel, and there is no way to tell you have arrived.
+	if( touching && !was_touching )
+		VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.5f );
+
+	was_touching = touching;
+	return touching;
+}
+
+qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang )
+{
+	vec3_t ang;
+
+	if( !VR_IsActive() || vr_touch_use.value == 0.0f )
+		return false;
+
+	if( !VR_GetHandWorld( VR_OffHand(), out_org, ang ))
+		return false;
+
+	// Rest-pose correction, so "forward" is where the hand actually points
+	// rather than where the raw controller axis does.
+	VR_ApplyMeshCalibration( ang, (vec3_t){ vr_hand_pitch_offset.value,
+		vr_hand_yaw_offset.value, vr_hand_roll_offset.value } );
+
+	// Sit the use origin BEHIND the hand rather than at it.
+	//
+	// PlayerUse() builds its line of sight as
+	//   vecLOS = target - ( pev->origin + pev->view_ofs )
+	// and then dots that against forward WITHOUT NORMALISING, requiring the
+	// result to clear VIEW_FIELD_NARROW. Put view_ofs exactly on the hand and
+	// touching something shrinks that vector toward zero, so the dot fails and
+	// nothing happens. UTIL_ClampVectorToBox then subtracts the target's
+	// half-size, which finishes off anything large.
+	//
+	// That is why small buttons worked while health and HEV chargers did not:
+	// a charger is a big brush, so the clamp zeroed its LOS entirely. Backing
+	// off restores a vector with real length that still points at whatever the
+	// hand is on.
+	{
+		vec3_t fwd;
+
+		AngleVectors( ang, fwd, NULL, NULL );
+		VectorMA( out_org, -vr_touch_backoff.value, fwd, out_org );
+	}
+
+	VectorCopy( ang, out_ang );
+	return true;
+}
+
+/*
+================
 VR_GetRoomScaleMove
 
 Walking in your room walks in the game.
@@ -2395,6 +2853,50 @@ independent of where you are looking or facing.
 Returns 0 when not climbing.
 ================
 */
+qboolean VR_OnLadder( void )
+{
+	int i;
+	vec3_t p;
+
+	if( !clgame.pmove )
+		return false;
+
+	VectorCopy( cl.simorg, p );
+
+	// Ladders are brush entities marked SOLID_NOT with skin == CONTENTS_LADDER,
+	// and the engine already separates them into the moveents list for exactly
+	// this reason (see cl_pmove.c:435, sv_pmove.c:296). So the engine can tell
+	// you are on a ladder WITHOUT asking the mod - which is what lets the whole
+	// climbing gesture stay mod-agnostic.
+	for( i = 0; i < clgame.pmove->nummoveent; i++ )
+	{
+		physent_t *pe = &clgame.pmove->moveents[i];
+		vec3_t mins, maxs;
+		int j;
+
+		if( !pe->model )
+			continue;
+
+		VectorAdd( pe->origin, pe->model->mins, mins );
+		VectorAdd( pe->origin, pe->model->maxs, maxs );
+
+		// Generous margin: the brush is the ladder's climbable volume, and you
+		// stand just outside it rather than inside.
+		for( j = 0; j < 3; j++ )
+		{
+			mins[j] -= 24.0f;
+			maxs[j] += 24.0f;
+		}
+
+		if( p[0] >= mins[0] && p[0] <= maxs[0] &&
+		    p[1] >= mins[1] && p[1] <= maxs[1] &&
+		    p[2] >= mins[2] && p[2] <= maxs[2] )
+			return true;
+	}
+
+	return false;
+}
+
 float VR_GetLadderMove( void )
 {
 	static float last_z[2];
@@ -2402,7 +2904,24 @@ float VR_GetLadderMove( void )
 	float move = 0.0f;
 	int hand;
 
-	if( !VR_IsActive() || vr_ladder.value == 0.0f )
+	// ONLY while actually on a ladder.
+	//
+	// This is what makes the gesture safe. Both reference ports had to pick a
+	// side here: HLVR gets real hand-over-hand climbing but pays for it with a
+	// forked SDK - a custom net message, per-controller ladder state and their
+	// object-drag system (player.cpp:314, :5958, VRControllerInteractionManager
+	// .cpp:1204). Lambda1VR stays engine-side but only steers, using the stick
+	// with direction taken from the HMD or off hand (L1VR_SurfaceView.c:400).
+	//
+	// Neither had a way to ask the engine "am I on a ladder". We do, because
+	// ladders are identifiable brushes (VR_OnLadder), so we get HLVR's gesture
+	// with Lambda1VR's mod-agnosticism.
+	//
+	// It also resolves the button clash. The dominant-hand grip is +attack2, so
+	// reading it as "grab rung" everywhere would fire the gauss or the shotgun's
+	// double barrel mid-climb. Gated to a ladder, that cannot happen: nobody
+	// shoots while hauling themselves up one.
+	if( !VR_IsActive() || vr_ladder.value == 0.0f || !VR_OnLadder( ))
 	{
 		have_last[0] = have_last[1] = false;
 		return 0.0f;
@@ -2420,9 +2939,6 @@ float VR_GetLadderMove( void )
 			continue;
 		}
 
-		// Either grip counts. The off-hand grip already means "grab" for
-		// two-handing a weapon, and the same gesture reading as "grab" on a
-		// ladder is what a player expects.
 		gripping = ( hand == VR_OffHand() ) ? VR_GetButton( VR_BTN_OFFGRIP ) : VR_GetButton( VR_BTN_ATTACK2 );
 
 		z = pose->origin[2];
@@ -3371,6 +3887,19 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_haptics );
 	Cvar_RegisterVariable( &vr_aim_from_weapon );
 	Cvar_RegisterVariable( &vr_weapon_origin );
+	Cvar_RegisterVariable( &vr_touch_use );
+	Cvar_RegisterVariable( &vr_touch_reach );
+	Cvar_RegisterVariable( &vr_touch_backoff );
+	Cvar_RegisterVariable( &vr_touch_hold );
+	Cvar_RegisterVariable( &vr_grip_snap );
+	Cvar_RegisterVariable( &vr_grip_pose );
+	Cvar_RegisterVariable( &vr_grip_offset_up );
+	Cvar_RegisterVariable( &vr_grip_offset_fwd );
+	Cvar_RegisterVariable( &vr_grip_offset_side );
+	Cvar_RegisterVariable( &vr_grip_pose_pitch );
+	Cvar_RegisterVariable( &vr_grip_pose_yaw );
+	Cvar_RegisterVariable( &vr_grip_pose_roll );
+	Cvar_RegisterVariable( &vr_step_smooth );
 	Cvar_RegisterVariable( &vr_roomscale );
 	Cvar_RegisterVariable( &vr_roomscale_gain );
 	Cvar_RegisterVariable( &vr_roomscale_max );
@@ -3380,6 +3909,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_crouch );
 	Cvar_RegisterVariable( &vr_crouch_ratio );
 	Cvar_RegisterVariable( &vr_ladder );
+	Cvar_RegisterVariable( &vr_walkdirection );
 	Cvar_RegisterVariable( &vr_ladder_speed );
 	Cvar_RegisterVariable( &vr_vignette );
 	Cvar_RegisterVariable( &vr_vignette_size );
@@ -4164,6 +4694,35 @@ void VR_GetMovement( float *forward, float *side )
 		fy *= s;
 	}
 
+	// OFF-HAND DIRECTED MOVEMENT, optional.
+	//
+	// By default the stick walks you relative to where you are LOOKING, which
+	// is the obvious mapping and stays the default here. The alternative is to
+	// walk relative to where your off hand points, which lets you keep moving
+	// in one direction while looking somewhere else - useful for backing away
+	// from something while watching it. Lambda1VR offers the same choice as
+	// vr_walkdirection (L1VR_SurfaceView.c:374).
+	//
+	// Implemented as a rotation of the stick vector by the yaw difference
+	// between the off hand and the head, so everything downstream - including
+	// the weapon-aim counter-rotation in CL_CreateCmd - keeps working
+	// unchanged.
+	if( vr_walkdirection.value != 0.0f )
+	{
+		vec3_t hand_org, hand_ang;
+
+		if( VR_GetHandWorld( VR_OffHand(), hand_org, hand_ang ))
+		{
+			float d = DEG2RAD( hand_ang[YAW] - ( vr.body_yaw + vr.hmd_pose.angles[YAW] ));
+			float c = cos( d ), s = sin( d );
+			float nx = fx * c - fy * s;
+			float ny = fx * s + fy * c;
+
+			fx = nx;
+			fy = ny;
+		}
+	}
+
 	if( forward ) *forward = bound( -1.0f, fy, 1.0f ) * vr_movespeed.value;
 	if( side )    *side    = bound( -1.0f, fx, 1.0f ) * vr_movespeed.value;
 }
@@ -4428,7 +4987,7 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 			// floating above it, and none of that is fixable from the game
 			// side. Applied to the EYE only, so shot origins and hand poses,
 			// which are anchored to the same reference, move with it.
-			rvp->vieworigin[2] = vr.world_origin[2] + rel[2] + vr_height_offset.value;
+			rvp->vieworigin[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + rel[2] + vr_height_offset.value;
 
 			// Head owns pitch and roll outright - letting the game pitch or roll a
 			// VR player's view is a reliable way to make them sick. Yaw is additive
@@ -4494,7 +5053,11 @@ void VR_EndEye( int eye )
 	//
 	// Blitting one eye also makes the game visible to anyone not wearing the
 	// headset, and lets rendering be verified without putting it on.
-	if( eye == 0 && vr_mirror.value && vrgl.BlitFramebuffer )
+	// Not on a menu-only frame. There the desktop window already has the real
+	// menu drawn into it by V_PostRender, so blitting a cleared eye over the top
+	// just fights it - the two alternate every frame and the window strobes grey
+	// at framerate. The headset still gets the eye; only the mirror is skipped.
+	if( eye == 0 && vr_mirror.value && vrgl.BlitFramebuffer && !vr.menu_frame )
 	{
 		int ww = refState.width;
 		int wh = refState.height;
@@ -4642,3 +5205,17 @@ const vr_pose_t *VR_GetHMDPose( void )      { return &vr_null_pose; }
 const vr_pose_t *VR_GetHandPose( int hand ) { return &vr_null_pose; }
 
 #endif
+
+/*
+================
+VR_SetMenuFrame
+
+Marks the current frame as the menu-only path (no world rendered). Used to
+suppress the desktop mirror blit, which would otherwise fight V_PostRender for
+the window - see VR_EndEye.
+================
+*/
+void VR_SetMenuFrame( qboolean on )
+{
+	vr.menu_frame = on;
+}

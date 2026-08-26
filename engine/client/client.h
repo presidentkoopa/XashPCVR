@@ -996,6 +996,7 @@ void SCR_DrawNetGraph( void );
 void V_Init (void);
 void V_Shutdown( void );
 qboolean V_PreRender( void );
+qboolean V_RenderVRMenu( void );
 void V_PostRender( void );
 void V_RenderView( void );
 
