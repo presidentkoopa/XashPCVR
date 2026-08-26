@@ -60,10 +60,60 @@ line-of-sight, since `FVisible()` traces to `EyePosition()` = `origin + view_ofs
 just watches. A shot leaving the player's eye *outside* the substitution window gets logged under
 `vr_debug`, naming the gap precisely.
 
-> [!IMPORTANT]
-> **Build 32-bit.** `COM_GenerateServerLibraryPath()` uses the mod's declared DLL filename
-> verbatim only on 32-bit Windows; every other architecture rewrites it with an `_amd64` suffix.
-> Legacy GoldSrc mods ship 32-bit game DLLs exclusively, so a 64-bit engine cannot load any of
-> them without rebuilding each one from source. FWGS also documents which mods work at all —
-> see [`supported-mod-list.md`](Documentation/supported-mod-list.md) and
-> [`not-supported-mod-list-and-reasons-why.md`](Documentation/not-supported-mod-list-and-reasons-why.md).
+**A fourth thing keeps it honest: the mod's own rendering still runs.** A mod signals extra
+render passes with `rp.nextView` — that is what drives security-camera monitors, mirrors,
+portals and render-to-texture scopes. The stereo path collects those views once per frame,
+exactly as the flatscreen loop would, then replays them into each eye. Only the player's own
+view takes the per-eye pose; a monitor showing a corridor keeps showing that corridor.
+
+## What it runs today
+
+| | |
+|---|---|
+| **Half-Life** | Playable |
+| **Opposing Force** | Loads its own shipped `opfor.dll` — no rebuild needed |
+| **Blue Shift** | Needs rebuilt DLLs; the Steam release is vgui2 and Xash cannot load it |
+
+Most legacy mods need nothing done to them at all. They ship 32-bit game DLLs, and a 32-bit
+engine loads those verbatim — which is the whole reason this fork stays 32-bit. FWGS's own
+[`supported-mod-list.md`](Documentation/supported-mod-list.md) runs to ~1200 entries and is the
+real compatibility list.
+
+Where a mod's own DLL genuinely will not load, [FWGS hlsdk-portable](https://github.com/FWGS/hlsdk-portable)
+carries a recreated branch for it — Blue Shift being the worked example. That is a per-mod build,
+not per-mod engine work.
+
+## Architecture: why 32-bit, and why 64-bit is coming anyway
+
+`COM_GenerateServerLibraryPath()` uses a mod's declared DLL filename **verbatim** only on 32-bit
+Windows. Every other architecture rewrites it with an `_amd64` suffix. Legacy GoldSrc mods ship
+32-bit DLLs exclusively, so a 64-bit engine cannot load any of them without rebuilding each from
+source — which is why 32-bit is the default and will stay the default.
+
+But modern standalone Xash titles ship **amd64-only** binaries and are unreachable from a 32-bit
+engine. The plan is therefore two binaries rather than a choice between them: 32-bit for the
+legacy catalogue, 64-bit for modern Xash games. Same VR layer, which is arch-agnostic C.
+
+## Online and co-op
+
+The VR work was built to survive multiplayer rather than assume single player, so:
+
+* **Nothing is added to the network protocol.** Vanilla clients still connect.
+* **Every VR substitution is scoped to the local player** via `NET_IsLocalAddress`, so on a
+  listen server remote players are untouched by it.
+* **A dedicated-server build contains no VR code at all** — it is all behind `#if !XASH_DEDICATED`.
+
+Two honest limits:
+
+**Hosting works; joining does not.** The server-side substitutions only apply to the local
+player, so a VR player who joins someone else's server reverts to firing from the eye. Fixing
+that means sending controller pose in `usercmd_t`, whose four `reserved` fields are already
+spent — so it is a protocol break that would lock out unmodified clients, not a feature.
+
+**Co-op content is the real blocker, not the engine.** Vanilla Half-Life has no co-op and Sven
+Co-op ships its own engine. The promising route needs no game DLL at all: the engine forces
+`deathmatch 0` when `coop` is set, which selects *singleplayer* game rules with several clients —
+and singleplayer rules always spawn monsters. Savegames and cross-level entity carry-over are
+disabled whenever `maxclients > 1`, so a co-op campaign has neither.
+
+Detail in [`PCVR_LOG.md`](PCVR_LOG.md) → **FINDING 018**.
