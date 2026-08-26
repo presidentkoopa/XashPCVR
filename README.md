@@ -83,16 +83,30 @@ Where a mod's own DLL genuinely will not load, [FWGS hlsdk-portable](https://git
 carries a recreated branch for it — Blue Shift being the worked example. That is a per-mod build,
 not per-mod engine work.
 
-## Architecture: why 32-bit, and why 64-bit is coming anyway
+## Architecture: 32-bit and 64-bit, both
 
-`COM_GenerateServerLibraryPath()` uses a mod's declared DLL filename **verbatim** only on 32-bit
-Windows. Every other architecture rewrites it with an `_amd64` suffix. Legacy GoldSrc mods ship
-32-bit DLLs exclusively, so a 64-bit engine cannot load any of them without rebuilding each from
-source — which is why 32-bit is the default and will stay the default.
+`COM_GenerateServerLibraryPath()` uses a mod's declared DLL filename **verbatim**
+only on 32-bit Windows. Every other architecture rewrites it with an `_amd64`
+suffix. Legacy GoldSrc mods ship 32-bit DLLs exclusively, so a 64-bit engine
+cannot load any of them — which is why **32-bit is the default** and is the build
+that plays the ~1200-mod catalogue.
 
-But modern standalone Xash titles ship **amd64-only** binaries and are unreachable from a 32-bit
-engine. The plan is therefore two binaries rather than a choice between them: 32-bit for the
-legacy catalogue, 64-bit for modern Xash games. Same VR layer, which is arch-agnostic C.
+But modern standalone Xash titles ship **amd64-only** binaries and are unreachable
+from a 32-bit engine. So the fork builds both. Same VR layer either side; it is
+architecture-agnostic C.
+
+**64-bit status:** the engine builds, loads 64-bit game DLLs (`hl_amd64.dll`,
+`client_amd64.dll`), spawns a map, and the VR layer reaches the OpenXR runtime and
+creates an instance. Stereo rendering itself is not yet verified in a headset.
+
+Getting there needed a 64-bit OpenXR loader, built from the SDK into its own
+`build64` so the 32-bit one is untouched — `engine/wscript` already probes per
+architecture, so no build-system change was required. It also surfaced a real bug:
+`vr_openxr.c` was guarded by `#if XASH_WIN32 && !XASH_DEDICATED` but not by
+`XASH_OPENXR`, and the source glob is unconditional, so **any** build configured
+without a loader failed on the include rather than falling back to flatscreen.
+
+Plan and detail: [`PCVR_64BIT_PLAN.md`](PCVR_64BIT_PLAN.md).
 
 ## Online and co-op
 
