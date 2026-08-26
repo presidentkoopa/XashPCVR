@@ -379,3 +379,6 @@ GEMINI.md
 vr/probe/*.exe
 vr/probe/*.obj
 vr/probe/*.dll
+
+# PCVR fork: second waf output directory for the 64-bit build
+build64/
