@@ -481,6 +481,7 @@ static struct
 	qboolean      running;        // session state is running; frames may be submitted
 	qboolean      frame_started;  // between xrBeginFrame and xrEndFrame
 	qboolean      eyes_submitted; // at least one eye was rendered this frame
+	int           eyes_this_frame; // how many eyes actually filled proj_views[]
 	qboolean      menu_frame;     // this frame is the menu-only path (no world)
 	double        next_system_retry;
 	int           frames_submitted;
@@ -725,6 +726,8 @@ static qboolean vr_bore_have_last;
 // be posted onto the weapon instead of passing through it.
 static vec3_t   vr_grip_org;
 static vec3_t   vr_grip_axis;	// barrel direction at the grip point
+
+static int      VR_ModelAttachments( const model_t *mod );
 static qboolean vr_grip_valid;
 static qboolean    vr_hands_init_tried;
 
@@ -1227,7 +1230,43 @@ void VR_SetWorldReference( const vec3_t origin )
 		// point of this gate (confirmed live: "no change"). 8 units is
 		// comfortably above the measured idle jitter and comfortably below
 		// a real step.
-		body_moved = ( VectorLength( delta ) > 8.0f );
+		// FULL resync only for a discontinuity - teleport, level change, lift.
+		// A step is not one of these.
+		body_moved = ( VectorLength( delta ) > 64.0f );
+
+		// CLOSE THE LOOP for ordinary movement.
+		//
+		// The old test was an 8-unit PER-FRAME threshold, which at 90 Hz means
+		// 720 units/second - faster than Half-Life's maximum run speed, and
+		// faster than vr_roomscale_max allows. It therefore never fired after
+		// the first frame, so hmd_origin_at_sync never advanced and the
+		// room-scale offset was open-loop: physically stepping aside made the
+		// body walk that way and KEEP walking, because the offset driving it
+		// was never reduced by the body arriving.
+		//
+		// Instead, advance the sync point by however far the body actually
+		// moved, converted back into play space. The offset then shrinks as
+		// the body catches up and settles at zero, which is what makes this a
+		// controller rather than a ramp.
+		//
+		// This stays correct with room-scale disabled: the body does not move
+		// in response, so delta is ~0, the sync point holds still, and leaning
+		// to peek round a corner works exactly as before.
+		if( !body_moved && vr.hmd_origin_at_sync_valid )
+		{
+			float s, c;
+			vec3_t play_delta;
+
+			// World -> play space is the inverse of the play -> world rotation
+			// in VR_PlayToWorld, so rotate by MINUS the body yaw.
+			SinCos( DEG2RAD( -vr.body_yaw ), &s, &c );
+
+			play_delta[0] = delta[0] * c - delta[1] * s;
+			play_delta[1] = delta[0] * s + delta[1] * c;
+			play_delta[2] = 0.0f;	// height is not room-scale's business
+
+			VectorAdd( vr.hmd_origin_at_sync, play_delta, vr.hmd_origin_at_sync );
+		}
 	}
 
 	VectorCopy( origin, vr.world_origin );
@@ -1368,6 +1407,31 @@ on top of the read-only -rodir base) for local testing.
 static void VR_InitHandModels( void )
 {
 	int i;
+	static int last_servercount = -1;
+
+	// RELOAD ON EVERY LEVEL CHANGE.
+	//
+	// These models are synthetic - nothing precaches them, because no mod knows
+	// they exist. Mod_LoadWorld purges the studio cache and Mod_FreeUnused then
+	// frees anything unreferenced, which always includes these. The model_t
+	// slot is zeroed and handed to the NEXT model that asks for one, so a
+	// cached pointer here does not merely dangle, it silently aliases some
+	// other mesh. Symptom is hands vanishing or turning into another model
+	// partway through a campaign.
+	//
+	// Reloading per level is cheap (Mod_ForName returns the cached model when
+	// it is still resident) and is the only way to stay correct without
+	// hooking the mod's precache list, which we cannot do.
+	if( cl.servercount != last_servercount )
+	{
+		last_servercount = cl.servercount;
+		vr_hands_init_tried = false;
+		vr_hand_model_suit = vr_hand_model_labcoat = NULL;
+
+		for( i = 0; i < 2; i++ )
+			vr_hand_ent[i].model = NULL;
+		vr_offhand_ent.model = NULL;
+	}
 
 	if( vr_hands_init_tried )
 		return;
@@ -1517,6 +1581,22 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	// The weapon's current forward, i.e. where the barrel already points.
 	AngleVectors( ang, fwd, NULL, NULL );
 
+	// Seed `dir` to the weapon's own forward.
+	//
+	// It is only assigned inside the engage block below, but `blend` decays
+	// over vr_twohand_smooth AFTER that block stops being entered - on grip
+	// release, or any frame the off hand drops tracking. Those frames still
+	// reach the VectorLerp at the end with blend near 1, so an unassigned
+	// `dir` puts stack garbage straight into the aim, and
+	// VR_AlignModelToFireRay then records it as the bore reference for the
+	// next frame - so one bad frame poisons the following ones too.
+	//
+	// This is the same defect that was already found and fixed once here; the
+	// fix covered the ENGAGE path only. Seeding makes the release path a no-op
+	// blend toward the weapon's existing direction, which is what "letting go"
+	// should mean anyway.
+	VectorCopy( fwd, dir );
+
 	vr_th.grip    = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
 	vr_th.offhand = false;
 	vr_th.dist = vr_th.gap = -1.0f;
@@ -1583,7 +1663,10 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 
 			VectorCopy( fwd, axis );
 
-			if( vr_aim_attachment.value && clgame.viewent.model )
+			// attachment[0] alone is enough for the barrel AXIS; with none at
+			// all the slot holds the entity origin and the "barrel" would run
+			// from the grip to itself.
+			if( vr_aim_attachment.value && VR_ModelAttachments( clgame.viewent.model ) >= 1 )
 			{
 				vec3_t to_muzzle;
 
@@ -1621,12 +1704,24 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	}
 
 	// Ease toward the target instead of switching hard.
+	//
+	// Integrated at most ONCE per frame. This function is called from both
+	// CL_CreateCmd (to build the aim) and V_RenderView (to place the model),
+	// which each run once a frame - so integrating per CALL made the ramp
+	// advance twice per frame and engage in half the configured time.
 	if( vr_twohand_smooth.value > 0.0f && host.frametime > 0.0f )
 	{
-		float step = (float)host.frametime / vr_twohand_smooth.value;
+		static double last_integrated = -1.0;
 
-		if( target > blend ) blend = Q_min( blend + step, target );
-		else                 blend = Q_max( blend - step, target );
+		if( host.realtime != last_integrated )
+		{
+			float step = (float)host.frametime / vr_twohand_smooth.value;
+
+			last_integrated = host.realtime;
+
+			if( target > blend ) blend = Q_min( blend + step, target );
+			else                 blend = Q_max( blend - step, target );
+		}
 	}
 	else blend = target;
 
@@ -1743,8 +1838,24 @@ static const vr_wprofile_t *VR_GetWeaponProfile( void )
 {
 	const model_t *mod = clgame.viewent.model;
 	studiohdr_t *hdr;
+	static int last_servercount = -1;
 
-	if( vr_wprof.model == mod )
+	// Pointer identity is NOT enough to key this cache across a level change.
+	// model_t slots are recycled: Mod_FreeUnused zeroes an unreferenced entry
+	// and Mod_FindName hands the same address to a different model, so the
+	// pointer matches while the mesh behind it is something else entirely.
+	//
+	// That misfires badly here rather than cosmetically. A pistol inheriting a
+	// crowbar's melee=true means VR_GetMeleeAttack starts ORing IN_ATTACK on
+	// hand velocity, so the gun fires whenever the hand moves quickly - and it
+	// would also take the melee rest-pose angle. Drop the cache per level.
+	if( cl.servercount != last_servercount )
+	{
+		last_servercount = cl.servercount;
+		memset( &vr_wprof, 0, sizeof( vr_wprof ));
+	}
+
+	if( vr_wprof.model == mod && vr_wprof.valid )
 		return &vr_wprof;	// cached
 
 	memset( &vr_wprof, 0, sizeof( vr_wprof ));
@@ -1813,6 +1924,29 @@ qboolean VR_HoldingMelee( void )
 	    || Q_stristr( name, "knife" )   != NULL
 	    || Q_stristr( name, "wrench" )  != NULL
 	    || Q_stristr( name, "pipe" )    != NULL;
+}
+
+static int VR_ModelAttachments( const model_t *mod )
+{
+	studiohdr_t *hdr;
+
+	// attachment[] is a FIXED four-slot array on every cl_entity_t, and the
+	// renderer only writes the slots a model actually declares. Slots beyond
+	// numattachments keep whatever was there before - and gl_studio seeds an
+	// unattached entity slot with the entity ORIGIN, so on a one-attachment
+	// weapon [1]-[0] is not a short bore, it is a vector pointing back at the
+	// player. Nothing about that is small enough for a length check to reject.
+	if( !mod || mod->type != mod_studio )
+		return 0;
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( (model_t *)mod );
+
+	return hdr ? hdr->numattachments : 0;
+}
+
+static qboolean VR_ModelHasBore( const model_t *mod )
+{
+	return ( VR_ModelAttachments( mod ) >= 2 ) ? true : false;
 }
 
 /*
@@ -1889,10 +2023,33 @@ qboolean VR_AlignModelToFireRay( vec3_t ang )
 	if( !vr_model_align.value || !VR_IsActive() )
 		return false;
 
-	if( !clgame.viewent.model )
+	if( !VR_ModelHasBore( clgame.viewent.model ))
 	{
 		vr_bore_valid = false;
 		return false;
+	}
+
+	// Drop the measurement when the WEAPON or the LEVEL changes.
+	//
+	// The measured bore is a property of one specific mesh, so carrying it
+	// across a weapon change applies the pistol's offset to the shotgun. Across
+	// a level change it is worse: model_t slots are recycled, so the cached
+	// pointer can match while the mesh behind it is a different model entirely.
+	//
+	// VR_ResetModelAlign existed for exactly this and ended up with no callers
+	// at all when the surrounding code was restructured, so the state was never
+	// being cleared by anything.
+	{
+		static const model_t *last_align_model = NULL;
+		static int last_align_servercount = -1;
+
+		if( clgame.viewent.model != last_align_model || cl.servercount != last_align_servercount )
+		{
+			last_align_model = clgame.viewent.model;
+			last_align_servercount = cl.servercount;
+			VR_ResetModelAlign();
+			vr_bore_have_last = false;
+		}
 	}
 
 	// Where the barrel ACTUALLY pointed, given what we drew last frame.
@@ -1949,15 +2106,38 @@ qboolean VR_AlignModelToFireRay( vec3_t ang )
 		vec3_t cal;
 
 		// The rotation that puts the mesh's bore onto model-forward is the
-		// INVERSE of the bore's own local orientation.
+		// INVERSE of the bore's own local orientation - and an inverse is NOT
+		// obtained by negating Euler components.
 		//
-		// Two sign conventions meet here: VectorAngles is pitch-positive-UP
-		// while entity angles are pitch-positive-DOWN (one negation), and we
-		// want the inverse rotation (a second). For pitch those cancel, so it
-		// is left alone; yaw takes only the inverse.
-		VectorAngles( vr_bore_local, cal );
-		cal[YAW]  = -cal[YAW];
-		cal[ROLL] = 0.0f;
+		// Let VectorAngles(bore) = (P_up, Y, 0). The entity-convention
+		// rotation whose forward IS the bore is
+		//     B = Rz(Y) * Ry(pe),   pe = -P_up
+		// so the correction we want is
+		//     C = B^-1 = Ry(-pe) * Rz(-Y)
+		//
+		// VR_ApplyMeshCalibration feeds its angles through
+		// Matrix3x4_CreateFromEntity, which composes in the FIXED order
+		// Rz(yaw)*Ry(pitch)*Rx(roll). Handing it (P_up, -Y, 0) therefore builds
+		// Rz(-Y)*Ry(P_up) - the two factors in the WRONG ORDER - and throws
+		// away the roll term the true inverse carries. Those agree only when
+		// the bore is off-axis in pitch alone or yaw alone; with both, the
+		// barrel stays misaligned by an amount no amount of measurement can
+		// remove, because the error is in the composition, not the input.
+		//
+		// Decompose the real inverse into that fixed ZYX order instead.
+		{
+			float pe, sp, cp, sy, cy;
+
+			VectorAngles( vr_bore_local, cal );
+
+			pe = DEG2RAD( -cal[PITCH] );	// VectorAngles is pitch-up
+			sp = sin( pe ); cp = cos( pe );
+			sy = sin( DEG2RAD( cal[YAW] )); cy = cos( DEG2RAD( cal[YAW] ));
+
+			cal[PITCH] = RAD2DEG( -asin( bound( -1.0f, sp * cy, 1.0f )));
+			cal[YAW]   = RAD2DEG( atan2( -sy, cp * cy ));
+			cal[ROLL]  = RAD2DEG( atan2( sp * sy, cp ));
+		}
 
 		VR_ApplyMeshCalibration( ang, cal );
 	}
@@ -2044,6 +2224,18 @@ void VR_DrawHands( qboolean draw_right )
 		vec3_t org, ang;
 		cl_entity_t *e = &vr_hand_ent[hand];
 		model_t *mdl;
+
+		// Refresh the synthetic entity index EVERY FRAME rather than freezing it
+		// at init. clgame.maxEntities is re-derived per connection and is reset
+		// to 2 in between (cl_game.c), so an index captured once can end up
+		// pointing at a real networked entity - or past the end of the array,
+		// which the studio path then memcpy's attachment data into with no
+		// bounds check at all (gl_studio.c:3175). Recomputing is a subtraction;
+		// the crash it avoids is not worth saving it.
+		if( clgame.maxEntities > 8 )
+			vr_hand_ent[hand].index = clgame.maxEntities - 1 - hand;
+		else
+			continue;	// entity array not sized yet - nothing safe to use
 
 		if( hand == 1 && !draw_right )
 			continue;
@@ -2314,6 +2506,12 @@ void VR_DrawOffhandWeapon( void )
 		vr_offhand_ent.curstate.renderamt = 255;
 	}
 
+	// Same synthetic-index safety as the hands: in bounds, recomputed per
+	// frame, and clear of the two the hands take.
+	if( clgame.maxEntities <= 8 )
+		return;
+	vr_offhand_ent.index = clgame.maxEntities - 3;
+
 	vr_offhand_ent.curstate.scale = -1.0f;		// mirror: left-handed copy
 	vr_offhand_ent.curstate.body = clgame.viewent.curstate.body;
 	vr_offhand_ent.curstate.skin = clgame.viewent.curstate.skin;
@@ -2411,7 +2609,10 @@ static qboolean VR_UpdateMelee( void )
 	static vec3_t prev_org;
 	static qboolean have_prev = false;
 	static qboolean swinging = false;
-	vec3_t org, ang, delta;
+	static const model_t *last_model = NULL;
+	static int last_servercount = -1;
+	const vr_pose_t *pose;
+	vec3_t delta;
 	float speed;
 
 	if( !VR_IsActive() || !vr_melee_swing.value || host.frametime <= 0.0f )
@@ -2421,7 +2622,34 @@ static qboolean VR_UpdateMelee( void )
 		return false;
 	}
 
-	if( !VR_GetHandWorld( VR_DominantHand(), org, ang ))
+	// Guard against a swing being detected because the WEAPON or the LEVEL
+	// changed, not because the hand moved.
+	//
+	// This function is only reached while a melee weapon is held, so while a
+	// gun is equipped prev_org sits frozen at wherever the hand was during the
+	// last melee frame. Re-selecting the crowbar then differentiates against
+	// that stale point over a single frametime, which is thousands of units a
+	// second - an instant phantom swing, complete with haptic, hitting whatever
+	// happens to be in front of you. A level change does the same, since the
+	// play space is re-anchored at the new spawn.
+	if( clgame.viewent.model != last_model || cl.servercount != last_servercount )
+	{
+		last_model = clgame.viewent.model;
+		last_servercount = cl.servercount;
+		have_prev = false;
+		swinging = false;
+	}
+
+	// Differentiate the hand in PLAY SPACE, not world space.
+	//
+	// VR_GetHandWorld anchors the pose to the player's world position, so the
+	// body's own velocity lands in the result: sprinting is ~320 units/sec and
+	// vr_melee_speed defaults to 220, which means simply RUNNING swings the
+	// crowbar continuously without the hand moving at all. Tracking-space
+	// position is relative to the play area and carries no body motion.
+	pose = VR_GetHandPose( VR_DominantHand( ));
+
+	if( !pose || !pose->valid )
 	{
 		have_prev = false;
 		return false;
@@ -2429,15 +2657,20 @@ static qboolean VR_UpdateMelee( void )
 
 	if( !have_prev )
 	{
-		VectorCopy( org, prev_org );
+		VectorCopy( pose->origin, prev_org );
 		have_prev = true;
 		return false;
 	}
 
-	VectorSubtract( org, prev_org, delta );
-	VectorCopy( org, prev_org );
+	VectorSubtract( pose->origin, prev_org, delta );
+	VectorCopy( pose->origin, prev_org );
 
 	speed = VectorLength( delta ) / (float)host.frametime;	// HL units/sec
+
+	// A zero or negative threshold would make every frame a swing AND never
+	// clear the hysteresis below, latching the detector on permanently.
+	if( vr_melee_speed.value <= 0.0f )
+		return false;
 
 	if( !swinging && speed >= vr_melee_speed.value )
 	{
@@ -3003,7 +3236,7 @@ qboolean VR_GetOffhandFire( vec3_t out_org, vec3_t out_dir )
 	// Without this the off hand fell back to the calibrated-angle path below,
 	// which is precisely the path that used to send the main hand's laser
 	// straight up. Reported live as exactly that.
-	if( vr_aim_attachment.value != 0.0f && vr_offhand_ent.model )
+	if( vr_aim_attachment.value != 0.0f && VR_ModelHasBore( vr_offhand_ent.model ))
 	{
 		vec3_t bore;
 
@@ -3162,7 +3395,7 @@ void VR_UpdateFireRay( void )
 	//
 	// attachment[0] is the muzzle; attachment[1], where present, is a second
 	// point down the barrel, so [0]->[1] is the true bore line.
-	if( !braced && vr_aim_attachment.value && clgame.viewent.model )
+	if( !braced && vr_aim_attachment.value && VR_ModelHasBore( clgame.viewent.model ))
 	{
 		const cl_entity_t *ve = &clgame.viewent;
 		vec3_t bore;
@@ -4841,6 +5074,7 @@ qboolean VR_BeginFrame( void )
 	uint32_t n = 0;
 
 	vr.eyes_submitted = false;
+	vr.eyes_this_frame = 0;
 
 	if( !vr.available )
 		return false;
@@ -4945,7 +5179,18 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 
 	wi.timeout = XR_INFINITE_DURATION;
 	if( XR_FAILED( xrWaitSwapchainImage( sc->handle, &wi )))
+	{
+		// RELEASE what was just acquired. The image is only ever released in
+		// VR_EndEye, and the caller skips that entirely when this returns
+		// false - so every failure here permanently consumed one image from
+		// the runtime's pool. A handful of them and the pool is empty and the
+		// eye stops rendering for the rest of the session, with no error to
+		// show for it.
+		XrSwapchainImageReleaseInfo ri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+
+		xrReleaseSwapchainImage( sc->handle, &ri );
 		return false;
+	}
 
 	// ref_gl renders into whatever framebuffer is bound and never rebinds one.
 	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->fbos[sc->acquired_index] );
@@ -5102,6 +5347,7 @@ void VR_EndEye( int eye )
 	vr.proj_views[eye].subImage.imageArrayIndex = 0;
 
 	vr.eyes_submitted = true;
+	vr.eyes_this_frame++;
 }
 
 /*
@@ -5130,7 +5376,14 @@ void VR_EndFrame( void )
 	// Only submit a layer if we really rendered the eyes. Submitting a projection
 	// layer referencing swapchain images that were never written is a protocol
 	// error and some runtimes will drop the session over it.
-	if( vr.frame_state.shouldRender && vr.eyes_submitted )
+	//
+	// ALL eyes, not merely one. layer.viewCount is always vr.eye_count, but
+	// proj_views[] is filled per eye in VR_EndEye - so a frame where eye 0
+	// succeeded and eye 1 failed submitted eye 1's entry holding either last
+	// frame's swapchain or, on the very first frame, XR_NULL_HANDLE. That is
+	// precisely the protocol error this check exists to prevent, and the
+	// boolean could not see it.
+	if( vr.frame_state.shouldRender && vr.eyes_this_frame >= vr.eye_count )
 	{
 		ei.layerCount = 1;
 		ei.layers     = layers;
@@ -5145,6 +5398,7 @@ void VR_EndFrame( void )
 	xrEndFrame( vr.session, &ei );
 	vr.frame_started = false;
 	vr.eyes_submitted = false;
+	vr.eyes_this_frame = 0;
 }
 
 /*

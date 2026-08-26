@@ -1072,6 +1072,9 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 #if !XASH_DEDICATED
 		qboolean vr_local = NET_IsLocalAddress( cl->netchan.remote_address );
+		vec3_t vr_off_org, vr_off_dir;
+		vec3_t vr_saved_vuser1, vr_saved_vuser2;
+		qboolean vr_vuser_sub = false;
 		vec3_t vr_eye;
 
 		// The REAL eye, captured before any substitution - this is where the
@@ -1096,20 +1099,24 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		// Half-Life never reads, so a DLL that does not understand them is
 		// simply unaffected. Cleared when not dual wielding so a stale pose
 		// can never be picked up.
-		if( vr_local )
+		//
+		// SAVED AND RESTORED like every other substitution here, and only
+		// touched when there is actually an off-hand pose to hand over.
+		//
+		// "Reserved for mods" means reserved for THE MOD - and a mod that uses
+		// vuser1 for its own state is entitled to. Clearing them every frame
+		// (which the previous version did, VR active or not) silently zeroed
+		// that mod's data forever, on a fork whose whole point is running
+		// arbitrary mods. Writing only inside the PostThink window, and putting
+		// the mod's values back afterwards, keeps this invisible to anything
+		// that is not looking for it.
+		if( vr_local && VR_GetOffhandFire( vr_off_org, vr_off_dir ))
 		{
-			vec3_t off_org, off_dir;
-
-			if( VR_GetOffhandFire( off_org, off_dir ))
-			{
-				VectorCopy( off_org, clent->v.vuser1 );
-				VectorCopy( off_dir, clent->v.vuser2 );
-			}
-			else
-			{
-				VectorClear( clent->v.vuser1 );
-				VectorClear( clent->v.vuser2 );
-			}
+			VectorCopy( clent->v.vuser1, vr_saved_vuser1 );
+			VectorCopy( clent->v.vuser2, vr_saved_vuser2 );
+			VectorCopy( vr_off_org, clent->v.vuser1 );
+			VectorCopy( vr_off_dir, clent->v.vuser2 );
+			vr_vuser_sub = true;
 		}
 
 		// Mark the covered phase. Firing from the eye in here is expected and
@@ -1123,6 +1130,12 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 #if !XASH_DEDICATED
 		VR_SetFirePhase( VR_FIRE_PHASE_NONE, NULL, 0 );
+
+		if( vr_vuser_sub )
+		{
+			VectorCopy( vr_saved_vuser1, clent->v.vuser1 );
+			VectorCopy( vr_saved_vuser2, clent->v.vuser2 );
+		}
 
 		if( vr_muzzle )
 			VectorCopy( saved_view_ofs, clent->v.view_ofs );

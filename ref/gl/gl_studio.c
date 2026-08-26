@@ -2162,6 +2162,17 @@ static void R_StudioDrawPoints( void )
 	// NOTE: rewind normals at start
 	pstudionorms = (vec3_t *)((byte *)m_pStudioHeader + m_pSubModel->normindex);
 
+	// PCVR fork: set when WE disabled culling for a mirrored entity, so it can
+	// be put back at the end of this function.
+	//
+	// Necessary because the whole block below is skipped when faceCull is
+	// ALREADY GL_NONE - so once a mirrored hand turns culling off, no later
+	// entity ever reaches the branch that would turn it back on, and every
+	// model drawn afterwards renders with its backfaces. Upstream gets away
+	// with the same shape only because its flip case is the viewmodel, drawn
+	// last; our mirrored hands are ordinary entities drawn mid-scene.
+	qboolean restore_cull = false;
+
 	// backface culling for left-handed weapons
 	//
 	// there is a bug in GoldSrc that sets backface culling to GL_FRONT
@@ -2187,6 +2198,7 @@ static void R_StudioDrawPoints( void )
 			// independent Y-flip further up, which would cancel ours out.
 			tr.fFlipViewModel = false;
 			GL_Cull( GL_NONE );
+			restore_cull = true;
 		}
 		else
 		{
@@ -2254,6 +2266,10 @@ static void R_StudioDrawPoints( void )
 		r_stats.c_studio_polys += pmesh->numtris;
 		tr.blend = oldblend;
 	}
+
+	// PCVR fork: put culling back if we turned it off for a mirrored entity.
+	if( restore_cull )
+		GL_Cull( GL_FRONT );
 }
 
 /*

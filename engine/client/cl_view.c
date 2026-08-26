@@ -394,7 +394,18 @@ void V_RenderView( void )
 	int		viewnum = 0;
 
 	if( !cl.video_prepped || ( !ui_renderworld.value && UI_IsVisible() && !cl.background ))
+	{
+		// Submit a menu-only frame rather than nothing.
+		//
+		// This early return fires whenever the UI is up DURING a level - the
+		// in-game escape menu - and it happens before VR_BeginFrame, so the
+		// whole OpenXR frame loop is skipped and the headset sits on a frozen
+		// image. Exactly the same failure as the main menu, reached by a
+		// different path: fixing SCR_UpdateScreen only covered the states with
+		// no level loaded.
+		V_RenderVRMenu();
 		return; // still loading
+	}
 
 	V_CalcViewRect ();	// compute viewport rectangle
 	V_SetRefParams( &rp );
