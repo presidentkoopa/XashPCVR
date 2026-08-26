@@ -22,7 +22,13 @@ See vr_openxr.h for the design rationale.
 #include "entity_types.h"	// ET_NORMAL
 #include "vr_openxr.h"
 
-#if XASH_WIN32 && !XASH_DEDICATED
+// XASH_OPENXR is defined by the build ONLY when an openxr_loader for this
+// architecture was actually found (engine/wscript). Without it in the guard,
+// this file still compiled - the source glob is unconditional - and died on
+// #include <openxr/openxr.h> with no include path, so ANY Windows client build
+// configured without --openxr failed outright rather than falling back to
+// flatscreen.
+#if XASH_WIN32 && !XASH_DEDICATED && XASH_OPENXR
 
 #define XR_USE_PLATFORM_WIN32
 #define XR_USE_GRAPHICS_API_OPENGL
@@ -5437,7 +5443,21 @@ void VR_Shutdown( void )
 	Con_Printf( "VR: shut down\n" );
 }
 
-#else // !XASH_WIN32 || XASH_DEDICATED
+/*
+================
+VR_SetMenuFrame
+
+Marks the current frame as the menu-only path (no world rendered). Used to
+suppress the desktop mirror blit, which would otherwise fight V_PostRender for
+the window - see VR_EndEye.
+================
+*/
+void VR_SetMenuFrame( qboolean on )
+{
+	vr.menu_frame = on;
+}
+
+#else // !XASH_WIN32 || XASH_DEDICATED || !XASH_OPENXR
 
 // Stubs so callers need no #ifdef. VR is Win32-client-only for now.
 CVAR_DEFINE_AUTO( vr_enable, "0", FCVAR_ARCHIVE, "enable OpenXR VR rendering" );
@@ -5458,18 +5478,51 @@ static const vr_pose_t vr_null_pose;
 const vr_pose_t *VR_GetHMDPose( void )      { return &vr_null_pose; }
 const vr_pose_t *VR_GetHandPose( int hand ) { return &vr_null_pose; }
 
+
+// Everything the header declares must have a definition here too, or a build
+// without OpenXR links against nothing. The list above was written when the VR
+// surface was thirteen functions; it is now closer to fifty, and every one
+// added since was missing - so this branch had quietly stopped compiling long
+// ago and nobody noticed, because the only builds anyone made had OpenXR.
+void     VR_SetWorldReference( const vec3_t origin ) { }
+void     VR_OverrideViewAngles( vec3_t angles ) { }
+float    VR_GetBodyYaw( void ) { return 0.0f; }
+void     VR_GetMovement( float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
+void     VR_UpdateTurn( float frametime ) { }
+qboolean VR_GetButton( int btn ) { return false; }
+qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang ) { return false; }
+void     VR_DrawHands( qboolean draw_right ) { }
+qboolean VR_AlignModelToFireRay( vec3_t ang ) { return false; }
+void     VR_ResetModelAlign( void ) { }
+void     VR_CalibrateWeaponAngles( vec3_t ang ) { }
+qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang ) { return false; }
+qboolean VR_HoldingMelee( void ) { return false; }
+void     VR_UpdateFireRay( void ) { }
+qboolean VR_GetFireRay( vec3_t out_org, vec3_t out_ang ) { return false; }
+qboolean VR_WeaponOriginActive( void ) { return false; }
+int      VR_DominantHand( void ) { return 1; }
+int      VR_OffHand( void ) { return 0; }
+qboolean VR_GetPhysicalCrouch( void ) { return false; }
+qboolean VR_OnLadder( void ) { return false; }
+float    VR_GetLadderMove( void ) { return 0.0f; }
+void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
+qboolean VR_GetTouchContact( void ) { return false; }
+qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang ) { return false; }
+void     VR_DiagModelAngles( const vec3_t raw, const vec3_t after_cal, const vec3_t after_align, const vec3_t final ) { }
+void     VR_SetMenuFrame( qboolean on ) { }
+void     VR_SetFirePhase( int phase, const float *eye, int buttons ) { }
+void     VR_CheckTraceOutsideWindow( const float *start ) { }
+qboolean VR_AimFromWeapon( void ) { return false; }
+qboolean VR_DualWieldActive( void ) { return false; }
+qboolean VR_GetOffhandFire( vec3_t out_org, vec3_t out_dir ) { return false; }
+void     VR_DrawOffhandWeapon( void ) { }
+qboolean VR_GetAimAngles( vec3_t out_ang ) { return false; }
+qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang ) { return false; }
+void     VR_DrawOverlays( void ) { }
+void     VR_Haptic( int hand, float duration, float frequency, float amplitude ) { }
+qboolean VR_GetMeleeAttack( void ) { return false; }
+qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
+void     VR_Begin2D( void ) { }
+void     VR_End2D( void ) { }
+
 #endif
-
-/*
-================
-VR_SetMenuFrame
-
-Marks the current frame as the menu-only path (no world rendered). Used to
-suppress the desktop mirror blit, which would otherwise fight V_PostRender for
-the window - see VR_EndEye.
-================
-*/
-void VR_SetMenuFrame( qboolean on )
-{
-	vr.menu_frame = on;
-}

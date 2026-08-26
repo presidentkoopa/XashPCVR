@@ -24,19 +24,48 @@ So: two binaries, one VR layer.
 - **The VR layer is architecture-agnostic C.** It holds no pointer-width
   assumptions by design, so no port is expected — only compilation.
 
-## The known blocker
+## The known blocker — RESOLVED
 
-**The OpenXR loader is 32-bit only.** `E:\OpenXR-SDK` contains a `build32`
-directory and nothing else, so there is no 64-bit `openxr_loader.lib` to link
-against. This has to be built before anything else can proceed.
+**The OpenXR loader was 32-bit only**, and it was worse than a missing library:
+it was a hard build failure rather than a graceful fall back to flatscreen.
+`engine/wscript:113` picks `build32` or `build64` from `DEST_SIZEOF_VOID_P` and
+sets `conf.env.OPENXR = False` when the loader is absent — but the source glob
+at `engine/wscript:299` is unconditional, and `vr_openxr.c` was guarded only by
+`#if XASH_WIN32 && !XASH_DEDICATED`. So the file compiled anyway and died on
+`#include <openxr/openxr.h>` with no include path.
+
+That guard is now `#if XASH_WIN32 && !XASH_DEDICATED && XASH_OPENXR`, and the
+no-OpenXR stub block has been brought up to date — it covered 13 functions while
+the header declared ~50, so that branch had quietly stopped linking long ago and
+nobody noticed, because every build anyone made had OpenXR.
+
+**A 64-bit loader now exists**, built from the SDK already on disk:
+
+```
+cmake -S E:/OpenXR-SDK -B E:/OpenXR-SDK/build64 -G "Visual Studio 18 2026" -A x64 -DDYNAMIC_LOADER=ON
+cmake --build E:/OpenXR-SDK/build64 --config Release --target openxr_loader
+```
+
+It lands at exactly the path `engine/wscript:115` probes, `build32` is untouched,
+and configure now reports the 64-bit loader as found. No build-system changes were
+needed. (`cmake` is not on PATH; it ships with Visual Studio.)
+
+**And the runtime serves 64-bit.** VirtualDesktopXR installs both runtimes side by
+side: the native registry view has `HKLM\SOFTWARE\Khronos\OpenXR\1\ActiveRuntime`
+pointing at a json whose library is x86-64, while the WOW6432Node view points at
+the 32-bit one. A 64-bit build resolves to the x64 runtime with no user action.
+
+Still unconfirmed: the capability probe in FINDING 007 (extensions, view sizes, GL
+version) was run by the **32-bit** probe against the **32-bit** runtime DLL. Almost
+certainly identical, but rebuilding `vr/probe` as 64-bit would settle it.
 
 ## Steps
 
-1. **Build a 64-bit OpenXR loader.** CMake the SDK at `E:\OpenXR-SDK` into a
-   separate `build64` so the existing 32-bit loader is left intact.
-2. **Confirm the runtime serves 64-bit apps.** VirtualDesktopXR is the runtime
-   here (PCVR_LOG FINDING 007). A 64-bit app needs a 64-bit runtime DLL
-   registered; verify before assuming.
+1. ~~Build a 64-bit OpenXR loader.~~ **Done** — see above.
+
+2. ~~Confirm the runtime serves 64-bit apps.~~ **Done** — VirtualDesktopXR ships an x64 runtime and it is the registered ActiveRuntime.
+
+
 3. **Configure a second waf build.** `./waf.bat configure -8` with the x64 SDL2
    and the new loader, into a **separate output directory** so the 32-bit build
    is not clobbered — waf keeps its configuration in `build/c4che`, so the two
@@ -52,8 +81,8 @@ against. This has to be built before anything else can proceed.
 
 ## Risks
 
-- **The OpenXR runtime may not serve 64-bit.** That would stop the whole plan,
-  and it is the first thing to establish.
+- ~~The OpenXR runtime may not serve 64-bit.~~ Resolved: it does.
+
 - **Config and save directories may collide** between the two builds. Worth
   settling deliberately rather than discovering.
 - **Two binaries means two of every VR bug.** Every issue gets chased twice. The
