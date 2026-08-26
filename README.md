@@ -83,6 +83,21 @@ Where a mod's own DLL genuinely will not load, [FWGS hlsdk-portable](https://git
 carries a recreated branch for it — Blue Shift being the worked example. That is a per-mod build,
 not per-mod engine work.
 
+## Mods planned
+
+Full target list, tiered by what's needed to run each one, is
+[`PCVR_MOD_TARGETS.md`](PCVR_MOD_TARGETS.md). Short version:
+
+* **Working now** — Half-Life, Opposing Force, Blue Shift.
+* **Game DLL built, mod content not yet installed** — They Hunger, Half-Life: Decay,
+  Half-Life: Echoes, Afraid of Monsters: Director's Cut, Poke 646 (+ Vendetta), Half-Life:
+  Induction, Delta Particles, Deathmatch Classic, Absolute Redemption, Half-Life: Urbicide.
+* **Next up** — Azure Sheep, Counter-Life, Half-Life: Insecure, Half-Life: Top-Down, Half-Life:
+  Visitors, Half-Rats: Parasomnia, Half-Life: Field Intensity, They Hunger-family mods
+  (USS Darkstar, The Gate, TWHL Tower, Halfquake).
+* **Ruled out** — anything requiring vgui2 (Counter-Strike 1.6, Condition Zero, Day of Defeat),
+  Sven Co-op (own engine), Half-Life: Extended (long-term, once released).
+
 ## Architecture: 32-bit and 64-bit, both
 
 `COM_GenerateServerLibraryPath()` uses a mod's declared DLL filename **verbatim**
@@ -131,3 +146,16 @@ and singleplayer rules always spawn monsters. Savegames and cross-level entity c
 disabled whenever `maxclients > 1`, so a co-op campaign has neither.
 
 Detail in [`PCVR_LOG.md`](PCVR_LOG.md) → **FINDING 018**.
+
+## VR-to-VR crossplay
+
+Planned, not built. The substitutions that make weapons fire from the controller are scoped to
+the **local** player (`NET_IsLocalAddress`), so today only the VR player hosting a listen server
+gets VR-correct behaviour — anyone who joins, VR or not, reverts to eye-origin aim.
+
+Making a joining VR player's shots leave their own controller means the server needs their
+controller pose, and `usercmd_t` has no room left for it — its four `reserved` fields are already
+spent (see Online and co-op above). So this is a protocol change, gated behind a version bump so
+vanilla and older PCVR clients still connect to an unmodified server: the substitution moves from
+`sv_pmove.c`'s local-only branch to reading pose out of the usercmd for any client that negotiates
+the extension, host or joiner alike.
