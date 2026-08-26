@@ -555,3 +555,107 @@ mod. This is likely reusable for other "the game DLL decides this" problems.
 8. Wishlist — dual wield, weapon hand-swapping, physical reload, articulated weapons,
    throwable grenades **with arc indicator**
 9. Networking — **explicitly low priority**, neither reference project solved it
+
+## FINDING 018 — Co-op and netplay: what is reachable, and what the protocol forbids
+
+Researched against the engine source rather than assumed. Every claim below has a
+citation; the one thing that is *not* verified is called out at the end.
+
+**The engine already has real multiplayer.** `svs.maxclients` comes from
+`sv_maxclients` (`engine/server/sv_main.c:138`), networking turns on whenever
+`maxclients > 1` (`engine/server/sv_init.c:838`), and dedicated servers are a
+separate build target (`engine/wscript:271`). A `coop` cvar exists engine-side
+(`sv_main.c:76`) and is handed to the game DLL as `svgame.globals->coop`
+(`sv_init.c:1016`).
+
+**GoldSrc compatibility is one-way.** As a *client* this engine can join real
+GoldSrc servers on protocol 48 (`engine/client/cl_main.c:1333`). As a *server* it
+speaks only Xash protocol 49 and rejects anything else outright
+(`engine/server/sv_client.c:338-341`). So a stock GoldSrc client can never join
+us; anyone joining must run this fork.
+
+**What VR loses when you join instead of host.** Every server-side substitution is
+gated on `NET_IsLocalAddress` (`sv_pmove.c:977`, `:1074`) and wrapped in
+`#if !XASH_DEDICATED`, so a dedicated build contains no VR code at all. Aim
+*direction* survives, because it is written into the outgoing `cmd->viewangles`
+(`cl_main.c:860`), as do buttons and movement. What is lost is anything needing
+the server to act on controller data: shots leave the eye instead of the muzzle,
+touch-to-use stops working, and dual wield goes inert.
+
+**Sending controller pose to a remote server is a protocol break.** `usercmd_t`
+has `int32_t reserved[4]` (`common/q_client.h:51`) but all four are already spent
+on FWGS's `impact_index`/`impact_position` (`engine/common/net_encode.c:69-72`).
+Adding pose fields changes `STATIC_CHECK_SIZEOF(usercmd_t, 52, 52)`
+(`q_client.h:55`), the delta table and the read/write pair
+(`net_encode.c:1532, 1555`) — and mismatched clients are then rejected at
+`sv_client.c:338`. Note this would *not* break mod-agnosticism (the substitution
+never touches a game DLL), only vanilla-client compatibility.
+
+**There is no maintained co-op mod we can run.** Sven Co-op is out for a stated
+reason — "Uses custom GoldSrc engine"
+(`Documentation/not-supported-mod-list-and-reasons-why.md:19`). Searching the
+whole supported list for co-op content turns up three entries and nothing
+maintained (`Documentation/supported-mod-list.md:219, 675, 1037`).
+
+**But `coop 1` may already work with a stock `hl.dll`, and this is the useful
+finding.** The engine forces `deathmatch 0` when `coop` is set
+(`sv_init.c:824, 1002`). `InstallGameRules` selects purely on
+`gpGlobals->deathmatch` (`hlsdk-portable dlls/gamerules.cpp:320-344`), so
+`coop 1` yields `CHalfLifeRules` — the *singleplayer* rules — with N clients.
+Singleplayer rules always allow monsters
+(`dlls/singleplay_gamerules.cpp:408-411`), unlike multiplayer rules which gate on
+`mp_allowmonsters`, default off (`dlls/multiplay_gamerules.cpp:1103-1106`).
+`trigger_changelevel` only blocks on `IsDeathmatch()`
+(`dlls/triggers.cpp:1450-1452`), and `respawn()` respawns in place under coop
+(`dlls/client.cpp:136`). Scripted sequences have no multiplayer gate at all.
+
+So SP maps with several players may already run without touching any SDK — which
+is the mod-agnostic outcome, since it needs no rebuilt game DLL.
+
+**Two engine limits apply regardless.** Savegames force single player
+(`engine/server/sv_save.c:2173-2175` sets `maxplayers 1`, `deathmatch 0`,
+`coop 0`), and level transitions lose entity carry-over because
+`svs.maxclients > 1` forces `smooth = false` (`engine/server/sv_game.c:747-748`).
+A co-op campaign therefore has no saves and no inventory carried between maps.
+
+**Ranked path.** (a) VR player hosts, others join — works today, zero code, but
+joiners need this fork. (b) `coop 1; maxplayers N` for SP content — try before
+writing anything, per above. (c) VR while joining someone else's server — needs
+the protocol break, and is the only option that stops vanilla clients connecting.
+
+**Not verified:** whether `coop 1` actually produces playable SP maps at runtime.
+This is static analysis only.
+
+## FINDING 019 — Where the project actually stands against the Half-Life campaign
+
+An honest assessment after an adversarial audit of the whole VR layer (42 agents,
+every finding put to independent skeptics before being believed).
+
+**Roughly 80% for playing the Half-Life campaign start to finish.**
+
+What is done and confirmed working in a headset: stereo rendering, head and hand
+tracking, hands and weapon models, firing from the controller with an unmodified
+game DLL, muzzle-attachment-derived aim, laser sight, grenade arc, two-handed
+stabilisation, melee by swing, flashlight, haptics, stick locomotion with snap
+and smooth turn, HUD in the headset, room-scale walking, physical crouch, ladder
+climbing, touch-to-interact, stair smoothing, and the menu rendering in VR.
+
+What is missing or unproven, in the order it would block a playthrough:
+
+1. **Nothing has been played end to end.** Every feature has been tested in
+   isolation, on one map, usually for a minute. The campaign has set pieces —
+   trains, tank turrets, the Xen jumps, the tentacle sequence — that nobody has
+   attempted in VR at all.
+2. **Weapon selection is cycle-only.** No direct slot access and no working menu
+   navigation with the controllers.
+3. **No teleport locomotion.** Smooth-only is a comfort problem for some players
+   and there is no alternative.
+4. **Train and tank controls are untested**, and are the one campaign-critical
+   interaction the reference ports both needed game-DLL work for.
+5. **Long jump** is likely unusable, and Xen requires it.
+
+The 20% is therefore mostly *verification*, not construction. The features exist;
+what does not exist is evidence that a full campaign survives them. The audit
+above is a fair warning on that point: it found thirteen real defects, most of
+them shipped the same day, several of which only appear after a level change or a
+weapon swap — exactly the conditions a single-map test never reaches.
