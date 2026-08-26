@@ -72,7 +72,7 @@ view takes the per-eye pose; a monitor showing a corridor keeps showing that cor
 |---|---|
 | **Half-Life** | Playable |
 | **Opposing Force** | Loads its own shipped `opfor.dll` — no rebuild needed |
-| **Blue Shift** | Needs rebuilt DLLs; the Steam release is vgui2 and Xash cannot load it |
+| **Blue Shift** | Playable, via rebuilt DLLs at `bshift/` [(why)](#mod-compatibility) — the Steam release ships vgui2, which Xash cannot load |
 
 Most legacy mods need nothing done to them at all. They ship 32-bit game DLLs, and a 32-bit
 engine loads those verbatim — which is the whole reason this fork stays 32-bit. FWGS's own
