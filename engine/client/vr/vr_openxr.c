@@ -20,6 +20,7 @@ See vr_openxr.h for the design rationale.
 #include "ref_common.h"
 #include "mod_local.h"		// Mod_ForName - engine-internal model loading, for bare-hand models
 #include "entity_types.h"	// ET_NORMAL
+#include "keydefs.h"		// K_MOUSE1 - VR menu pointer clicks
 #include "vr_openxr.h"
 
 // XASH_OPENXR is defined by the build ONLY when an openxr_loader for this
@@ -77,6 +78,9 @@ static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc 
 static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
+static CVAR_DEFINE_AUTO( vr_menu_lock, "1", FCVAR_ARCHIVE, "anchor the menu in the world and drive it with a controller pointer" );
+static CVAR_DEFINE_AUTO( vr_menu_leash, "35", FCVAR_ARCHIVE, "degrees the head may turn before the anchored menu is dragged along" );
+static CVAR_DEFINE_AUTO( vr_menu_pitch_sign, "-1", FCVAR_ARCHIVE, "flip if the menu anchor and pointer move the wrong way vertically" );
 CVAR_DEFINE_AUTO( vr_hands, "1", FCVAR_ARCHIVE, "pin the viewmodel to the right controller" );
 CVAR_DEFINE_AUTO( vr_hud, "1", FCVAR_ARCHIVE, "draw the 2D HUD/menu inside the headset" );
 
@@ -1312,6 +1316,45 @@ void VR_SetWorldReference( const vec3_t origin )
 				// Horizontal only - height is not room-scale's business, and
 				// lifts/steps are handled by smooth_z below.
 				moved = delta[0] * dir[0] + delta[1] * dir[1];
+
+				// CLAMP, on two separate grounds. Without this the sync point
+				// overshoots and manufactures a REVERSE offset that no physical
+				// motion produced, which then feeds back as a spurious
+				// room-scale command in the opposite direction and stalls the
+				// drawn eye for a frame while the body keeps moving. In a
+				// headset that reads as judder.
+				//
+				// 1. Never retire more offset than actually exists. delta is
+				//    whatever the body did for ALL reasons - stick, trains,
+				//    knockback - so on any ordinary run it dwarfs the head's
+				//    real lead. Crediting all of it drives the offset through
+				//    zero and out the far side, and the `moved > 0` gate below
+				//    then blocks the correcting frame, so the flip persists for
+				//    the rest of the movement burst rather than self-correcting.
+				//
+				// 2. Never retire more than room-scale itself asked for. delta
+				//    is a DISPLACEMENT, while vr.roomscale_cmd is a VELOCITY -
+				//    it lands in cmd->forwardmove. Room-scale's real
+				//    contribution this frame is therefore want * frametime, and
+				//    anything past that is another system's motion being
+				//    silently attributed to room-scale.
+				{
+					vec3_t rel_now;
+					float sy, cy, avail, share;
+
+					VectorSubtract( vr.hmd_pose.origin, vr.hmd_origin_at_sync, rel_now );
+
+					// Play -> world, so the available lead is measured along
+					// the same axis dir lives in.
+					SinCos( DEG2RAD( vr.body_yaw ), &sy, &cy );
+					avail = ( rel_now[0] * cy - rel_now[1] * sy ) * dir[0]
+					      + ( rel_now[0] * sy + rel_now[1] * cy ) * dir[1];
+
+					if( moved > avail ) moved = avail;
+
+					share = want * (float)host.frametime;
+					if( moved > share ) moved = share;
+				}
 
 				if( moved > 0.0f )
 				{
@@ -4472,6 +4515,83 @@ practice: HUD content belongs near the centre where the eye can actually resolve
 it.
 ================
 */
+/*
+=================================================================
+	VR menu: world anchor and controller pointer
+
+Two problems, both reported from a headset:
+
+The menu is painted straight into the eye texture at a fixed viewport rect, so
+it is welded to your face. Turning your head takes the menu with you, which is
+exactly what a menu must not do - there is nothing to look AT, so there is
+nothing to aim at either.
+
+And there was no pointer at all. Navigation meant reaching for a mouse you
+cannot see while wearing a headset.
+
+Anchoring is done by offsetting the 2D rect against head rotation rather than by
+rendering the layer to a texture and hanging it on a world-space quad. The quad
+is the "proper" answer and it is a much larger change - render-to-texture plus a
+textured world draw - for a panel that only needs to hold still while it is
+looked at. Offsetting is a small-angle approximation of the same thing and is
+exact enough over the range a menu is actually read at.
+
+It comes with a leash: past vr_menu_leash degrees the anchor is dragged along
+rather than allowed to slide out of view, because a menu that can be lost
+entirely by turning your head is worse than one that follows.
+
+The pointer maps the dominant controller's aim direction onto that same rect and
+feeds the result to the ordinary menu mouse entry points, so the menu itself
+needs no VR knowledge - it thinks a mouse is moving.
+=================================================================
+*/
+static qboolean vr_menu_active = false;	// menu was visible last frame
+static float    vr_menu_yaw, vr_menu_pitch;	// where it was anchored
+static int      vr_menu_ofs_x, vr_menu_ofs_y;	// consumed by VR_Begin2D
+static qboolean vr_menu_click_prev = false;
+
+/*
+================
+VR_Get2DRect
+
+Where the flat 2D layer lands inside one eye texture.
+
+Factored out because the menu POINTER has to agree with it exactly: the cursor
+is derived by asking which part of this rect the controller is pointing at, so
+if the two computed the rect differently the cursor would sit somewhere other
+than where the menu was drawn. Same reasoning as the cached fire ray.
+
+Does not include the per-eye parallax shift or the menu anchor offset - those
+are applied by VR_Begin2D, and the pointer wants the rect's neutral position.
+================
+*/
+static void VR_Get2DRect( int *out_x, int *out_y, int *out_w, int *out_h )
+{
+	const vr_swapchain_t *sc = &vr.swapchains[0];
+	float scale = bound( 0.2f, vr_hud_scale.value, 1.0f );
+	int ew, eh, w, h;
+	float aspect;
+
+	ew = (int)sc->width;
+	eh = (int)sc->height;
+
+	aspect = ( refState.height > 0 )
+		? (float)refState.width / (float)refState.height : ( 16.0f / 9.0f );
+
+	w = (int)( ew * scale );
+	h = (int)( w / aspect );
+	if( h > eh * scale )
+	{
+		h = (int)( eh * scale );
+		w = (int)( h * aspect );
+	}
+
+	if( out_x ) *out_x = ( ew - w ) / 2;
+	if( out_y ) *out_y = ( eh - h ) / 2;
+	if( out_w ) *out_w = w;
+	if( out_h ) *out_h = h;
+}
+
 void VR_Begin2D( void )
 {
 	const vr_swapchain_t *sc = &vr.swapchains[0];
@@ -4525,7 +4645,124 @@ void VR_Begin2D( void )
 		else if( vr.cur_eye == 1 ) x -= shift;
 	}
 
+	// MENU ANCHOR. While the menu is open the panel is pinned in the world
+	// rather than to the face - see VR_UpdateMenu2D for why that is worth
+	// doing. Zero whenever the menu is closed, so the HUD is unaffected.
+	x += vr_menu_ofs_x;
+	y += vr_menu_ofs_y;
+
 	vrgl.Viewport( x, y, w, h );
+}
+
+/*
+================
+VR_UpdateMenu2D
+
+Once per frame from VR_BeginFrame, which is the one place that runs in BOTH the
+world path and the menu-only path (V_RenderVRMenu) - the main menu has no
+CL_CreateCmd to hang off. Input is already synced by the time this is called.
+================
+*/
+static void VR_UpdateMenu2D( void )
+{
+	qboolean visible = UI_IsVisible() ? true : false;
+	float fov_x, fov_y, ppd_x, ppd_y, dyaw, dpitch, leash;
+	int rx, ry, rw, rh;
+
+	vr_menu_ofs_x = vr_menu_ofs_y = 0;
+
+	if( !visible || vr_menu_lock.value == 0.0f )
+	{
+		// Never leave a click held. The menu closing mid-press would otherwise
+		// leave K_MOUSE1 down forever from its point of view.
+		if( vr_menu_click_prev )
+		{
+			UI_KeyEvent( K_MOUSE1, false );
+			vr_menu_click_prev = false;
+		}
+
+		vr_menu_active = false;
+		return;
+	}
+
+	// Degrees of eye texture per degree of head rotation. Taken from the
+	// runtime's own reported FOV rather than assumed, since it differs per
+	// headset.
+	fov_x = RAD2DEG( fabs( vr.views[0].fov.angleLeft ) + fabs( vr.views[0].fov.angleRight ));
+	fov_y = RAD2DEG( fabs( vr.views[0].fov.angleUp ) + fabs( vr.views[0].fov.angleDown ));
+
+	if( fov_x < 1.0f || fov_y < 1.0f )
+		return;		// views not located yet
+
+	VR_Get2DRect( &rx, &ry, &rw, &rh );
+
+	ppd_x = (float)vr.swapchains[0].width / fov_x;
+	ppd_y = (float)vr.swapchains[0].height / fov_y;
+
+	// Anchor on the frame the menu appears, at wherever the player was looking.
+	if( !vr_menu_active )
+	{
+		vr_menu_yaw   = vr.hmd_pose.angles[YAW];
+		vr_menu_pitch = vr.hmd_pose.angles[PITCH];
+		vr_menu_active = true;
+	}
+
+	dyaw   = vr.hmd_pose.angles[YAW] - vr_menu_yaw;
+	dpitch = vr.hmd_pose.angles[PITCH] - vr_menu_pitch;
+
+	while( dyaw > 180.0f )  dyaw -= 360.0f;
+	while( dyaw < -180.0f ) dyaw += 360.0f;
+
+	// The leash. Drag the anchor rather than let the panel leave the eye.
+	leash = Q_max( 5.0f, vr_menu_leash.value );
+
+	if( dyaw > leash )       { vr_menu_yaw += dyaw - leash; dyaw = leash; }
+	else if( dyaw < -leash ) { vr_menu_yaw += dyaw + leash; dyaw = -leash; }
+
+	if( dpitch > leash )       { vr_menu_pitch += dpitch - leash; dpitch = leash; }
+	else if( dpitch < -leash ) { vr_menu_pitch += dpitch + leash; dpitch = -leash; }
+
+	// Turning left (yaw increasing) should slide a world-fixed panel right.
+	vr_menu_ofs_x = (int)( dyaw * ppd_x );
+	vr_menu_ofs_y = (int)( dpitch * ppd_y * vr_menu_pitch_sign.value );
+
+	// POINTER. Where the dominant hand points, expressed against the same rect
+	// the menu was drawn into, then handed over as a plain mouse position.
+	{
+		vec3_t hand_org, hand_ang;
+		float ax, ay, fx, fy;
+		qboolean click;
+
+		if( !VR_GetHandWorld( VR_DominantHand(), hand_org, hand_ang ))
+			return;
+
+		ax = hand_ang[YAW] - vr_menu_yaw;
+		ay = hand_ang[PITCH] - vr_menu_pitch;
+
+		while( ax > 180.0f )  ax -= 360.0f;
+		while( ax < -180.0f ) ax += 360.0f;
+
+		// Angular half-size of the panel, from its actual pixel size - so the
+		// cursor and the drawn menu cannot disagree about where the edges are.
+		fx = 0.5f - ( ax * ppd_x ) / (float)rw;
+		fy = 0.5f + ( ay * ppd_y * vr_menu_pitch_sign.value ) / (float)rh;
+
+		fx = bound( 0.0f, fx, 1.0f );
+		fy = bound( 0.0f, fy, 1.0f );
+
+		UI_MouseMove( (int)( fx * (float)refState.width ),
+			(int)( fy * (float)refState.height ));
+
+		// Trigger is the click. Edge-triggered, so a held trigger does not
+		// re-fire every frame.
+		click = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+
+		if( click != vr_menu_click_prev )
+		{
+			UI_KeyEvent( K_MOUSE1, click );
+			vr_menu_click_prev = click;
+		}
+	}
 }
 
 void VR_End2D( void )
@@ -4631,6 +4868,9 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
 	Cvar_RegisterVariable( &vr_hud_parallax );
+	Cvar_RegisterVariable( &vr_menu_lock );
+	Cvar_RegisterVariable( &vr_menu_leash );
+	Cvar_RegisterVariable( &vr_menu_pitch_sign );
 	Cvar_RegisterVariable( &vr_teleport );
 	Cvar_RegisterVariable( &vr_teleport_speed );
 	Cvar_RegisterVariable( &vr_teleport_gravity );
@@ -5712,6 +5952,11 @@ qboolean VR_BeginFrame( void )
 
 	// controller state, sampled against this frame's predicted display time
 	VR_SyncInput();
+
+	// Menu anchor and pointer. Here rather than in CL_CreateCmd because this
+	// is the one per-frame point common to the world path and the menu-only
+	// path - the main menu never reaches CL_CreateCmd at all.
+	VR_UpdateMenu2D();
 
 	VR_DiagSample();
 
