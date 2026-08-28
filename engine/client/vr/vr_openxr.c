@@ -78,10 +78,13 @@ static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc 
 static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
-static CVAR_DEFINE_AUTO( vr_hud_arm, "0", FCVAR_ARCHIVE, "render the mod's own HUD on a panel mounted to the off-hand forearm" );
-static CVAR_DEFINE_AUTO( vr_hud_arm_width, "14", FCVAR_ARCHIVE, "arm panel width in world units" );
-static CVAR_DEFINE_AUTO( vr_hud_arm_offset, "4", FCVAR_ARCHIVE, "units the arm panel stands proud of the forearm" );
-static CVAR_DEFINE_AUTO( vr_hud_arm_fwd, "6", FCVAR_ARCHIVE, "units up the forearm the arm panel is centred" );
+static CVAR_DEFINE_AUTO( vr_hud_arm, "1", FCVAR_ARCHIVE, "render the mod's own HUD on a panel mounted to the off-hand forearm" );
+static CVAR_DEFINE_AUTO( vr_hud_arm_len, "11", FCVAR_ARCHIVE, "arm panel length DOWN the forearm, world units" );
+static CVAR_DEFINE_AUTO( vr_hud_arm_width, "6", FCVAR_ARCHIVE, "arm panel width ACROSS the forearm, world units" );
+static CVAR_DEFINE_AUTO( vr_hud_arm_back, "2", FCVAR_ARCHIVE, "units behind the hand the panel starts" );
+static CVAR_DEFINE_AUTO( vr_hud_arm_offset, "1.5", FCVAR_ARCHIVE, "units the arm panel stands proud of the forearm" );
+static CVAR_DEFINE_AUTO( vr_hud_arm_crop_w, "0.42", FCVAR_ARCHIVE, "fraction of the HUD width shown on the arm panel; the weapon select sits top-left" );
+static CVAR_DEFINE_AUTO( vr_hud_arm_crop_h, "0.55", FCVAR_ARCHIVE, "fraction of the HUD height shown on the arm panel" );
 static CVAR_DEFINE_AUTO( vr_hud_arm_alpha, "0.9", FCVAR_ARCHIVE, "arm panel opacity" );
 static CVAR_DEFINE_AUTO( vr_menu_lock, "1", FCVAR_ARCHIVE, "anchor the menu in the world and drive it with a controller pointer" );
 static CVAR_DEFINE_AUTO( vr_menu_leash, "35", FCVAR_ARCHIVE, "degrees the head may turn before the anchored menu is dragged along" );
@@ -4647,6 +4650,27 @@ explicit call - a panel that always swivels to face you reads as a floating
 window, not as something strapped to your arm.
 =================================================================
 */
+/*
+The arm panel is a WEAPON SELECTOR, not a second HUD. It shows nothing until the
+off-hand stick is clicked; then the mod's own select HUD stands up on the
+forearm, the main hand reaches in, and it goes away again.
+
+The select HUD lives in the top-left of the flat screen, so only that corner of
+the captured texture is sampled - a crop, not any attempt to isolate the mod's
+draw calls.
+
+Picking is expressed entirely in the mod's own vocabulary. Repeated slotN
+presses cycle within a bucket in every GoldSrc mod, so "bucket B, row N" is just
+slotB issued N+1 times with fast-switch on. No weapon names, no per-mod table,
+and no confirm-on-fire.
+*/
+static struct
+{
+	qboolean open;
+	float    saved_fastswitch;
+	int      bucket, row;
+} vr_armsel;
+
 static struct
 {
 	GLuint_t fbo, tex;
@@ -4727,7 +4751,7 @@ void VR_CaptureHud( void )
 
 	vrhud.captured = false;
 
-	if( !VR_IsActive() || vr_hud_arm.value == 0.0f )
+	if( !VR_IsActive() || vr_hud_arm.value == 0.0f || !vr_armsel.open )
 		return;
 
 	if( !VR_EnsureHudTarget( ))
@@ -4763,33 +4787,44 @@ object rather than an overlay.
 */
 static void VR_DrawArmHud( void )
 {
-	vec3_t org, ang, fwd, right, up, c, a, b, d;
-	float w, h, off;
+	vec3_t org, ang, fwd, right, up, along, c, ax, ay, d;
+	float len, wide, cw, ch;
 	GLint_t prev_tex = 0;
 
-	if( !vrhud.captured || !vrgl.draw_loaded )
+	if( !vrhud.captured || !vrgl.draw_loaded || !vr_armsel.open )
 		return;
 
-	// GRIP pose, not aim: this is a held/worn object, and grip is the pose that
-	// tracks the physical orientation of the hand rather than a pointing ray.
+	// GRIP pose, not aim: this is worn, not pointed. Grip tracks the physical
+	// orientation of the hand, which is what the forearm is attached to.
 	if( !VR_GetHandGripWorld( VR_OffHand(), org, ang ))
 		return;
 
 	AngleVectors( ang, fwd, right, up );
 
-	w   = Q_max( 1.0f, vr_hud_arm_width.value );
-	h   = w * ( (float)vrhud.h / (float)Q_max( 1, vrhud.w ));
-	off = vr_hud_arm_offset.value;
+	// The forearm runs BACKWARD from the hand toward the elbow - the opposite
+	// way to the firing line the hand points along. Laying the panel out along
+	// that axis is the whole point: it is worn down the arm, not projected out
+	// of the fist, which is what the first version did.
+	VectorNegate( fwd, along );
 
-	// Centre it a little up the forearm from the grip, standing proud of the
-	// arm rather than painted on it - the real arm is not there to stop the
-	// reaching hand, so the panel needs its own surface to arrive at.
-	VectorMA( org, vr_hud_arm_fwd.value, fwd, c );
-	VectorMA( c, off, up, c );
+	len  = Q_max( 1.0f, vr_hud_arm_len.value );	// down the forearm
+	wide = Q_max( 1.0f, vr_hud_arm_width.value );	// across it
 
-	// Panel plane: across the arm, and along it.
-	VectorScale( right, w * 0.5f, a );
-	VectorScale( fwd, h * 0.5f, b );
+	// Start just behind the hand and run back, then lift clear of the arm so
+	// the reaching hand has a surface to arrive at rather than passing through.
+	VectorMA( org, vr_hud_arm_back.value + len * 0.5f, along, c );
+	VectorMA( c, vr_hud_arm_offset.value, up, c );
+
+	// Panel axes. The captured HUD is wider than tall and the forearm is the
+	// long direction, so the texture's HORIZONTAL axis runs down the arm.
+	VectorScale( along, len * 0.5f, ax );
+	VectorScale( right, wide * 0.5f, ay );
+
+	// Only the top-left of the captured HUD - that is where the weapon select
+	// lives on a flat screen, and the rest of the HUD is already drawn in the
+	// headset the normal way.
+	cw = bound( 0.05f, vr_hud_arm_crop_w.value, 1.0f );
+	ch = bound( 0.05f, vr_hud_arm_crop_h.value, 1.0f );
 
 	vrgl.GetIntegerv( GL_TEXTURE_BINDING_2D_T, &prev_tex );
 
@@ -4802,14 +4837,14 @@ static void VR_DrawArmHud( void )
 	vrgl.Color4f( 1.0f, 1.0f, 1.0f, bound( 0.1f, vr_hud_arm_alpha.value, 1.0f ));
 
 	vrgl.Begin( GL_QUADS_T );
-	VectorSubtract( c, a, d ); VectorAdd( d, b, d );
+	VectorSubtract( c, ax, d ); VectorSubtract( d, ay, d );
 	vrgl.TexCoord2f( 0.0f, 0.0f ); vrgl.Vertex3f( d[0], d[1], d[2] );
-	VectorAdd( c, a, d ); VectorAdd( d, b, d );
-	vrgl.TexCoord2f( 1.0f, 0.0f ); vrgl.Vertex3f( d[0], d[1], d[2] );
-	VectorAdd( c, a, d ); VectorSubtract( d, b, d );
-	vrgl.TexCoord2f( 1.0f, 1.0f ); vrgl.Vertex3f( d[0], d[1], d[2] );
-	VectorSubtract( c, a, d ); VectorSubtract( d, b, d );
-	vrgl.TexCoord2f( 0.0f, 1.0f ); vrgl.Vertex3f( d[0], d[1], d[2] );
+	VectorAdd( c, ax, d ); VectorSubtract( d, ay, d );
+	vrgl.TexCoord2f( cw, 0.0f );   vrgl.Vertex3f( d[0], d[1], d[2] );
+	VectorAdd( c, ax, d ); VectorAdd( d, ay, d );
+	vrgl.TexCoord2f( cw, ch );     vrgl.Vertex3f( d[0], d[1], d[2] );
+	VectorSubtract( c, ax, d ); VectorAdd( d, ay, d );
+	vrgl.TexCoord2f( 0.0f, ch );   vrgl.Vertex3f( d[0], d[1], d[2] );
 	vrgl.End();
 
 	vrgl.DepthMask( 1 );
@@ -4954,6 +4989,135 @@ void VR_Begin2D( void )
 	y += vr_menu_ofs_y;
 
 	vrgl.Viewport( x, y, w, h );
+}
+
+
+/*
+================
+VR_UpdateArmSelect
+
+Open/close the arm-mounted weapon selector, and pick from it by reaching in.
+
+Bound to the off-hand thumbstick CLICK, which is already suggested in every
+interaction profile - so this needs no new binding and no profile changes.
+
+Nothing on the arm until it is asked for: the panel, the capture and the mod's
+own select HUD all come up together and go away together.
+================
+*/
+static void VR_UpdateArmSelect( void )
+{
+	static qboolean click_prev = false, grab_prev = false;
+	qboolean click, grab;
+
+	if( !VR_IsActive() || vr_hud_arm.value == 0.0f )
+	{
+		vr_armsel.open = false;
+		return;
+	}
+
+	click = VR_GetButton( VR_BTN_PREVWEAP ) ? true : false;
+	grab  = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+
+	// toggle on the click edge
+	if( click && !click_prev )
+	{
+		if( !vr_armsel.open )
+		{
+			// Open the mod's OWN select HUD. hud_fastswitch must be off for it
+			// to appear at all - with it on, invnext just switches silently.
+			vr_armsel.saved_fastswitch = Cvar_VariableValue( "hud_fastswitch" );
+			Cvar_SetValue( "hud_fastswitch", 0.0f );
+			Cbuf_AddText( "invnext\n" );
+			vr_armsel.open = true;
+			vr_armsel.bucket = vr_armsel.row = 0;
+			VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.5f );
+		}
+		else
+		{
+			Cbuf_AddText( "cancelselect\n" );
+			Cvar_SetValue( "hud_fastswitch", vr_armsel.saved_fastswitch );
+			vr_armsel.open = false;
+		}
+	}
+	click_prev = click;
+
+	if( !vr_armsel.open )
+	{
+		grab_prev = grab;
+		return;
+	}
+
+	// Where on the panel is the main hand? Project it onto the panel plane and
+	// normalise, using the SAME axes VR_DrawArmHud builds so the reach and the
+	// picture cannot disagree about where a box is.
+	{
+		vec3_t org, ang, fwd, right, up, along, c, rel, hand, hang;
+		float len, wide, u, v;
+		int bucket, row;
+
+		if( !VR_GetHandGripWorld( VR_OffHand(), org, ang ))
+			return;
+		if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
+			return;
+
+		AngleVectors( ang, fwd, right, up );
+		VectorNegate( fwd, along );
+
+		len  = Q_max( 1.0f, vr_hud_arm_len.value );
+		wide = Q_max( 1.0f, vr_hud_arm_width.value );
+
+		VectorMA( org, vr_hud_arm_back.value + len * 0.5f, along, c );
+		VectorMA( c, vr_hud_arm_offset.value, up, c );
+
+		VectorSubtract( hand, c, rel );
+
+		u = DotProduct( rel, along ) / ( len * 0.5f );	// -1 .. 1 down the arm
+		v = DotProduct( rel, right ) / ( wide * 0.5f );	// -1 .. 1 across it
+
+		if( fabs( u ) > 1.2f || fabs( v ) > 1.2f )
+		{
+			grab_prev = grab;
+			return;		// hand is not at the panel
+		}
+
+		// The select HUD reads buckets left-to-right and weapons top-to-bottom
+		// on a flat screen; down the arm is the horizontal axis here.
+		bucket = (int)(( u + 1.0f ) * 0.5f * 5.0f );
+		bucket = bound( 0, bucket, 4 );
+		row    = (int)(( v + 1.0f ) * 0.5f * 4.0f );
+		row    = bound( 0, row, 3 );
+
+		// Detents, so the panel can be worked without staring at it.
+		if( bucket != vr_armsel.bucket || row != vr_armsel.row )
+			VR_Haptic( VR_DominantHand(), 0.02f, 0.0f, 0.35f );
+
+		vr_armsel.bucket = bucket;
+		vr_armsel.row = row;
+
+		// Commit on the main-hand trigger going down while reaching in. Safe
+		// here in a way it is not for the flat confirm flow: we close the
+		// selector and restore fast-switch in the same breath, so the trigger
+		// press cannot carry through into firing the weapon it just drew.
+		if( grab && !grab_prev )
+		{
+			int i;
+
+			Cvar_SetValue( "hud_fastswitch", 1.0f );
+
+			// Repeated slotN cycles within a bucket in every GoldSrc mod, so
+			// "bucket B, row N" needs no weapon names and no per-mod table.
+			for( i = 0; i <= row; i++ )
+				Cbuf_AddText( va( "slot%d\n", bucket + 1 ));
+
+			Cbuf_AddText( "cancelselect\n" );
+			Cvar_SetValue( "hud_fastswitch", vr_armsel.saved_fastswitch );
+			vr_armsel.open = false;
+			VR_Haptic( VR_DominantHand(), 0.07f, 0.0f, 0.8f );
+		}
+	}
+
+	grab_prev = grab;
 }
 
 /*
@@ -5173,7 +5337,10 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_hud_arm );
 	Cvar_RegisterVariable( &vr_hud_arm_width );
 	Cvar_RegisterVariable( &vr_hud_arm_offset );
-	Cvar_RegisterVariable( &vr_hud_arm_fwd );
+	Cvar_RegisterVariable( &vr_hud_arm_len );
+	Cvar_RegisterVariable( &vr_hud_arm_back );
+	Cvar_RegisterVariable( &vr_hud_arm_crop_w );
+	Cvar_RegisterVariable( &vr_hud_arm_crop_h );
 	Cvar_RegisterVariable( &vr_hud_arm_alpha );
 	Cvar_RegisterVariable( &vr_menu_lock );
 	Cvar_RegisterVariable( &vr_menu_leash );
@@ -6264,6 +6431,7 @@ qboolean VR_BeginFrame( void )
 	// Menu anchor and pointer. Here rather than in CL_CreateCmd because this
 	// is the one per-frame point common to the world path and the menu-only
 	// path - the main menu never reaches CL_CreateCmd at all.
+	VR_UpdateArmSelect();
 	VR_UpdateMenu2D();
 
 	VR_DiagSample();
