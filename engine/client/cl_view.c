@@ -624,11 +624,6 @@ void V_RenderView( void )
 			VR_DrawOffhandWeapon();
 		}
 
-		// The mod's HUD, captured to a texture for the arm-mounted panel.
-		// Once per frame, before either eye: running the mod's HUD draw twice
-		// would double every side effect it has.
-		VR_CaptureHud();
-
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )
 		{
 			ref_viewpass_t eye_rvp = views[0];	// inherit flags/viewentity from the mod

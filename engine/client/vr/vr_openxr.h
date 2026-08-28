@@ -233,12 +233,6 @@ void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side );
 // VR_ConsumeTeleport is the SERVER side - it returns true exactly once per
 // committed teleport, and is read directly out of client state the same way
 // VR_GetWeaponAim already is, so nothing is added to the network protocol.
-// Renders the mod's OWN 2D HUD into a texture so it can be hung on a quad
-// mounted to the off-hand forearm. Call once per frame BEFORE the eyes render -
-// the HUD is identical in both eyes, and drawing it twice would double every
-// side effect the mod's HUD code has.
-void     VR_CaptureHud( void );
-
 void     VR_UpdateTeleport( void );
 qboolean VR_TeleportAiming( void );
 qboolean VR_ConsumeTeleport( vec3_t out_dest );
