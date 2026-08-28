@@ -78,7 +78,7 @@ static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc 
 static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
-static CVAR_DEFINE_AUTO( vr_hud_arm, "1", FCVAR_ARCHIVE, "render the mod's own HUD on a panel mounted to the off-hand forearm" );
+static CVAR_DEFINE_AUTO( vr_hud_arm, "0", FCVAR_ARCHIVE, "render the mod's own HUD on a panel mounted to the off-hand forearm" );
 static CVAR_DEFINE_AUTO( vr_hud_arm_width, "14", FCVAR_ARCHIVE, "arm panel width in world units" );
 static CVAR_DEFINE_AUTO( vr_hud_arm_offset, "4", FCVAR_ARCHIVE, "units the arm panel stands proud of the forearm" );
 static CVAR_DEFINE_AUTO( vr_hud_arm_fwd, "6", FCVAR_ARCHIVE, "units up the forearm the arm panel is centred" );
