@@ -283,6 +283,25 @@ extern const char *const svc_goldsrc_strings[svc_lastmsg+1];
 #define NET_EXT_SPLITSIZE       (1U<<0) // set splitsize by cl_dlmax
 #define NET_EXT_NETCHAN_COOKIE  (1U<<1) // per-connection 64-bit netchan cookie validated on every sequenced packet
 
+// PCVR fork: a joining VR player's muzzle position, carried in usercmd_t's
+// impact_position slots so their shots leave the barrel on a server they did
+// not host. See sv_pmove.c (read side) and cl_main.c (write side).
+//
+// This is ADDITIVE, not a protocol break. usercmd_t does not change size, the
+// delta table does not change, PROTOCOL_VERSION stays 49, and the capability
+// is negotiated through the existing "ext" handshake with intersection
+// semantics - a server that does not understand the bit simply ands it away
+// and the client falls back to eye-origin. Vanilla clients are never locked
+// out in either direction.
+#define NET_EXT_VRPOSE          (1U<<2) // usercmd carries the client's VR muzzle position
+
+// Sentinel written into usercmd_t.reserved[0] alongside a pose, so a mod that
+// uses these "left for modders" fields for its own purposes is never mistaken
+// for a VR client. MUST fit in six bits: that slot is delta-encoded as
+// impact_index, DT_INTEGER with a width of 6, so anything above 63 is
+// truncated on the wire.
+#define VR_USERCMD_POSE_MAGIC   0x15
+
 // GoldSrc protocol definitions
 #define PROTOCOL_GOLDSRC_VERSION 48
 

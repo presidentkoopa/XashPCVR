@@ -883,6 +883,68 @@ static void CL_CreateCmd( void )
 			cmd->sidemove    += rs_side;
 		}
 
+		// VR-TO-VR CROSSPLAY: hand our muzzle to a server we did not host.
+		//
+		// Every server-side VR substitution is gated on NET_IsLocalAddress, so
+		// hosting has always worked and JOINING has always reverted to firing
+		// from the eye - the remote server simply cannot see a controller.
+		//
+		// It does not need a protocol break to see one. usercmd_t carries four
+		// int32 "reserved" fields bound to impact_index/impact_position, and
+		// nothing in the engine reads or writes them - they are a name-to-offset
+		// binding for delta-table vocabulary and nothing more. impact_position
+		// is already delta-encoded as three signed 16-bit floats at a divisor of
+		// 8, which is +/-4095.875 units at 0.125-unit resolution: a ready-made
+		// world-position carrier, exactly the size of a GoldSrc map, already on
+		// the wire every frame, always containing zero.
+		//
+		// So the struct does not change, its STATIC_CHECK_SIZEOF does not
+		// change, the delta table does not change, and PROTOCOL_VERSION stays
+		// 49. Direction needs nothing at all: cmd->viewangles already carries
+		// the weapon angles from the block above.
+		//
+		// Writes floats, not ints - the delta system reads this memory as
+		// DT_FLOAT regardless of the field's declared type.
+		if( FBitSet( cls.extensions, NET_EXT_VRPOSE ) && VR_WeaponOriginActive( ))
+		{
+			// The mod's CL_CreateMove ran first, and these fields are
+			// documented as left for modders. If a mod is genuinely using them,
+			// its data wins and we simply do not send a pose - the player falls
+			// back to eye-origin aim rather than having the mod corrupted
+			// underneath it.
+			qboolean mod_owns = ( cmd->reserved[0] || cmd->reserved[1] ||
+				cmd->reserved[2] || cmd->reserved[3] );
+			vec3_t muzzle;
+
+			if( mod_owns )
+			{
+				static qboolean warned = false;
+
+				if( !warned )
+				{
+					Con_Reportf( S_WARN "VR: mod uses usercmd reserved[]; "
+						"not sending VR pose to remote servers\n" );
+					warned = true;
+				}
+			}
+			else if( VR_GetWeaponAim( muzzle, NULL ))
+			{
+				int i;
+
+				// Clamp inside what the 16-bit-at-divisor-8 encoding can
+				// actually round-trip. Exactly -4096.0 is not representable
+				// (the encoder carries 15 magnitude bits plus a sign), so stay
+				// clear of the boundary rather than landing on it.
+				for( i = 0; i < 3; i++ )
+					muzzle[i] = bound( -4095.8f, muzzle[i], 4095.8f );
+
+				cmd->reserved[0] = VR_USERCMD_POSE_MAGIC;
+				*(float *)&cmd->reserved[1] = muzzle[0];
+				*(float *)&cmd->reserved[2] = muzzle[1];
+				*(float *)&cmd->reserved[3] = muzzle[2];
+			}
+		}
+
 		// Trains and trams are driven by the BUTTON BITS, not the axes.
 		//
 		// CBasePlayer::PlayerUse sets a func_train's speed from
@@ -1432,7 +1494,17 @@ static void CL_SendConnectPacket( connprotocol_t proto, int challenge )
 	else
 	{
 		const char *qport = Cvar_VariableString( "net_qport" );
-		int extensions = adrtype == NA_LOOPBACK ? 0 : ( NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE );
+		// NET_EXT_VRPOSE is advertised unconditionally rather than only when a
+		// headset is present: the connection handshake happens long before
+		// VR_InitSession, and a player who plugs in mid-session would otherwise
+		// have negotiated it away for the whole connection. Advertising it
+		// costs nothing when unused - the pose is only written by a client that
+		// actually has a muzzle to report.
+		//
+		// Loopback still gets 0: a listen server's own player is handled by the
+		// NET_IsLocalAddress path in sv_pmove.c, which reads full-precision VR
+		// state directly instead of going through the wire's quantisation.
+		int extensions = adrtype == NA_LOOPBACK ? 0 : ( NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE );
 		string key;
 
 		ID_GetMD5ForAddress( key, adr, sizeof( key ));

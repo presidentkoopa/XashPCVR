@@ -465,7 +465,12 @@ static void SV_ConnectClient( netadr_t from )
 	newcl->frames = frames;
 	newcl->userid = g_userid++;	// create unique userid
 	newcl->state = cs_connected;	// now expect "spawn" command
-	newcl->extensions = FBitSet( extensions, NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE );
+	// Intersection semantics: only bits BOTH sides understand survive, and the
+	// result is echoed back to the client below. That is exactly what makes
+	// NET_EXT_VRPOSE safe to add - an older server ands the bit away, the
+	// client sees it missing and falls back to eye-origin aim on its own. No
+	// version bump, no rejection, no vanilla client locked out.
+	newcl->extensions = FBitSet( extensions, NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE );
 	Q_strncpy( newcl->useragent, protinfo, sizeof( newcl->useragent ));
 
 	// HACKHACK: can hear all players by default to avoid issues

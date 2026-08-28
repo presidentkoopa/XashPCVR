@@ -1199,6 +1199,49 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			VR_SetFirePhase( VR_FIRE_PHASE_POSTTHINK, vr_eye, ucmd->buttons );
 #endif
 
+		// VR-TO-VR CROSSPLAY: a REMOTE VR player's muzzle, off the usercmd.
+		//
+		// Same substitution as the local path, sourced from the wire instead of
+		// from client VR state. Only for a client that negotiated
+		// NET_EXT_VRPOSE and stamped the sentinel, so a mod using these
+		// "reserved for modders" fields for its own purposes can never be
+		// mistaken for a pose.
+		//
+		// Deliberately OUTSIDE the !XASH_DEDICATED guard, and that is the
+		// interesting part: this branch is three floats and a VectorSubtract
+		// with no VR code behind it, so a DEDICATED server can host
+		// VR-correct players without OpenXR, a headset, or any of the client VR
+		// layer compiled in at all.
+		//
+		// Skipped when the local path already claimed it - that one reads
+		// full-precision state directly and does not go through the wire's
+		// 0.125-unit quantisation.
+		if( !vr_muzzle && FBitSet( cl->extensions, NET_EXT_VRPOSE )
+			&& ucmd->reserved[0] == VR_USERCMD_POSE_MAGIC )
+		{
+			vec3_t muzzle;
+
+			muzzle[0] = *(const float *)&ucmd->reserved[1];
+			muzzle[1] = *(const float *)&ucmd->reserved[2];
+			muzzle[2] = *(const float *)&ucmd->reserved[3];
+
+			// A pose implausibly far from the body is a decoding error or a
+			// hostile client, not a long arm. Reject rather than teleport the
+			// shot origin across the map.
+			{
+				vec3_t d;
+
+				VectorSubtract( muzzle, clent->v.origin, d );
+
+				if( VectorLength( d ) < 128.0f )
+				{
+					VectorCopy( clent->v.view_ofs, saved_view_ofs );
+					VectorCopy( d, clent->v.view_ofs );
+					vr_muzzle = true;
+				}
+			}
+		}
+
 		// run post-think
 		svgame.dllFuncs.pfnPlayerPostThink( clent );
 
