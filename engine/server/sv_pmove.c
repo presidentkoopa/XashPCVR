@@ -1259,10 +1259,20 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			VectorCopy( vr_saved_vuser1, clent->v.vuser1 );
 			VectorCopy( vr_saved_vuser2, clent->v.vuser2 );
 		}
+#endif
 
+		// RESTORE SITS OUTSIDE THE GUARD, because one of the substitutions does.
+		//
+		// The crossplay path above compiles into a dedicated build by design.
+		// Leaving its restore inside #if !XASH_DEDICATED meant a dedicated
+		// server would substitute view_ofs and never put it back - permanently
+		// relocating that player's eye. Everything that reads view_ofs would
+		// then be wrong for the rest of the session: monster line-of-sight
+		// (FVisible traces to EyePosition = origin + view_ofs), networking, and
+		// the client's own view. Whatever set vr_muzzle must be able to undo it,
+		// so the two have to be compiled in together.
 		if( vr_muzzle )
 			VectorCopy( saved_view_ofs, clent->v.view_ofs );
-#endif
 	}
 
 	svgame.dllFuncs.pfnCmdEnd( clent );
