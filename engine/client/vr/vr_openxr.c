@@ -313,6 +313,7 @@ static CVAR_DEFINE_AUTO( vr_touch_use, "1", FCVAR_ARCHIVE, "press buttons and le
 static CVAR_DEFINE_AUTO( vr_step_smooth, "12", FCVAR_ARCHIVE, "ease the view up steps instead of snapping (0 = off)" );
 static CVAR_DEFINE_AUTO( vr_roomscale, "1", FCVAR_ARCHIVE, "walking in your room walks in the game" );
 static CVAR_DEFINE_AUTO( vr_roomscale_gain, "10", FCVAR_ARCHIVE, "how hard the body chases your real position" );
+static CVAR_DEFINE_AUTO( vr_roomscale_deadzone, "2.5", FCVAR_ARCHIVE, "units of head sway ignored before room-scale walks the body" );
 static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-scale move speed" );
 static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
 static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye height in units, ~1 unit per inch" );
@@ -539,6 +540,7 @@ static struct
 	                              // room-scale's own share may close the loop; see
 	                              // VR_SetWorldReference.
 	qboolean      roomscale_cmd_valid;
+	qboolean      roomscale_engaged;  // dead-zone hysteresis, see VR_GetRoomScaleMove
 	float         body_yaw;       // play-space rotation in world (mouse/stick turn)
 	float         injected_yaw;   // head yaw written into cl.viewangles last frame
 	float         turn_delta;     // stick turn accumulated this frame, consumed by
@@ -3282,8 +3284,44 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 	VectorSubtract( vr.hmd_pose.origin, vr.hmd_origin_at_sync, rel );
 	rel[2] = 0.0f;	// horizontal only - ducking is VR_GetPhysicalCrouch
 
-	if( VectorLength( rel ) < 0.5f )
-		return;		// inside the tracking noise floor, leave it alone
+	// DEAD ZONE, sized against a standing human rather than against tracker
+	// noise.
+	//
+	// This was 0.5 units - about 1.3 cm - described as the tracking noise floor.
+	// It is, but that is the wrong quantity: a person standing still sways far
+	// more than their tracker is noisy. Measured live from vr_diag.log while
+	// deliberately standing still, the horizontal offset sat between 1.2 and
+	// 3.1 units continuously, so room-scale was ALWAYS commanding movement.
+	//
+	// The loop cannot close in that state either. The commanded velocity turns
+	// into a slow creep once pm_shared's friction has had its say, and the body
+	// closes the offset more slowly than the sway regenerates it - so the
+	// player drifts steadily across the map while standing perfectly still.
+	//
+	// That drift is not new, but it used to be invisible: before the play-space
+	// anchor was fixed the eye did not follow the body, so the entity crept
+	// while the view stayed put. Fixing the anchor is what made it visible.
+	//
+	// Hysteresis, because a bare threshold chatters exactly at the crossing -
+	// once room-scale is engaged it stays engaged down to half the dead zone,
+	// so a step that starts is allowed to finish.
+	{
+		float dz = Q_max( 0.0f, vr_roomscale_deadzone.value );
+		float len = VectorLength( rel );
+
+		if( vr.roomscale_engaged )
+		{
+			if( len < dz * 0.5f )
+				vr.roomscale_engaged = false;
+		}
+		else if( len >= dz )
+		{
+			vr.roomscale_engaged = true;
+		}
+
+		if( !vr.roomscale_engaged )
+			return;
+	}
 
 	// Play space -> world, by the same body yaw the eyes use.
 	SinCos( DEG2RAD( vr.body_yaw ), &s, &c );
@@ -4929,6 +4967,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_roomscale );
 	Cvar_RegisterVariable( &vr_roomscale_gain );
 	Cvar_RegisterVariable( &vr_roomscale_max );
+	Cvar_RegisterVariable( &vr_roomscale_deadzone );
 	Cvar_RegisterVariable( &vr_lefthand );
 	Cvar_RegisterVariable( &vr_height );
 	Cvar_RegisterVariable( &vr_height_offset );
