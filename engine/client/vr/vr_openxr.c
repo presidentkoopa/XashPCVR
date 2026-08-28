@@ -78,6 +78,11 @@ static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc 
 static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
+static CVAR_DEFINE_AUTO( vr_shoulder_melee, "1", FCVAR_ARCHIVE, "reach beside your head to swap to the melee weapon and back" );
+static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
+static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
+static CVAR_DEFINE_AUTO( vr_shoulder_back, "5", FCVAR_ARCHIVE, "hotspot offset behind the head, units" );
+static CVAR_DEFINE_AUTO( vr_shoulder_up, "2", FCVAR_ARCHIVE, "hotspot offset above the head centre, units" );
 static CVAR_DEFINE_AUTO( vr_menu_lock, "1", FCVAR_ARCHIVE, "anchor the menu in the world and drive it with a controller pointer" );
 static CVAR_DEFINE_AUTO( vr_menu_leash, "35", FCVAR_ARCHIVE, "degrees the head may turn before the anchored menu is dragged along" );
 static CVAR_DEFINE_AUTO( vr_menu_pitch_sign, "-1", FCVAR_ARCHIVE, "flip if the menu anchor and pointer move the wrong way vertically" );
@@ -582,6 +587,10 @@ static struct
 	float         move_x, move_y;   // -1..1 locomotion stick
 	float         turn_x, turn_y;   // -1..1 turn stick
 	qboolean      select_open;       // weapon select HUD up (grip + stick click)
+	qboolean      sh_inside;        // dominant hand is in the shoulder hotspot
+	qboolean      sh_swapped;       // we swapped to melee from the hotspot
+	int           sh_restore_id;    // weapon m_iId to walk back to
+	int           sh_restore_tries; // attempts left before giving up
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
@@ -4711,6 +4720,101 @@ void VR_Begin2D( void )
 	vrgl.Viewport( x, y, w, h );
 }
 
+
+/*
+================
+VR_UpdateShoulderMelee
+
+Reach beside your head to swap to the melee weapon, reach again to swap back.
+
+Deliberately ONE hotspot rather than a set of body holsters. A full holster rig
+means deciding where every weapon lives on a body wearing an HEV suit, which is
+an environment suit with no webbing, no slings and nowhere to put a shotgun -
+so every answer looks wrong. Grabbing a crowbar from beside your head to break a
+crate is a single, obvious gesture that needs none of that settled.
+
+Mod-agnostic on both halves. Melee is slot 1 in every GoldSrc mod, so getting
+there is "slot1". Coming back cannot be, because the client DLLs here register
+no lastinv command - checked, only slot1..slot10, cancelselect, invnext and
+invprev exist - so the weapon is remembered by its m_iId, which the engine
+already decodes from clientdata_t on any mod, and restored by stepping invnext
+until it comes back round.
+
+That stepping is spread over frames on purpose: m_iId only updates once the
+server has acknowledged the switch, so a loop inside one frame would compare
+against a stale value and run to its limit every time.
+================
+*/
+static void VR_UpdateShoulderMelee( void )
+{
+	vec3_t hand, hang, fwd, right, up, spot, d;
+	float side;
+	qboolean inside;
+
+	if( !VR_IsActive() || vr_shoulder_melee.value == 0.0f )
+		return;
+
+	// Walk back toward the remembered weapon, one step per frame.
+	if( vr.sh_restore_tries > 0 )
+	{
+		if( cl.frames[cl.parsecountmod].clientdata.m_iId == vr.sh_restore_id )
+		{
+			vr.sh_restore_tries = 0;
+			vr.sh_swapped = false;
+		}
+		else
+		{
+			Cbuf_AddText( "hud_fastswitch 1; invnext\n" );
+			vr.sh_restore_tries--;
+			if( vr.sh_restore_tries == 0 )
+				vr.sh_swapped = false;	// gave up; do not strand the gesture
+		}
+	}
+
+	if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
+		return;
+
+	// Hotspot hangs off the HEAD, so it travels with the player and stays
+	// reachable however they are facing. Placed out to the dominant side and
+	// slightly behind: in front of the face is where a weapon is actually
+	// held, and a hotspot there would fire constantly.
+	AngleVectors( vr.hmd_pose.angles, fwd, right, up );
+	side = ( VR_DominantHand() == 0 ) ? -vr_shoulder_side.value : vr_shoulder_side.value;
+
+	VectorCopy( vr.world_origin, spot );
+	spot[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + vr_height.value;
+	VectorMA( spot, side, right, spot );
+	VectorMA( spot, -vr_shoulder_back.value, fwd, spot );
+	spot[2] += vr_shoulder_up.value;
+
+	VectorSubtract( hand, spot, d );
+	inside = ( VectorLength( d ) < Q_max( 1.0f, vr_shoulder_radius.value ));
+
+	// Edge only: entering swaps, and the hand must leave before it can swap
+	// again. Without that, resting a hand near the head would toggle every
+	// frame.
+	if( inside && !vr.sh_inside )
+	{
+		if( !vr.sh_swapped )
+		{
+			vr.sh_restore_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
+			Cbuf_AddText( "hud_fastswitch 1; slot1\n" );
+			vr.sh_swapped = true;
+			vr.sh_restore_tries = 0;
+		}
+		else
+		{
+			// Bounded by what can be carried, so a weapon dropped while
+			// swapped cannot spin this forever.
+			vr.sh_restore_tries = 12;
+		}
+
+		VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.7f );
+	}
+
+	vr.sh_inside = inside;
+}
+
 /*
 ================
 VR_UpdateMenu2D
@@ -4925,6 +5029,11 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
 	Cvar_RegisterVariable( &vr_hud_parallax );
+	Cvar_RegisterVariable( &vr_shoulder_melee );
+	Cvar_RegisterVariable( &vr_shoulder_radius );
+	Cvar_RegisterVariable( &vr_shoulder_side );
+	Cvar_RegisterVariable( &vr_shoulder_back );
+	Cvar_RegisterVariable( &vr_shoulder_up );
 	Cvar_RegisterVariable( &vr_menu_lock );
 	Cvar_RegisterVariable( &vr_menu_leash );
 	Cvar_RegisterVariable( &vr_menu_pitch_sign );
@@ -6148,6 +6257,7 @@ qboolean VR_BeginFrame( void )
 	// Menu anchor and pointer. Here rather than in CL_CreateCmd because this
 	// is the one per-frame point common to the world path and the menu-only
 	// path - the main menu never reaches CL_CreateCmd at all.
+	VR_UpdateShoulderMelee();
 	VR_UpdateMenu2D();
 
 	VR_DiagSample();
