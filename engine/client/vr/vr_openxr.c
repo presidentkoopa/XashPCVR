@@ -1436,6 +1436,23 @@ float VR_GetBodyYaw( void )
 
 /*
 ================
+VR_SelectOpen
+
+True while the weapon select HUD is up.
+
+Exists so melee can stand down. Fire is the select-s confirm and swing-to-hit
+raises the same IN_ATTACK bit, so a hand moved quickly while choosing would
+take whatever was highlighted - and reaching across to the select is exactly
+the motion that trips the swing threshold.
+================
+*/
+qboolean VR_SelectOpen( void )
+{
+	return vr.select_open;
+}
+
+/*
+================
 VR_PlayToWorld
 
 Map a play-space position/orientation into game world space, using the same
@@ -6400,6 +6417,7 @@ const vr_pose_t *VR_GetHandPose( int hand ) { return &vr_null_pose; }
 void     VR_SetWorldReference( const vec3_t origin ) { }
 void     VR_OverrideViewAngles( vec3_t angles ) { }
 float    VR_GetBodyYaw( void ) { return 0.0f; }
+qboolean VR_SelectOpen( void ) { return false; }
 void     VR_GetMovement( float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 void     VR_UpdateTurn( float frametime ) { }
 qboolean VR_GetButton( int btn ) { return false; }

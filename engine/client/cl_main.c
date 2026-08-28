@@ -1020,7 +1020,13 @@ static void CL_CreateCmd( void )
 
 		// Swing-to-hit for melee. Injected as IN_ATTACK - the same button
 		// the mod already handles - so no game-DLL knowledge is required.
-		if( VR_GetMeleeAttack( ))
+		//
+		// NEVER while the weapon select is open. Fire is the select's confirm,
+		// and melee raises the same bit, so a hand moved quickly enough while
+		// choosing would take whatever happened to be highlighted. Reaching
+		// across to the select is exactly the kind of movement that trips the
+		// speed threshold, so this is the common case rather than a corner one.
+		if( !VR_SelectOpen() && VR_GetMeleeAttack( ))
 			cmd->buttons |= IN_ATTACK;
 
 		// Recoil buzz on the weapon hand when the trigger goes down. Edge

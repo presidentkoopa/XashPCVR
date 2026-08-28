@@ -119,6 +119,10 @@ void     VR_OverrideViewAngles( vec3_t angles );
 // Body/play-space yaw in world space, as last captured.
 float    VR_GetBodyYaw( void );
 
+// True while the weapon select HUD is up. Melee stands down while it is: fire
+// is the select confirm and swing-to-hit raises the same IN_ATTACK bit.
+qboolean VR_SelectOpen( void );
+
 //
 // controller input
 //
