@@ -878,6 +878,27 @@ static void CL_CreateCmd( void )
 			cmd->sidemove    += rs_side;
 		}
 
+		// Trains and trams are driven by the BUTTON BITS, not the axes.
+		//
+		// CBasePlayer::PlayerUse sets a func_train's speed from
+		// m_afButtonPressed & IN_FORWARD / IN_BACK - a rising edge on
+		// pev->button - and never looks at forwardmove at all. The VR path
+		// above writes only the analog axes, so mounting a set of train
+		// controls worked while accelerating did not: the Half-Life tram
+		// cannot be driven and "On A Rail" is impassable.
+		//
+		// Mirror the stick onto the same bits a keyboard would raise.
+		// pm_shared reads only forwardmove, so ordinary locomotion is
+		// completely unaffected - these bits are inert to everything except
+		// game code that explicitly looks for them, and a keyboard player
+		// raises them constantly anyway.
+		//
+		// Deliberately NOT IN_MOVELEFT / IN_MOVERIGHT: player.cpp treats those
+		// as letting go of the controls and would eject the player from the
+		// train the moment they strafed.
+		if( vr_fwd > 0.0f )      cmd->buttons |= IN_FORWARD;
+		else if( vr_fwd < 0.0f ) cmd->buttons |= IN_BACK;
+
 		if( VR_GetButton( VR_BTN_JUMP ))    cmd->buttons |= IN_JUMP;
 
 		// Duck by pressing the button OR by physically ducking. Both, rather

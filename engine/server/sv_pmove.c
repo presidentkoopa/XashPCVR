@@ -1076,6 +1076,8 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		vec3_t vr_saved_vuser1, vr_saved_vuser2;
 		qboolean vr_vuser_sub = false;
 		vec3_t vr_eye;
+		float vr_saved_aim = 0.0f, vr_saved_allow_autoaim = 0.0f;
+		qboolean vr_aim_sub = false;
 
 		// The REAL eye, captured before any substitution - this is where the
 		// mod would fire from if it fired outside the bracket below.
@@ -1119,6 +1121,42 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			vr_vuser_sub = true;
 		}
 
+		// SUPPRESS STOCK AUTO-AIM for the shot this call is about to fire.
+		//
+		// Half-Life magnetically snaps aim toward nearby targets, and the
+		// deflection is applied to pev->v_angle - which in VR is the tracked
+		// weapon direction we just wrote into the usercmd. So the game quietly
+		// bends the barrel away from where the player is physically pointing,
+		// by up to 25 degrees of pitch and 12 of yaw
+		// (CBasePlayer::AutoaimDeflection). It also desynchronises the bullet
+		// from the laser sight, which draws the true barrel line - the single
+		// largest source of "the gun does not shoot where I am pointing" that
+		// is not our own maths.
+		//
+		// This needs no game-DLL cooperation, which is what makes it fit the
+		// fork's rule exactly: the switch is an ENGINE-owned cvar that every
+		// mod's autoaim merely reads (verified in the hlsdk-portable, opfor,
+		// bshift, theyhunger, decay, poke646, echoes and aomdc trees - all of
+		// them gate on g_psv_aim / g_psv_allow_autoaim). So bracket it the same
+		// way view_ofs is bracketed above: force it off for exactly the call
+		// that fires, then put the player's own setting back.
+		//
+		// Cvar_DirectSetValue rather than Cvar_Set, so the archived value is
+		// never rewritten into config.cfg and a flatscreen player's preference
+		// survives untouched.
+		if( vr_local )
+		{
+			vr_saved_aim = sv_aim.value;
+			vr_saved_allow_autoaim = sv_allow_autoaim.value;
+
+			if( vr_saved_aim != 0.0f )
+				Cvar_DirectSetValue( &sv_aim, 0.0f );
+			if( vr_saved_allow_autoaim != 0.0f )
+				Cvar_DirectSetValue( &sv_allow_autoaim, 0.0f );
+
+			vr_aim_sub = true;
+		}
+
 		// Mark the covered phase. Firing from the eye in here is expected and
 		// is exactly what the substitution above redirects to the muzzle.
 		if( vr_local )
@@ -1130,6 +1168,12 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 #if !XASH_DEDICATED
 		VR_SetFirePhase( VR_FIRE_PHASE_NONE, NULL, 0 );
+
+		if( vr_aim_sub )
+		{
+			Cvar_DirectSetValue( &sv_aim, vr_saved_aim );
+			Cvar_DirectSetValue( &sv_allow_autoaim, vr_saved_allow_autoaim );
+		}
 
 		if( vr_vuser_sub )
 		{

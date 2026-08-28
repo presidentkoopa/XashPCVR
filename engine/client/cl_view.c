@@ -661,7 +661,30 @@ void V_RenderView( void )
 		}
 
 		// audio is updated once per frame, not once per eye
-		S_UpdateFrame( &rvp );
+		//
+		// Spatialise from the HEAD, not from the mod's camera. views[0] is
+		// whatever pfnCalcRefdef produced - a flat camera that does not turn
+		// when the player turns their head, does not move when they walk the
+		// room, and does not drop when they physically crouch. Feeding it to
+		// the mixer means the sound field is anchored to a viewpoint nobody is
+		// looking through: leaning round a corner to listen does nothing, and
+		// turning your head leaves the world's audio facing the old way.
+		//
+		// Only the listener pose is replaced; everything else in the pass is
+		// the mod's own, so nothing about its rendering or its view flags
+		// changes.
+		{
+			ref_viewpass_t snd_rvp = rvp;
+			vec3_t ear_org, ear_ang;
+
+			if( VR_GetListener( ear_org, ear_ang ))
+			{
+				VectorCopy( ear_org, snd_rvp.vieworigin );
+				VectorCopy( ear_ang, snd_rvp.viewangles );
+			}
+
+			S_UpdateFrame( &snd_rvp );
+		}
 
 		VR_EndFrame();
 	}

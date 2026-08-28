@@ -512,6 +512,14 @@ static struct
 	                                    // (leaning, natural movement) is preserved
 	                                    // instead of being silently cancelled out.
 	qboolean      hmd_origin_at_sync_valid;
+	vec3_t        roomscale_cmd;  // world-space move room-scale asked the body for
+	                              // this frame, published by VR_GetRoomScaleMove and
+	                              // CONSUMED (zeroed) by VR_SetWorldReference. The
+	                              // body moves for many reasons - stick, trains,
+	                              // conveyors, basevelocity, NPC pushes - and only
+	                              // room-scale's own share may close the loop; see
+	                              // VR_SetWorldReference.
+	qboolean      roomscale_cmd_valid;
 	float         body_yaw;       // play-space rotation in world (mouse/stick turn)
 	float         injected_yaw;   // head yaw written into cl.viewangles last frame
 	float         turn_delta;     // stick turn accumulated this frame, consumed by
@@ -1240,39 +1248,81 @@ void VR_SetWorldReference( const vec3_t origin )
 		// A step is not one of these.
 		body_moved = ( VectorLength( delta ) > 64.0f );
 
-		// CLOSE THE LOOP for ordinary movement.
+		// CLOSE THE LOOP for room-scale - and ONLY for room-scale.
 		//
-		// The old test was an 8-unit PER-FRAME threshold, which at 90 Hz means
-		// 720 units/second - faster than Half-Life's maximum run speed, and
-		// faster than vr_roomscale_max allows. It therefore never fired after
-		// the first frame, so hmd_origin_at_sync never advanced and the
-		// room-scale offset was open-loop: physically stepping aside made the
-		// body walk that way and KEEP walking, because the offset driving it
-		// was never reduced by the body arriving.
+		// Room-scale is open-loop without this: physically stepping aside makes
+		// the body walk that way and KEEP walking, because the offset driving it
+		// is never reduced by the body arriving. So the sync point has to
+		// advance as the body catches up.
 		//
-		// Instead, advance the sync point by however far the body actually
-		// moved, converted back into play space. The offset then shrinks as
-		// the body catches up and settles at zero, which is what makes this a
-		// controller rather than a ramp.
+		// But it must advance by room-scale's OWN contribution, not by however
+		// far the body moved. Subtracting the whole of delta is exactly
+		// self-cancelling: VR_PlayToWorld computes
+		//     out = world_origin + R(+yaw)*(P - sync)
+		// so advancing sync by R(-yaw)*delta while world_origin gains delta
+		// gives
+		//     out' = (W+D) + R*(P - S - R'D) = W + R*(P-S) = out
+		// - the eye and every hand are then mathematically INVARIANT to body
+		// motion. The play space stops following the player: stick locomotion,
+		// trains, conveyors, basevelocity and NPC pushes all slide the world out
+		// from under a play space that stays pinned where it was. Measured live
+		// before this fix, vr_diag.log's "lean" climbed monotonically from 174
+		// to 740 units over twenty seconds of ordinary play.
 		//
-		// This stays correct with room-scale disabled: the body does not move
-		// in response, so delta is ~0, the sync point holds still, and leaning
-		// to peek round a corner works exactly as before.
-		if( !body_moved && vr.hmd_origin_at_sync_valid )
+		// So attribute the motion. Project the body's actual displacement onto
+		// the direction room-scale asked for and advance by that component
+		// only. Everything else the body does is left alone, and the play space
+		// rides along with it as it should.
+		//
+		// This also degrades correctly in the cases that matter:
+		//   - walking into a wall: the body does not move, the projection is
+		//     ~0, the offset persists, and you stand with your face in geometry
+		//     until you physically step back (see VR_GetRoomScaleMove);
+		//   - room-scale disabled: nothing is ever published, the sync point
+		//     holds still, and leaning to peek round a corner works as before;
+		//   - stick and room-scale at once: only the room-scale-aligned share is
+		//     taken, and any cross-talk is bounded by that projection and
+		//     self-corrects on the following frame.
+		if( !body_moved && vr.hmd_origin_at_sync_valid && vr.roomscale_cmd_valid )
 		{
-			float s, c;
-			vec3_t play_delta;
+			vec3_t dir;
+			float want = VectorLength( vr.roomscale_cmd );
 
-			// World -> play space is the inverse of the play -> world rotation
-			// in VR_PlayToWorld, so rotate by MINUS the body yaw.
-			SinCos( DEG2RAD( -vr.body_yaw ), &s, &c );
+			if( want > 0.0f )
+			{
+				float moved;
 
-			play_delta[0] = delta[0] * c - delta[1] * s;
-			play_delta[1] = delta[0] * s + delta[1] * c;
-			play_delta[2] = 0.0f;	// height is not room-scale's business
+				VectorScale( vr.roomscale_cmd, 1.0f / want, dir );
 
-			VectorAdd( vr.hmd_origin_at_sync, play_delta, vr.hmd_origin_at_sync );
+				// Horizontal only - height is not room-scale's business, and
+				// lifts/steps are handled by smooth_z below.
+				moved = delta[0] * dir[0] + delta[1] * dir[1];
+
+				if( moved > 0.0f )
+				{
+					float s, c;
+					vec3_t world_share, play_delta;
+
+					VectorScale( dir, moved, world_share );
+
+					// World -> play space is the inverse of the play -> world
+					// rotation in VR_PlayToWorld, so rotate by MINUS body yaw.
+					SinCos( DEG2RAD( -vr.body_yaw ), &s, &c );
+
+					play_delta[0] = world_share[0] * c - world_share[1] * s;
+					play_delta[1] = world_share[0] * s + world_share[1] * c;
+					play_delta[2] = 0.0f;
+
+					VectorAdd( vr.hmd_origin_at_sync, play_delta, vr.hmd_origin_at_sync );
+				}
+			}
 		}
+
+		// Consume it either way. Command generation and rendering are not
+		// locked to the same cadence, so a stale request must never be spent
+		// twice - erring toward "the play space rides along" is the safe side.
+		VectorClear( vr.roomscale_cmd );
+		vr.roomscale_cmd_valid = false;
 	}
 
 	VectorCopy( origin, vr.world_origin );
@@ -1372,6 +1422,33 @@ qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang )
 		return false;
 
 	VR_PlayToWorld( &vr.hand_pose[hand], out_org, out_ang );
+	return true;
+}
+
+/*
+================
+VR_GetListener
+
+Where the player's EARS are, in world space.
+
+The stereo loop hands S_UpdateFrame the mod's own view - the flat camera
+pfnCalcRefdef produced - because that is what the flatscreen path does. In VR
+that camera is not attached to the player's head: it does not turn when they
+turn, it does not move when they walk the room, and it does not drop when they
+physically crouch. The result is a sound field spatialised from a viewpoint
+nobody is looking through, which is why turning your head in the headset did
+not move the world around you audibly.
+
+Same anchor and rotation the eyes and hands use, minus the per-eye IPD offset -
+so the listener sits at the centre of the head and the whole rig agrees.
+================
+*/
+qboolean VR_GetListener( vec3_t out_org, vec3_t out_ang )
+{
+	if( !VR_IsActive() || !vr.hmd_pose.valid )
+		return false;
+
+	VR_PlayToWorld( &vr.hmd_pose, out_org, out_ang );
 	return true;
 }
 
@@ -1815,7 +1892,10 @@ typedef struct
 {
 	const model_t *model;
 	qboolean       valid;
-	qboolean       melee;       // no muzzle, nothing that fires
+	qboolean       melee;       // positively identified as a swung weapon
+	qboolean       classified;  // the metadata actually said something either
+	                            // way, so the name hint in VR_HoldingMelee is
+	                            // not needed (and must not override it)
 	qboolean       throwable;   // has throw/pin style sequences
 	qboolean       has_muzzle;  // at least one attachment
 } vr_wprofile_t;
@@ -1884,17 +1964,53 @@ static const vr_wprofile_t *VR_GetWeaponProfile( void )
 		VR_SeqLabelContains( hdr, "pinpull" ) ||
 		VR_SeqLabelContains( hdr, "lob" );
 
-	// Melee by absence: no muzzle to flash from, and nothing that fires.
-	// Deliberately not "is it named crowbar" - a mod's pipe wrench, katana or
-	// fire axe classifies correctly without being listed anywhere.
+	// MELEE IS IDENTIFIED POSITIVELY - never inferred from absence.
+	//
+	// This was previously melee = !fires, with fires keyed partly on
+	// has_muzzle (numattachments > 0). Both halves proved wrong on real
+	// content, in opposite and equally bad directions:
+	//
+	//   - numattachments carries no melee information on Valve-derived models.
+	//     A VR-authored crowbar carrying four attachments read as "fires", so
+	//     melee came out FALSE and swing-to-hit was silently off on the one
+	//     weapon it exists for.
+	//   - Retail Half-Life's v_satchel and v_tripmine have no attachments and
+	//     no fire/shoot labels (idle1/fidget1/draw/drop and arm1/place), so
+	//     "melee by absence" made them melee. VR_GetMeleeAttack then ORs
+	//     IN_ATTACK on hand speed, and waving your arm plants tripmines and
+	//     drops satchels.
+	//
+	// So require evidence, and default to NOT melee. The two failure modes are
+	// not symmetric: a melee weapon misread as a gun costs the player a trigger
+	// pull, while a gun misread as melee discharges it every time they move
+	// their hand quickly. Only the first of those is acceptable.
+	//
+	// "hit" and "miss" carry most of the weight - GoldSrc melee weapons are
+	// conventionally animated attack1hit / attack1miss, a naming no gun uses.
+	// Still metadata rather than a name list, so a mod's pipe wrench, katana or
+	// fire axe classifies correctly without appearing anywhere.
 	if( !vr_wprof.throwable )
 	{
 		qboolean fires =
-			vr_wprof.has_muzzle ||
 			VR_SeqLabelContains( hdr, "fire" ) ||
-			VR_SeqLabelContains( hdr, "shoot" );
+			VR_SeqLabelContains( hdr, "shoot" ) ||
+			VR_SeqLabelContains( hdr, "reload" );
 
-		vr_wprof.melee = !fires;
+		qboolean swings =
+			VR_SeqLabelContains( hdr, "hit" ) ||
+			VR_SeqLabelContains( hdr, "miss" ) ||
+			VR_SeqLabelContains( hdr, "swing" ) ||
+			VR_SeqLabelContains( hdr, "slash" ) ||
+			VR_SeqLabelContains( hdr, "stab" ) ||
+			VR_SeqLabelContains( hdr, "chop" ) ||
+			VR_SeqLabelContains( hdr, "bash" );
+
+		vr_wprof.melee      = ( swings && !fires );
+		vr_wprof.classified = ( swings || fires );
+	}
+	else
+	{
+		vr_wprof.classified = true;	// a throw sequence is evidence in itself
 	}
 
 	if( vr_debug.value )
@@ -1917,10 +2033,15 @@ qboolean VR_HoldingMelee( void )
 	// Model-derived first: works for any mod's custom melee weapon without
 	// it appearing in any list. Name matching is kept only as a hint for
 	// models that carry no usable metadata.
+	//
+	// Gated on `classified`, not just `valid`. Returning wp->melee whenever the
+	// model parsed at all made the hint below unreachable dead code, so a
+	// weapon whose sequences said nothing either way silently defaulted instead
+	// of getting the one piece of evidence left.
 	{
 		const vr_wprofile_t *wp = VR_GetWeaponProfile();
 
-		if( wp->valid )
+		if( wp->valid && wp->classified )
 			return wp->melee;
 	}
 
@@ -3032,6 +3153,11 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 
 	*forward = *side = 0.0f;
 
+	// Cleared on every path out, so a frame that commands nothing publishes
+	// nothing and VR_SetWorldReference leaves the sync point alone.
+	VectorClear( vr.roomscale_cmd );
+	vr.roomscale_cmd_valid = false;
+
 	if( !VR_IsActive() || vr_roomscale.value == 0.0f )
 		return;
 
@@ -3051,6 +3177,25 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 	world[1] = rel[0] * s + rel[1] * c;
 	world[2] = 0.0f;
 
+	// Gain and cap are a scalar and a magnitude clamp, and the transform below
+	// is a pure rotation, so applying them here in world space is arithmetically
+	// identical to applying them after it. Doing it here is what lets
+	// vr.roomscale_cmd record the request in WORLD units, which is the frame
+	// VR_SetWorldReference compares against.
+	gain = vr_roomscale_gain.value;
+	VectorScale( world, gain, world );
+
+	// Cap it. A tracking glitch that reports the headset several metres away
+	// would otherwise fire the player across the map in one frame.
+	cap = vr_roomscale_max.value;
+	len = VectorLength( world );
+	if( len > cap && len > 0.0f )
+		VectorScale( world, cap / len, world );
+
+	// Publish what we just asked the body to do, for the loop-closing test.
+	VectorCopy( world, vr.roomscale_cmd );
+	vr.roomscale_cmd_valid = true;
+
 	// World -> the usercmd's frame. forwardmove/sidemove are interpreted
 	// along cmd->viewangles, which is NOT necessarily the head yaw: while
 	// aiming from the weapon it carries the WEAPON yaw instead, so using the
@@ -3058,20 +3203,6 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 	SinCos( DEG2RAD( view_yaw ), &s, &c );
 	*forward = world[0] * c + world[1] * s;
 	*side = -world[0] * s + world[1] * c;
-
-	gain = vr_roomscale_gain.value;
-	*forward *= gain;
-	*side *= gain;
-
-	// Cap it. A tracking glitch that reports the headset several metres away
-	// would otherwise fire the player across the map in one frame.
-	cap = vr_roomscale_max.value;
-	len = sqrt( *forward * *forward + *side * *side );
-	if( len > cap && len > 0.0f )
-	{
-		*forward *= cap / len;
-		*side *= cap / len;
-	}
 }
 
 /*
@@ -3427,6 +3558,29 @@ void VR_UpdateFireRay( void )
 		}
 	}
 
+	// SECOND BEST: muzzle POSITION from one attachment, direction from the hand.
+	//
+	// A single attachment pins where the barrel ends but says nothing about
+	// which way it points, so the bore test above - which needs two - rejects
+	// it outright. That was throwing the muzzle away on exactly the content
+	// this fork exists to play: every retail Half-Life, Opposing Force and Blue
+	// Shift gun carries precisely ONE attachment (the muzzle flash point), and
+	// melee weapons and throwables carry none. So on genuine Valve content the
+	// bore path never ran, and BOTH origin and direction fell back to a
+	// hand-tuned constant. It only ever appeared to work because VR-authored
+	// models with four attachments each happened to be installed over the top.
+	//
+	// Taking just the origin is a strict improvement and costs nothing:
+	// tracers, decals and the mod's own trace all start at the real barrel tip
+	// instead of the grip - which is what makes contact-range shots behave -
+	// while direction still comes from the calibrated controller pose below.
+	if( !braced && !used_attachment && vr_aim_attachment.value
+		&& cl.local.viewmodel != 0
+		&& VR_ModelAttachments( clgame.viewent.model ) >= 1 )
+	{
+		VectorCopy( clgame.viewent.attachment[0], org );
+	}
+
 	// FALLBACK for models with no usable muzzle attachment.
 	//
 	// Stock Half-Life viewmodels all carry one, but a MOD's custom weapons
@@ -3435,17 +3589,80 @@ void VR_UpdateFireRay( void )
 	// mod would shoot wide. Falling back to the mesh rest-pose correction
 	// restores the pre-attachment behaviour, which was close, so an
 	// unattributed mod weapon degrades gracefully instead of breaking.
-	if( !braced && !used_attachment )
+	//
+	// ONLY when a weapon is actually held. The correction exists to cancel a
+	// MESH's rest pose, so with no mesh there is nothing to cancel and the raw
+	// hand pose is already the right answer. This matters on mounted guns:
+	// CFuncTank::StartControl holsters the weapon and sets viewmodel = 0, so
+	// without this test the tank would be aimed through vr_weapon_pitch_offset
+	// - 45 degrees above where the player is pointing.
+	if( !braced && !used_attachment && cl.local.viewmodel != 0 )
 		VR_CalibrateWeaponAngles( ang );
 
 	// Manual per-axis override, for dialling in one weapon by hand.
 	// Skipped while braced: the two-handed angles are already a finished
 	// world direction, so layering a rest-pose correction on top is what
 	// sent the weapon wild. Lambda1VR skips its equivalent the same way.
-	if( !braced && ( vr_aim_pitch_offset.value != 0.0f || vr_aim_yaw_offset.value != 0.0f ))
+	// Also weapon-only, and for the same reason as the fallback above: this is
+	// a per-weapon dial, so with nothing in hand there is nothing to dial.
+	if( !braced && cl.local.viewmodel != 0
+		&& ( vr_aim_pitch_offset.value != 0.0f || vr_aim_yaw_offset.value != 0.0f ))
 	{
 		vec3_t cal = { vr_aim_pitch_offset.value, vr_aim_yaw_offset.value, 0.0f };
 		VR_ApplyMeshCalibration( ang, cal );
+	}
+
+	// GEOMETRY HONESTY - keep the shot origin on the player's side of the world.
+	//
+	// The muzzle is a freely positionable tracked controller, so it can be put
+	// somewhere the player's body is not: through a thin wall, inside a
+	// doorframe, buried in a crate they are bracing against. Two separate
+	// things go wrong, and the second one is the reason this is not optional:
+	//
+	//   1. Shooting through walls. sv_pmove.c substitutes this origin into
+	//      view_ofs, so the mod's own trace starts wherever the muzzle is -
+	//      including the far side of cover. A desktop player cannot do that,
+	//      so leaving it would also be a crossplay-fairness hole on a listen
+	//      server.
+	//   2. Bullets that quietly do nothing. When the muzzle is INSIDE solid,
+	//      the mod's UTIL_TraceLine from GetGunPosition() starts in solid and
+	//      returns fraction 0, so the shot dies at the muzzle. The player
+	//      empties a magazine into the wall they are leaning on and gets no
+	//      damage, no impact, and no feedback at all. Room-scale players hit
+	//      this constantly and cannot avoid it.
+	//
+	// Clamping to the last clear point fixes both at once, and is strictly
+	// better than refusing to substitute: the shot still leaves the barrel tip
+	// rather than reverting to the face, it just leaves it at the surface the
+	// barrel is pressed against - which is where a real barrel would be.
+	//
+	// World only. A brush entity the player is legitimately shooting or
+	// standing on (func_breakable, glass, a lift) must not clamp the shot, and
+	// PM_STUDIO_IGNORE keeps a monster stepping between body and muzzle from
+	// counting as cover.
+	{
+		cl_entity_t *player = CL_GetLocalPlayer();
+
+		if( player )
+		{
+			vec3_t eye;
+			pmtrace_t tr;
+
+			VectorAdd( player->origin, cl.viewheight, eye );
+			tr = CL_TraceLine( eye, org, PM_STUDIO_IGNORE );
+
+			if( tr.fraction < 1.0f && tr.ent == 0 )
+			{
+				vec3_t back;
+
+				// Sit just short of the surface, not exactly on it: a trace
+				// starting precisely on a plane is the startsolid case this
+				// exists to avoid.
+				VectorSubtract( eye, org, back );
+				VectorNormalize( back );
+				VectorMA( tr.endpos, 1.0f, back, org );
+			}
+		}
 	}
 
 	VectorCopy( org, vr_fire_org );
@@ -5491,6 +5708,7 @@ void     VR_GetMovement( float *forward, float *side ) { if( forward ) *forward 
 void     VR_UpdateTurn( float frametime ) { }
 qboolean VR_GetButton( int btn ) { return false; }
 qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang ) { return false; }
+qboolean VR_GetListener( vec3_t out_org, vec3_t out_ang ) { return false; }
 void     VR_DrawHands( qboolean draw_right ) { }
 qboolean VR_AlignModelToFireRay( vec3_t ang ) { return false; }
 void     VR_ResetModelAlign( void ) { }

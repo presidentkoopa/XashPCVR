@@ -151,6 +151,11 @@ qboolean VR_GetButton( int btn );
 // Returns false if that controller is not currently tracked.
 qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang );
 
+// World-space head pose for audio. The stereo loop must feed this to
+// S_UpdateFrame rather than the mod's flat camera, or head rotation,
+// room-scale walking and physical crouch are all inaudible.
+qboolean VR_GetListener( vec3_t out_org, vec3_t out_ang );
+
 // Draws a bare-hand model at each tracked controller, client-side only (never
 // networked, works identically regardless of which mod is loaded). Call once
 // per frame, not per eye. draw_right should be false when the weapon
