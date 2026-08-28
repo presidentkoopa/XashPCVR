@@ -581,6 +581,8 @@ static struct
 
 	float         move_x, move_y;   // -1..1 locomotion stick
 	float         turn_x, turn_y;   // -1..1 turn stick
+	qboolean      select_open;       // weapon select HUD up (grip + stick click)
+	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
 	qboolean      snap_pending;
@@ -5686,10 +5688,74 @@ static void VR_SyncInput( void )
 	// One-shot actions are console commands, dispatched on the press edge only.
 	if( vr.btn[VRA_FLASHLIGHT] && !vr.btn_prev[VRA_FLASHLIGHT] )
 		Cbuf_AddText( "impulse 100\n" );
-	if( vr.btn[VRA_NEXTWEAP] && !vr.btn_prev[VRA_NEXTWEAP] )
-		Cbuf_AddText( "invnext\n" );
-	if( vr.btn[VRA_PREVWEAP] && !vr.btn_prev[VRA_PREVWEAP] )
-		Cbuf_AddText( "invprev\n" );
+	/*
+	MAIN-HAND GRIP IS A MODIFIER LAYER.
+	
+	Held, it re-tasks the main hand's own trigger and stick rather than doing
+	anything itself:
+	
+	    grip + trigger      secondary fire
+	    grip + stick right  next weapon
+	    grip + stick left   previous weapon
+	    grip + stick click  toggle the weapon select
+	    (select open) fire  take the highlighted weapon
+	
+	This costs nothing and doubles every control on that hand: the grip was
+	previously secondary fire and nothing else, which a modifier absorbs for
+	free.
+	
+	The stick cannot turn and cycle at once, so turning is suppressed while the
+	grip is down - see VR_UpdateTurn.
+	
+	"Fire selects" needs no code: with hud_fastswitch off the mod's own client
+	DLL consumes +attack as the select confirm instead of firing. That is stock
+	GoldSrc behaviour, so it is true in every mod.
+	*/
+	{
+		static qboolean cyc_prev = false, click_prev = false;
+		qboolean grip  = vr.btn[VRA_ATTACK2];
+		qboolean click = vr.btn[VRA_NEXTWEAP];
+		qboolean cyc   = ( grip && fabs( vr.turn_x ) > 0.6f );
+	
+		if( grip )
+		{
+			// Edge-triggered, so one flick is one weapon rather than a burst.
+			if( cyc && !cyc_prev )
+				Cbuf_AddText( vr.turn_x > 0.0f ? "invnext\n" : "invprev\n" );
+	
+			if( click && !click_prev )
+			{
+				if( !vr.select_open )
+				{
+					// The select HUD only appears with fast-switch OFF;
+					// with it on invnext just switches silently.
+					vr.select_fastswitch = Cvar_VariableValue( "hud_fastswitch" );
+					Cvar_SetValue( "hud_fastswitch", 0.0f );
+					Cbuf_AddText( "invnext\n" );
+					vr.select_open = true;
+				}
+				else
+				{
+					Cbuf_AddText( "cancelselect\n" );
+					Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+					vr.select_open = false;
+				}
+				VR_Haptic( VR_DominantHand(), 0.04f, 0.0f, 0.5f );
+			}
+		}
+	
+		// The mod closes the select itself once fire confirms, so put the
+		// player's own fast-switch setting back rather than leaving it off for
+		// the rest of the session.
+		if( vr.select_open && vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
+		{
+			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+			vr.select_open = false;
+		}
+	
+		cyc_prev = cyc;
+		click_prev = click;
+	}
 	if( vr.btn[VRA_MENU] && !vr.btn_prev[VRA_MENU] )
 		Cbuf_AddText( "escape\n" );
 
@@ -5818,7 +5884,13 @@ void VR_UpdateTurn( float frametime )
 	if( vr_snap_turn.value )
 	{
 		// discrete steps: much more comfortable for most people than smooth yaw
-		if( fabs( vr.turn_x ) < 0.6f )
+		// The grip modifier re-tasks this stick to weapon cycling, and it cannot
+	// do both. Suppressed rather than blended: a stick flick meant as "next
+	// weapon" that also spun the player would be worse than either.
+	if( vr.btn[VRA_ATTACK2] )
+		return;
+	
+	if( fabs( vr.turn_x ) < 0.6f )
 		{
 			vr.snap_pending = false;
 			return;

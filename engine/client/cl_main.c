@@ -983,8 +983,21 @@ static void CL_CreateCmd( void )
 			if( climb != 0.0f )
 				cmd->upmove += climb;
 		}
-		if( VR_GetButton( VR_BTN_ATTACK ))  cmd->buttons |= IN_ATTACK;
-		if( VR_GetButton( VR_BTN_ATTACK2 )) cmd->buttons |= IN_ATTACK2;
+		// Main-hand grip is a MODIFIER, not a button of its own.
+		//
+		// Bare trigger fires. Grip + trigger is secondary fire. The grip alone
+		// does nothing, which is what frees it to re-task the rest of that
+		// hand - stick left/right cycles weapons, stick click opens the select
+		// (see VR_SyncInput). It costs nothing: the grip was previously
+		// secondary fire and nothing else, and a modifier absorbs that for
+		// free while doubling every other control on the hand.
+		if( VR_GetButton( VR_BTN_ATTACK ))
+		{
+			if( VR_GetButton( VR_BTN_ATTACK2 ))
+				cmd->buttons |= IN_ATTACK2;
+			else
+				cmd->buttons |= IN_ATTACK;
+		}
 		// Off-hand trigger is USE normally, and the second gun's trigger while
 		// dual wielding. Sharing the input rather than claiming a new binding
 		// keeps every controller profile untouched, and USE is not something
