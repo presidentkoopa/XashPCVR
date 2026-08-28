@@ -947,6 +947,42 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	svgame.globals->time = cl->timebase;
 
 #if !XASH_DEDICATED
+	// TELEPORT LOCOMOTION - commit a destination the client aimed and released.
+	//
+	// Applied here, before pmove and PreThink, so the rest of the frame sees
+	// the player already at the new position and nothing has to be re-derived.
+	//
+	// This is not a substitution: it is an authoritative engine-side move, the
+	// same kind SV_PushEntity performs, so it is written straight to origin
+	// rather than bracketed and restored. Velocity is cleared because carrying
+	// momentum through a teleport is how players end up sliding off the ledge
+	// they just arrived on.
+	//
+	// The client already colour-coded this destination using line traces, but
+	// line traces cannot know whether a BODY fits. So re-test with the player's
+	// real hull and refuse if it does not - a zero-length hull trace at the
+	// destination reports allsolid/startsolid exactly when the space is
+	// occupied. Refusing silently is correct here: the alternative is arriving
+	// stuck inside geometry.
+	if( NET_IsLocalAddress( cl->netchan.remote_address ))
+	{
+		vec3_t tp_dest;
+
+		if( VR_ConsumeTeleport( tp_dest ))
+		{
+			trace_t tr = SV_Move( tp_dest, clent->v.mins, clent->v.maxs,
+				tp_dest, MOVE_NORMAL, clent, false );
+
+			if( !tr.allsolid && !tr.startsolid )
+			{
+				VectorCopy( tp_dest, clent->v.origin );
+				VectorClear( clent->v.velocity );
+				VectorClear( clent->v.basevelocity );
+				SV_LinkEdict( clent, true );
+			}
+		}
+	}
+
 	// PCVR fork, diagnostic only: PreThink is the other point the game DLL is
 	// handed this usercmd, and the view_ofs substitution below does NOT cover
 	// it. A shot leaving the eye in here is a real gap - see

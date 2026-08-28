@@ -223,6 +223,20 @@ qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang );
 // forwardmove/sidemove are interpreted along it.
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side );
 
+// Teleport locomotion, off by default (vr_teleport). Built as a MODE on the
+// existing movement stick rather than a new binding, so it needs no changes to
+// any interaction profile: push the stick to raise an arc from the off hand,
+// release to commit.
+//
+// VR_UpdateTeleport runs once per client frame from CL_CreateCmd.
+// VR_TeleportAiming lets locomotion suppress itself while the arc is up.
+// VR_ConsumeTeleport is the SERVER side - it returns true exactly once per
+// committed teleport, and is read directly out of client state the same way
+// VR_GetWeaponAim already is, so nothing is added to the network protocol.
+void     VR_UpdateTeleport( void );
+qboolean VR_TeleportAiming( void );
+qboolean VR_ConsumeTeleport( vec3_t out_dest );
+
 // Hand-over-hand ladder climbing, returned as a usercmd upmove contribution.
 // 0 when not climbing. Ladder movement lives in pm_shared (engine code) and is
 // driven by upmove, so this needs nothing from the mod.

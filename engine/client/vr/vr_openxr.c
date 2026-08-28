@@ -66,6 +66,15 @@ static CVAR_DEFINE_AUTO( vr_turnspeed, "120", FCVAR_ARCHIVE, "smooth turn degree
 static CVAR_DEFINE_AUTO( vr_snap_turn, "1", FCVAR_ARCHIVE, "1 = snap turning, 0 = smooth" );
 static CVAR_DEFINE_AUTO( vr_snap_angle, "30", FCVAR_ARCHIVE, "snap turn step in degrees" );
 static CVAR_DEFINE_AUTO( vr_deadzone, "0.2", FCVAR_ARCHIVE, "thumbstick deadzone (0-1)" );
+// Teleport locomotion. Off by default: smooth movement stays the default
+// experience, and this is the comfort alternative for players who need it.
+static CVAR_DEFINE_AUTO( vr_teleport, "0", FCVAR_ARCHIVE, "movement stick aims a teleport arc instead of walking" );
+static CVAR_DEFINE_AUTO( vr_teleport_speed, "600", FCVAR_ARCHIVE, "teleport arc launch speed (reach)" );
+static CVAR_DEFINE_AUTO( vr_teleport_gravity, "800", FCVAR_ARCHIVE, "teleport arc gravity" );
+static CVAR_DEFINE_AUTO( vr_teleport_steps, "48", FCVAR_ARCHIVE, "teleport arc integration steps" );
+static CVAR_DEFINE_AUTO( vr_teleport_step_time, "0.05", FCVAR_ARCHIVE, "teleport arc seconds per step" );
+static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc ribbon half-width" );
+static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
 CVAR_DEFINE_AUTO( vr_hands, "1", FCVAR_ARCHIVE, "pin the viewmodel to the right controller" );
@@ -4187,6 +4196,231 @@ static void VR_DrawArc( void )
 }
 
 /*
+=================================================================
+	Teleport locomotion
+
+Smooth stick movement is the only option this fork has offered, and for a
+sizeable fraction of players continuous artificial locomotion is the thing that
+ends the session. Teleport is the standard alternative, and both reference
+ports are worth noting here: HLVR has a full parabolic teleporter, Lambda1VR
+has none at all.
+
+Built as a MODE rather than an extra binding. With vr_teleport on, the movement
+stick stops walking and starts aiming: push it to raise an arc from the off
+hand, release to commit. That costs no new OpenXR action and therefore no
+changes to any of the four interaction-profile binding tables, and it matches
+what most VR titles do - the stick you would have walked with is the stick you
+teleport with.
+
+The arc itself is the grenade predictor (VR_DrawArc) pointed somewhere else:
+same constant-gravity integration, same per-segment CL_TraceLine, same ribbon
+and marker helpers. Only the source, the validity test and the commit are new.
+
+Validation is deliberately done TWICE and differently. The client's test decides
+what colour the marker is; the server re-tests with the real player hull before
+moving anything, because the client's line traces cannot know whether a body
+actually fits. That split is the normal authority split, not belt-and-braces:
+the indicator only has to be honest, while the move has to be safe.
+=================================================================
+*/
+static qboolean vr_tp_aiming = false;
+static qboolean vr_tp_valid = false;
+static vec3_t   vr_tp_dest;
+static qboolean vr_tp_pending = false;	// committed, waiting for the server
+static vec3_t   vr_tp_pending_dest;
+
+qboolean VR_TeleportAiming( void )
+{
+	return vr_tp_aiming;
+}
+
+/*
+================
+VR_TraceTeleportArc
+
+Integrate the arc from the off hand and report where it lands. Returns true
+when it terminated on something the player could plausibly stand on.
+
+`draw` also renders it, so the predictor and the indicator can never disagree
+about where the arc goes - the same mistake the fire ray already had to be
+restructured to avoid.
+================
+*/
+static qboolean VR_TraceTeleportArc( vec3_t out_dest, qboolean draw )
+{
+	vec3_t org, ang, fwd, pos, vel, next;
+	int i, steps;
+	float dt, grav;
+	qboolean landed = false, standable = false;
+
+	if( !VR_GetHandWorld( VR_OffHand(), org, ang ))
+		return false;
+
+	VR_ApplyMeshCalibration( ang, (vec3_t){ vr_hand_pitch_offset.value,
+		vr_hand_yaw_offset.value, vr_hand_roll_offset.value } );
+	AngleVectors( ang, fwd, NULL, NULL );
+
+	steps = bound( 4, (int)vr_teleport_steps.value, 256 );
+	dt    = bound( 0.005f, vr_teleport_step_time.value, 0.5f );
+	grav  = vr_teleport_gravity.value;
+
+	VectorCopy( org, pos );
+	VectorScale( fwd, vr_teleport_speed.value, vel );
+
+	for( i = 0; i < steps; i++ )
+	{
+		pmtrace_t tr;
+
+		vel[2] -= grav * dt;
+		VectorMA( pos, dt, vel, next );
+
+		tr = CL_TraceLine( pos, next, PM_STUDIO_IGNORE );
+
+		if( draw )
+			VR_RibbonSegment( pos, tr.endpos, vr_teleport_width.value );
+
+		if( tr.fraction < 1.0f )
+		{
+			VectorCopy( tr.endpos, pos );
+			landed = true;
+
+			// Floor, not a wall or a ceiling. GoldSrc players can climb a
+			// slope up to about 45 degrees, so accept anything at least that
+			// upright and reject the rest - teleporting onto a wall face
+			// leaves the body embedded in it.
+			standable = ( tr.plane.normal[2] >= 0.7f );
+			break;
+		}
+
+		VectorCopy( next, pos );
+	}
+
+	VectorCopy( pos, out_dest );
+
+	if( !landed || !standable )
+		return false;
+
+	// Headroom. A line trace is not a hull test, so this only rejects the
+	// obvious cases (landing under a vent, a crawlspace, a closed lift); the
+	// server's hull test is what actually decides. Lifted slightly off the
+	// surface first, or the trace starts inside the floor it just hit.
+	{
+		vec3_t from, to;
+		pmtrace_t tr;
+
+		VectorCopy( pos, from );
+		from[2] += 1.0f;
+		VectorCopy( from, to );
+		to[2] += 72.0f;			// standing player height in HL units
+
+		tr = CL_TraceLine( from, to, PM_STUDIO_IGNORE );
+		if( tr.fraction < 1.0f )
+			return false;
+	}
+
+	return true;
+}
+
+/*
+================
+VR_UpdateTeleport
+
+Called once per client frame from CL_CreateCmd, before movement is built.
+================
+*/
+void VR_UpdateTeleport( void )
+{
+	float mag;
+	qboolean want;
+
+	if( !VR_IsActive() || vr_teleport.value == 0.0f )
+	{
+		vr_tp_aiming = false;
+		vr_tp_valid = false;
+		return;
+	}
+
+	mag = sqrt( vr.move_x * vr.move_x + vr.move_y * vr.move_y );
+	want = ( mag >= Q_max( 0.0f, vr_deadzone.value )) ? true : false;
+
+	if( want )
+	{
+		vr_tp_valid = VR_TraceTeleportArc( vr_tp_dest, false );
+		vr_tp_aiming = true;
+		return;
+	}
+
+	// Stick released - commit if the last aimed point was good.
+	if( vr_tp_aiming )
+	{
+		if( vr_tp_valid )
+		{
+			VectorCopy( vr_tp_dest, vr_tp_pending_dest );
+			vr_tp_pending = true;
+
+			// Confirm the commit in the hand that aimed it. Without this the
+			// only feedback is the world changing, which is exactly the moment
+			// the player is least able to tell whether their input registered.
+			VR_Haptic( VR_OffHand(), 0.05f, 0.0f, 0.6f );
+		}
+
+		vr_tp_aiming = false;
+		vr_tp_valid = false;
+	}
+}
+
+/*
+================
+VR_ConsumeTeleport
+
+Server side, from SV_RunCmd. Returns true exactly once per committed teleport
+and hands back the destination.
+
+Read directly out of client state rather than sent as a command, which is the
+same thing sv_pmove.c already does for VR_GetWeaponAim: every VR substitution
+is gated on NET_IsLocalAddress, so by construction this only ever runs for a
+player sharing the process with the server. Nothing goes on the wire, so a
+vanilla client connecting to a VR host is unaffected.
+================
+*/
+qboolean VR_ConsumeTeleport( vec3_t out_dest )
+{
+	if( !vr_tp_pending )
+		return false;
+
+	VectorCopy( vr_tp_pending_dest, out_dest );
+	vr_tp_pending = false;
+	return true;
+}
+
+static void VR_DrawTeleportArc( void )
+{
+	vec3_t dest;
+	qboolean ok;
+
+	if( !vr_tp_aiming )
+		return;
+
+	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+	VR_BindOverlayTexture();
+
+	// Colour carries the validity, so the player never has to guess whether a
+	// release will do anything.
+	ok = vr_tp_valid;
+	ref.dllFuncs.Color4f( ok ? 0.2f : 1.0f, ok ? 1.0f : 0.2f, 0.2f,
+		vr_teleport_alpha.value );
+
+	ref.dllFuncs.Begin( TRI_QUADS );
+	VR_TraceTeleportArc( dest, true );
+	ref.dllFuncs.End();
+
+	ref.dllFuncs.Color4f( ok ? 0.2f : 1.0f, ok ? 1.0f : 0.2f, 0.2f, 1.0f );
+	ref.dllFuncs.Begin( TRI_QUADS );
+	VR_Marker( dest, ok ? 6.0f : 3.0f );
+	ref.dllFuncs.End();
+}
+
+/*
 ================
 VR_DrawOverlays
 
@@ -4221,6 +4455,7 @@ void VR_DrawOverlays( void )
 		return;
 
 	VR_DrawArc();
+	VR_DrawTeleportArc();
 	VR_DrawLaser();
 }
 
@@ -4396,6 +4631,13 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
 	Cvar_RegisterVariable( &vr_hud_parallax );
+	Cvar_RegisterVariable( &vr_teleport );
+	Cvar_RegisterVariable( &vr_teleport_speed );
+	Cvar_RegisterVariable( &vr_teleport_gravity );
+	Cvar_RegisterVariable( &vr_teleport_steps );
+	Cvar_RegisterVariable( &vr_teleport_step_time );
+	Cvar_RegisterVariable( &vr_teleport_width );
+	Cvar_RegisterVariable( &vr_teleport_alpha );
 	Cvar_RegisterVariable( &vr_mirror );
 	Cvar_RegisterVariable( &vr_hand_pitch_offset );
 	Cvar_RegisterVariable( &vr_hand_yaw_offset );
@@ -5227,6 +5469,13 @@ void VR_GetMovement( float *forward, float *side )
 	if( !VR_IsActive() || !vr.input_ready )
 		return;
 
+	// While the teleport arc is up, the stick is aiming it rather than walking.
+	// Leaving smooth movement live underneath would walk the player during
+	// every aim, which is both wrong and the exact sensation teleport users
+	// turned it on to avoid.
+	if( VR_TeleportAiming( ))
+		return;
+
 	if( mag < dead )
 		return;
 
@@ -5800,6 +6049,9 @@ void     VR_UpdateTurn( float frametime ) { }
 qboolean VR_GetButton( int btn ) { return false; }
 qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang ) { return false; }
 qboolean VR_GetListener( vec3_t out_org, vec3_t out_ang ) { return false; }
+void     VR_UpdateTeleport( void ) { }
+qboolean VR_TeleportAiming( void ) { return false; }
+qboolean VR_ConsumeTeleport( vec3_t out_dest ) { return false; }
 void     VR_DrawHands( qboolean draw_right ) { }
 qboolean VR_AlignModelToFireRay( vec3_t ang ) { return false; }
 void     VR_ResetModelAlign( void ) { }

@@ -817,6 +817,11 @@ static void CL_CreateCmd( void )
 		// muzzle origin) reads the cached result so they cannot diverge.
 		VR_UpdateFireRay();
 
+		// Teleport arc, before movement is built: while it is up the movement
+		// stick is aiming rather than walking, and VR_GetMovement below checks
+		// VR_TeleportAiming() to suppress itself.
+		VR_UpdateTeleport();
+
 		VR_UpdateTurn( host.frametime );
 
 		VR_OverrideViewAngles( cmd->viewangles );
