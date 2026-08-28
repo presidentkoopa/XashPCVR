@@ -5901,7 +5901,13 @@ void VR_UpdateTurn( float frametime )
 	if( vr_snap_turn.value )
 	{
 		// discrete steps: much more comfortable for most people than smooth yaw
-		if( fabs( vr.turn_x ) < 0.6f )
+		// The grip modifier re-tasks this stick to weapon cycling, and it cannot
+	// do both. Suppressed rather than blended: a stick flick meant as "next
+	// weapon" that also spun the player would be worse than either.
+	if( vr.btn[VRA_ATTACK2] )
+		return;
+	
+	if( fabs( vr.turn_x ) < 0.6f )
 		{
 			vr.snap_pending = false;
 			return;
