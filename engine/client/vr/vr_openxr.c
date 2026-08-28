@@ -5731,8 +5731,25 @@ static void VR_SyncInput( void )
 	{
 		static qboolean cyc_prev = false, click_prev = false;
 		qboolean grip  = vr.btn[VRA_ATTACK2];
-		qboolean click = vr.btn[VRA_NEXTWEAP];
-		qboolean cyc   = ( grip && fabs( vr.turn_x ) > 0.6f );
+		// The toggle is the thumbstick CLICK, and the same thumbstick is being
+		// flicked left and right to cycle. Pressing a stick slightly inward while
+		// pushing it sideways is close to unavoidable, so a bare click test made
+		// cycling summon the menu constantly - measured, 20 of 22 cycles in one
+		// session happened with a menu the player never asked for. Only count a
+		// click made with the stick actually centred.
+		qboolean click = ( vr.btn[VRA_NEXTWEAP]
+			&& fabs( vr.turn_x ) < 0.4f && fabs( vr.turn_y ) < 0.4f
+			&& fabs( vr.move_x ) < 0.4f && fabs( vr.move_y ) < 0.4f );
+		
+		// EITHER stick drives the cycle.
+		//
+		// "main-hand stick" and "left stick" were both used to describe this and
+		// they are different sticks, so reading only one of them meant watching
+		// an input that was never touched. Accepting both removes the ambiguity
+		// entirely and costs nothing: the grip modifier already reserves both
+		// sticks for this while it is held.
+		float stick_x = ( fabs( vr.turn_x ) >= fabs( vr.move_x )) ? vr.turn_x : vr.move_x;
+		qboolean cyc  = ( grip && fabs( stick_x ) > 0.6f );
 	
 		if( grip )
 		{
@@ -5749,7 +5766,10 @@ static void VR_SyncInput( void )
 			// invnext already does in that state.
 			if( cyc && !cyc_prev )
 			{
-				const char *dir = ( vr.turn_x > 0.0f ) ? "invnext" : "invprev";
+				const char *dir = ( stick_x > 0.0f ) ? "invnext" : "invprev";
+				
+				VR_DiagPrintf( "SELCYC dir=%s open=%d grip=%d turn_x=%.2f move_x=%.2f\n",
+					dir, vr.select_open ? 1 : 0, grip ? 1 : 0, vr.turn_x, vr.move_x );
 				
 				if( vr.select_open )
 					Cbuf_AddText( va( "%s\n", dir ));
@@ -5793,6 +5813,7 @@ static void VR_SyncInput( void )
 		{
 			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
 			vr.select_open = false;
+			VR_DiagPrintf( "SELTAKE (fire confirmed)\n" );
 		}
 	
 		cyc_prev = cyc;
