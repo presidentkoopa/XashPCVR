@@ -363,7 +363,7 @@ static CVAR_DEFINE_AUTO( vr_aim_yaw_offset,   "0",  FCVAR_ARCHIVE, "aim yaw corr
 static CVAR_DEFINE_AUTO( vr_haptics, "1", FCVAR_ARCHIVE, "haptic feedback strength, 0 = off" );
 
 // Off-hand flashlight: 0 = stock head-mounted, 1 = off hand, 2 = weapon hand.
-static CVAR_DEFINE_AUTO( vr_flashlight_hand, "1", FCVAR_ARCHIVE, "flashlight mount: 0 head, 1 off hand, 2 weapon hand" );
+static CVAR_DEFINE_AUTO( vr_flashlight_hand, "0", FCVAR_ARCHIVE, "flashlight mount: 0 head, 1 off hand, 2 weapon hand" );
 
 static CVAR_DEFINE_AUTO( vr_hand_pivot_fwd,  "-5.139", FCVAR_ARCHIVE, "hand mesh pivot point, model-space X (forward), HL units" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_left, "-1.059", FCVAR_ARCHIVE, "hand mesh pivot point, model-space Y (left), HL units" );
