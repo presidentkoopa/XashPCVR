@@ -71,11 +71,11 @@ The VR work was built to survive multiplayer rather than assume single player, s
   listen server remote players are untouched by it.
 * **A dedicated-server build contains no VR code at all** — it is all behind `#if !XASH_DEDICATED`.
 
-Two honest limits:
+One honest limit — and one that used to be listed here and no longer is:
 
-**Hosting and joining both work.** This was previously listed as a hard limit, on the grounds
-that `usercmd_t`'s four `reserved` fields were already spent and carrying pose would be a
-protocol break. That was wrong — see **VR-to-VR crossplay** below.
+**Hosting and joining both work.** This was previously a hard limit, on the grounds that
+`usercmd_t`'s four `reserved` fields were already spent and carrying pose would be a protocol
+break. That was wrong — see **VR-to-VR crossplay** below.
 
 **Co-op content is the real blocker, not the engine.** Vanilla Half-Life has no co-op and Sven
 Co-op ships its own engine. The promising route needs no game DLL at all: the engine forces
