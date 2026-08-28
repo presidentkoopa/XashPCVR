@@ -5801,19 +5801,32 @@ static void VR_SyncInput( void )
 		// The mod closes the select itself once fire confirms, so put the
 		// player's own fast-switch setting back rather than leaving it off for
 		// the rest of the session.
-		// Closed on the trigger RELEASE, not the press.
+		// CONFIRMING A WEAPON NEEDS THE CLIENT DLL'S OWN BUTTON STATE, NOT OURS.
 		//
-		// CL_CreateCmd and this sync are not ordered against each other within a
-		// frame. Clearing the flag on the press would let the command builder run
-		// afterwards, see the select already closed, and send the confirm as
-		// SECONDARY fire - the grip is still held - so the weapon would never be
-		// taken. Waiting for the release guarantees the flag is still set for
-		// every frame the trigger is down, whichever way round they run.
-		if( vr.select_open && !vr.btn[VRA_ATTACK] && vr.btn_prev[VRA_ATTACK] )
+		// ammo.cpp takes a weapon when gHUD.m_iKeyBits & IN_ATTACK, and
+		// hud_update.cpp fills m_iKeyBits from CL_ButtonBits() - the client
+		// DLL's own accumulator, driven by the "+attack" COMMAND. Setting
+		// cmd->buttons never touches it, which is why firing at an open select
+		// did nothing however the bit was routed.
+		//
+		// So issue the command. This is also what stops the gun going off:
+		// ammo.cpp clears the bit on confirm and CL_ResetButtonBits pushes that
+		// back into the client's input state, which is exactly how a desktop
+		// player confirms with attack without firing.
+		if( vr.select_open )
 		{
-			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
-			vr.select_open = false;
-			VR_DiagPrintf( "SELTAKE (fire confirmed)\n" );
+			if( vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
+			{
+				Cbuf_AddText( "+attack\n" );
+				VR_DiagPrintf( "SELTAKE +attack issued\n" );
+			}
+			else if( !vr.btn[VRA_ATTACK] && vr.btn_prev[VRA_ATTACK] )
+			{
+				Cbuf_AddText( "-attack\n" );
+				Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+				vr.select_open = false;
+				VR_DiagPrintf( "SELTAKE closed\n" );
+			}
 		}
 	
 		cyc_prev = cyc;

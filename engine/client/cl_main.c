@@ -993,14 +993,17 @@ static void CL_CreateCmd( void )
 		// free while doubling every other control on the hand.
 		if( VR_GetButton( VR_BTN_ATTACK ))
 		{
-			// While the select is open FIRE MEANS TAKE, whatever the grip is
-			// doing. The grip is necessarily held at that moment - it is what
-			// walks the highlight - so without this exception the confirm
-			// arrives as secondary fire and the weapon is never taken.
-			if( VR_GetButton( VR_BTN_ATTACK2 ) && !VR_SelectOpen( ))
-				cmd->buttons |= IN_ATTACK2;
-			else
-				cmd->buttons |= IN_ATTACK;
+			// Nothing while the select is open. The confirm goes through the
+			// client DLL's "+attack" command instead (see VR_SyncInput), because
+			// that is the only thing ammo.cpp actually watches - and routing the
+			// usercmd bit as well would fire the weapon it just drew.
+			if( !VR_SelectOpen( ))
+			{
+				if( VR_GetButton( VR_BTN_ATTACK2 ))
+					cmd->buttons |= IN_ATTACK2;
+				else
+					cmd->buttons |= IN_ATTACK;
+			}
 		}
 		// Off-hand trigger is USE normally, and the second gun's trigger while
 		// dual wielding. Sharing the input rather than claiming a new binding
