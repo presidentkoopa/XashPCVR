@@ -78,6 +78,7 @@ static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc 
 static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
+static CVAR_DEFINE_AUTO( vr_shoulder_light, "1", FCVAR_ARCHIVE, "reach beside your head with the off hand to toggle the flashlight" );
 static CVAR_DEFINE_AUTO( vr_shoulder_melee, "1", FCVAR_ARCHIVE, "reach beside your head to swap to the melee weapon and back" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
@@ -588,6 +589,7 @@ static struct
 	float         turn_x, turn_y;   // -1..1 turn stick
 	qboolean      select_open;       // weapon select HUD up (grip + stick click)
 	qboolean      sh_inside;        // dominant hand is in the shoulder hotspot
+	qboolean      sh_light_inside;  // off hand is in the flashlight hotspot
 	qboolean      sh_swapped;       // we swapped to melee from the hotspot
 	int           sh_restore_id;    // weapon m_iId to walk back to
 	int           sh_restore_tries; // attempts left before giving up
@@ -4723,6 +4725,41 @@ void VR_Begin2D( void )
 
 /*
 ================
+VR_HandInHeadSpot
+
+Is `hand` inside a hotspot hung off the head, `side` units out along the
+head's right vector?
+
+Head-relative rather than world-fixed so the spot travels with the player and
+stays reachable whichever way they face. Offset BEHIND the head as well: in
+front of the face is where a weapon is actually held, and a hotspot there
+would fire constantly.
+
+Shared by both shoulder gestures so they cannot drift apart - the same reason
+the fire ray is computed once and cached.
+================
+*/
+static qboolean VR_HandInHeadSpot( int hand_id, float side )
+{
+	vec3_t hand, hang, fwd, right, up, spot, d;
+
+	if( !VR_GetHandWorld( hand_id, hand, hang ))
+		return false;
+
+	AngleVectors( vr.hmd_pose.angles, fwd, right, up );
+
+	VectorCopy( vr.world_origin, spot );
+	spot[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + vr_height.value;
+	VectorMA( spot, side, right, spot );
+	VectorMA( spot, -vr_shoulder_back.value, fwd, spot );
+	spot[2] += vr_shoulder_up.value;
+
+	VectorSubtract( hand, spot, d );
+	return ( VectorLength( d ) < Q_max( 1.0f, vr_shoulder_radius.value ));
+}
+
+/*
+================
 VR_UpdateShoulderMelee
 
 Reach beside your head to swap to the melee weapon, reach again to swap back.
@@ -4747,11 +4784,31 @@ against a stale value and run to its limit every time.
 */
 static void VR_UpdateShoulderMelee( void )
 {
-	vec3_t hand, hang, fwd, right, up, spot, d;
-	float side;
 	qboolean inside;
 
-	if( !VR_IsActive() || vr_shoulder_melee.value == 0.0f )
+	if( !VR_IsActive( ))
+		return;
+
+	// --- flashlight, off-hand side ---
+	//
+	// Mirrored deliberately: weapon on the dominant side, light on the off
+	// side. Two gestures that cannot be confused with each other, and each
+	// belongs to the hand that would naturally reach it.
+	if( vr_shoulder_light.value != 0.0f )
+	{
+		float lside = ( VR_OffHand() == 0 ) ? -vr_shoulder_side.value : vr_shoulder_side.value;
+		qboolean lin = VR_HandInHeadSpot( VR_OffHand(), lside );
+
+		if( lin && !vr.sh_light_inside )
+		{
+			Cbuf_AddText( "impulse 100\n" );
+			VR_Haptic( VR_OffHand(), 0.05f, 0.0f, 0.7f );
+		}
+		vr.sh_light_inside = lin;
+	}
+
+	// --- melee swap, dominant side ---
+	if( vr_shoulder_melee.value == 0.0f )
 		return;
 
 	// Walk back toward the remembered weapon, one step per frame.
@@ -4767,32 +4824,17 @@ static void VR_UpdateShoulderMelee( void )
 			Cbuf_AddText( "hud_fastswitch 1; invnext\n" );
 			vr.sh_restore_tries--;
 			if( vr.sh_restore_tries == 0 )
-				vr.sh_swapped = false;	// gave up; do not strand the gesture
+				vr.sh_swapped = false;
 		}
 	}
 
-	if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
-		return;
-
-	// Hotspot hangs off the HEAD, so it travels with the player and stays
-	// reachable however they are facing. Placed out to the dominant side and
-	// slightly behind: in front of the face is where a weapon is actually
-	// held, and a hotspot there would fire constantly.
-	AngleVectors( vr.hmd_pose.angles, fwd, right, up );
-	side = ( VR_DominantHand() == 0 ) ? -vr_shoulder_side.value : vr_shoulder_side.value;
-
-	VectorCopy( vr.world_origin, spot );
-	spot[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + vr_height.value;
-	VectorMA( spot, side, right, spot );
-	VectorMA( spot, -vr_shoulder_back.value, fwd, spot );
-	spot[2] += vr_shoulder_up.value;
-
-	VectorSubtract( hand, spot, d );
-	inside = ( VectorLength( d ) < Q_max( 1.0f, vr_shoulder_radius.value ));
+	{
+		float mside = ( VR_DominantHand() == 0 ) ? -vr_shoulder_side.value : vr_shoulder_side.value;
+		inside = VR_HandInHeadSpot( VR_DominantHand(), mside );
+	}
 
 	// Edge only: entering swaps, and the hand must leave before it can swap
-	// again. Without that, resting a hand near the head would toggle every
-	// frame.
+	// again. Without that, resting a hand near the head toggles every frame.
 	if( inside && !vr.sh_inside )
 	{
 		if( !vr.sh_swapped )
@@ -4804,8 +4846,6 @@ static void VR_UpdateShoulderMelee( void )
 		}
 		else
 		{
-			// Bounded by what can be carried, so a weapon dropped while
-			// swapped cannot spin this forever.
 			vr.sh_restore_tries = 12;
 		}
 
@@ -5029,6 +5069,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
 	Cvar_RegisterVariable( &vr_hud_parallax );
+	Cvar_RegisterVariable( &vr_shoulder_light );
 	Cvar_RegisterVariable( &vr_shoulder_melee );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
 	Cvar_RegisterVariable( &vr_shoulder_side );
