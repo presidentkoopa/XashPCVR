@@ -5815,7 +5815,12 @@ static void VR_SyncInput( void )
 		// player confirms with attack without firing.
 		if( vr.select_open )
 		{
-			if( vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
+			// Either trigger press takes the weapon. VRA_ATTACK covers fire and
+			// grip+trigger alike, since alt-fire is the same physical trigger;
+			// VRA_ATTACK2 is added on its own EDGE so a grip that is merely being
+			// held to cycle cannot confirm, but a deliberate squeeze can.
+			if(( vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
+				|| ( vr.btn[VRA_ATTACK2] && !vr.btn_prev[VRA_ATTACK2] ))
 			{
 				Cbuf_AddText( "+attack\n" );
 				VR_DiagPrintf( "SELTAKE +attack issued\n" );
