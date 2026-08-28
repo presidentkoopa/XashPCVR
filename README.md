@@ -73,28 +73,54 @@ The VR work was built to survive multiplayer rather than assume single player, s
 
 Two honest limits:
 
-**Hosting works; joining does not.** The server-side substitutions only apply to the local
-player, so a VR player who joins someone else's server reverts to firing from the eye. Fixing
-that means sending controller pose in `usercmd_t`, whose four `reserved` fields are already
-spent — so it is a protocol break that would lock out unmodified clients, not a feature.
+**Hosting and joining both work.** This was previously listed as a hard limit, on the grounds
+that `usercmd_t`'s four `reserved` fields were already spent and carrying pose would be a
+protocol break. That was wrong — see **VR-to-VR crossplay** below.
 
 **Co-op content is the real blocker, not the engine.** Vanilla Half-Life has no co-op and Sven
 Co-op ships its own engine. The promising route needs no game DLL at all: the engine forces
 `deathmatch 0` when `coop` is set, which selects *singleplayer* game rules with several clients —
-and singleplayer rules always spawn monsters. Savegames and cross-level entity carry-over are
-disabled whenever `maxclients > 1`, so a co-op campaign has neither.
+and singleplayer rules always spawn monsters.
+
+Two engine limits apply regardless, and they are worse than previously recorded here. Saving is
+blocked **outright** whenever `maxclients != 1` (`sv_save.c` refuses with "Can't save multiplayer
+games") — not merely the load path — and cross-level entity carry-over is disabled when
+`maxclients > 1`. A co-op campaign would therefore be one unbroken sitting with inventory lost at
+every level boundary. Neither is VR work; both are engine surgery.
 
 Detail in [`PCVR_LOG.md`](PCVR_LOG.md) → **FINDING 018**.
 
 ## VR-to-VR crossplay
 
-Planned, not built. The substitutions that make weapons fire from the controller are scoped to
-the **local** player (`NET_IsLocalAddress`), so today only the VR player hosting a listen server
-gets VR-correct behaviour — anyone who joins, VR or not, reverts to eye-origin aim.
+**Built.** A joining VR player's shots leave their own muzzle, and it cost no protocol break.
 
-Making a joining VR player's shots leave their own controller means the server needs their
-controller pose, and `usercmd_t` has no room left for it — its four `reserved` fields are already
-spent (see Online and co-op above). So this is a protocol change, gated behind a version bump so
-vanilla and older PCVR clients still connect to an unmodified server: the substitution moves from
-`sv_pmove.c`'s local-only branch to reading pose out of the usercmd for any client that negotiates
-the extension, host or joiner alike.
+The earlier plan assumed one was unavoidable, because `usercmd_t`'s four `reserved` fields looked
+spent. They are not. `net_encode.c` binds them to `impact_index` / `impact_position`, and that
+binding is the *entire* set of references in the tree — nothing reads them, nothing writes them,
+nothing validates them. They are a name-to-offset mapping so the delta parser can match GoldSrc's
+`delta.lst` vocabulary, and no more.
+
+Better still, `impact_position` is already exactly the carrier this needs. `delta.lst` declares it
+`DT_SIGNED | DT_FLOAT`, 16 bits, divisor 8 — **±4095.875 units at 0.125-unit (3.2 mm) resolution**,
+precisely the GoldSrc map extent, transmitted every frame and always containing zero. Direction
+needed nothing at all: `cmd->viewangles` already carries the weapon angles.
+
+So the change is additive. `usercmd_t` does not change size, its `STATIC_CHECK_SIZEOF` is untouched,
+the delta table is untouched, `PROTOCOL_VERSION` stays 49, and `sv_client.c`'s version check never
+fires. Capability is negotiated through the **existing** `ext` handshake, which already has
+intersection semantics — the server acknowledges only bits it understands and echoes the result —
+so every direction degrades on its own:
+
+| | |
+|---|---|
+| VR client → vanilla server | server ands `NET_EXT_VRPOSE` away; client falls back to eye-origin |
+| vanilla client → VR server | never sets the bit; server never reads a pose |
+| old PCVR client → new PCVR server | same mechanism, one bit per capability revision |
+
+Guarded against mods that genuinely use those "reserved for modders" fields: a six-bit sentinel
+accompanies the pose, and the client yields entirely (warning once) if the mod's own `CL_CreateMove`
+already wrote them — the mod's data wins.
+
+One consequence worth calling out: the read side needs no VR code at all — three floats and a
+`VectorSubtract` — so it sits outside `#if !XASH_DEDICATED`. **A dedicated server can host
+VR-correct players with no OpenXR, no headset, and no client VR layer compiled in.**

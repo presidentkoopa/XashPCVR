@@ -582,14 +582,18 @@ gated on `NET_IsLocalAddress` (`sv_pmove.c:977`, `:1074`) and wrapped in
 the server to act on controller data: shots leave the eye instead of the muzzle,
 touch-to-use stops working, and dual wield goes inert.
 
-**Sending controller pose to a remote server is a protocol break.** `usercmd_t`
-has `int32_t reserved[4]` (`common/q_client.h:51`) but all four are already spent
-on FWGS's `impact_index`/`impact_position` (`engine/common/net_encode.c:69-72`).
-Adding pose fields changes `STATIC_CHECK_SIZEOF(usercmd_t, 52, 52)`
-(`q_client.h:55`), the delta table and the read/write pair
-(`net_encode.c:1532, 1555`) — and mismatched clients are then rejected at
-`sv_client.c:338`. Note this would *not* break mod-agnosticism (the substitution
-never touches a game DLL), only vanilla-client compatibility.
+**~~Sending controller pose to a remote server is a protocol break.~~ — WRONG,
+CORRECTED BY FINDING 020.** This paragraph originally read: *"`usercmd_t` has
+`int32_t reserved[4]` but all four are already spent on FWGS's
+`impact_index`/`impact_position`. Adding pose fields changes
+`STATIC_CHECK_SIZEOF(usercmd_t, 52, 52)`, the delta table and the read/write
+pair — and mismatched clients are then rejected at `sv_client.c:338`."*
+
+The four fields are **named, not spent**. The binding at
+`engine/common/net_encode.c:69-72` is the entire set of references to
+`usercmd_t.reserved[]` in the whole tree — nothing reads them, nothing writes
+them, nothing validates them. Crossplay needed no protocol break at all, and
+this claim steered the roadmap wrong for as long as it stood. See FINDING 020.
 
 **There is no maintained co-op mod we can run.** Sven Co-op is out for a stated
 reason — "Uses custom GoldSrc engine"
@@ -659,3 +663,105 @@ what does not exist is evidence that a full campaign survives them. The audit
 above is a fair warning on that point: it found thirteen real defects, most of
 them shipped the same day, several of which only appear after a level change or a
 weapon swap — exactly the conditions a single-map test never reaches.
+
+---
+
+## FINDING 020 — Audit against both reference ports, and what it turned up
+
+The fork was inventoried feature-by-feature against Lambda1VR and HLVR, then
+every claimed gap was put back to the source and an attempt made to *refute* it
+rather than confirm it. Several claims died that way, which is the point. What
+survived is below, with what was done about it.
+
+### The comparison, in one line each
+
+**Lambda1VR** — Xash3D-FWGS like us, but Quest-only and per-mod: four forked
+HLSDK submodules. Genuinely good ideas we lacked: physical scope engage,
+throw-velocity-from-hand-motion, reach-behind gestures, usable-object
+highlighting.
+
+**HLVR** — real GoldSrc, OpenVR, one forked SDK, one mod. Much deeper
+interaction (ReactPhysics3D grab/drag, valves, ledges, trains, NPC touch
+commands) and a 119-setting config app. Two things worth knowing: it has **no**
+two-handed grip (still an open issue upstream), and its **haptics never fire** —
+every `TriggerHapticVibrationAction` call is commented out. We are ahead on
+both.
+
+Neither has: mod-agnostic operation, model-metadata weapon classification,
+multi-view stereo (mod monitors/mirrors keep working), a ballistic grenade arc,
+or a 64-bit build.
+
+### Defects found, all now fixed
+
+1. **The play space did not follow the body.** `VR_SetWorldReference` advanced
+   the sync point by the body's full delta while `VR_PlayToWorld` rotated it
+   back by the exact inverse, so the terms cancelled identically and the eye and
+   both hands were *mathematically invariant* to body motion. Not a train bug —
+   stick locomotion, conveyors, `basevelocity` and NPC pushes were all silently
+   subtracted out. `vr_diag.log` had been recording the evidence the whole time:
+   `lean` climbing 174 → 740 units over twenty seconds. Now only the share of
+   motion room-scale actually commanded closes the loop.
+
+2. **Nothing stopped a muzzle inside geometry.** The exploit half (shooting
+   through cover) mattered less than the involuntary half: with the muzzle in
+   solid, the mod's own trace returns `startsolid` and the shot dies silently.
+   Bracing a rifle on cover made bullets stop existing. Origin is now clamped to
+   the last clear point.
+
+3. **Trains could not be driven.** `PlayerUse` reads
+   `m_afButtonPressed & IN_FORWARD|IN_BACK` and never looks at `forwardmove`.
+   The VR path wrote only axes, so mounting the tram controls worked and
+   accelerating did not — "On A Rail" was impassable.
+
+4. **Stock auto-aim was on and fighting us**, deflecting `pev->v_angle` — which
+   in VR *is* the tracked weapon direction — by up to 25°, and desyncing the
+   bullet from the laser. `sv_aim`/`sv_allow_autoaim` are engine-owned cvars the
+   game DLL merely reads, so bracketing them needs no DLL cooperation. This is
+   the cleanest instance of the fork's core rule we have found.
+
+5. **Mounted guns aimed 45° high.** `CFuncTank::StartControl` nulls the
+   viewmodel, so the no-attachment fallback applied a mesh correction with no
+   mesh present. Tank *aiming* otherwise already worked for free — `func_tank`
+   mirrors `pev->v_angle`, which we already write.
+
+6. **Audio was spatialised from the mod's flat camera**, which does not turn
+   with the head, move with room-scale, or drop on a crouch.
+
+7. **Weapon classification was inverted on real content.** `melee = !fires` with
+   `fires` keyed partly on `numattachments > 0` — which carries no melee
+   information on Valve-derived models. A four-attachment VR crowbar read as a
+   gun, so **swing-to-hit was silently off on the crowbar**; retail `v_satchel`
+   and `v_tripmine` read as melee, so waving an arm planted tripmines. Melee is
+   now positively identified and defaults off, because the failure modes are not
+   symmetric.
+
+8. **The muzzle path never ran on retail content.** `VR_ModelHasBore` needs two
+   attachments; every retail HL/Op4/BS gun ships exactly one. It only ever
+   appeared to work because VR-authored models carrying four were installed over
+   the top — see the warning below. A single attachment now supplies the origin.
+
+### Also added
+
+Teleport locomotion (`vr_teleport`, off by default, built as a mode on the
+existing stick so no interaction profile changed); HUD stereo depth
+(`vr_hud_parallax` — the HUD had been sitting at infinity and doubling);
+eye-to-hand reachability gating for touch-use; and **VR-to-VR crossplay**
+(`NET_EXT_VRPOSE`), which corrected FINDING 018 above.
+
+### The warning that matters most
+
+`E:\XashVR\valve\models\` contains **byte-identical copies of HLVR's own
+VR-authored model set** — `v_crowbar.mdl` md5-matches theirs exactly. They sit
+ahead of `-rodir` in the search path, so they load in preference to retail
+content *and leak into every mod that falls back to `valve`*.
+
+Every in-headset result this project has ever produced was measured on another
+project's prepared assets. That is what hid defects 7 and 8 for so long, and it
+means mod-compatibility claims are unproven in a way FINDING 019's "80%" does
+not capture — that figure was scoped to Half-Life, and Half-Life was being
+played with someone else's models.
+
+**Nothing should be concluded about mod compatibility until those models are
+removed and the retail set is what actually loads.** The classifier fix was
+verified by parsing both sets and confirming identical verdicts, which is the
+right bar for the rest of it too.
