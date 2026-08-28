@@ -5737,8 +5737,25 @@ static void VR_SyncInput( void )
 		if( grip )
 		{
 			// Edge-triggered, so one flick is one weapon rather than a burst.
+			//
+			// The fast-switch state is carried IN the command string rather than
+			// set around it, because Cbuf_AddText only queues - a cvar set and
+			// restored either side would both have happened before the queued
+			// command ever ran.
+			//
+			// With the select CLOSED this must switch weapons outright and not
+			// summon the menu, so fast-switch is forced on for the command. With
+			// it OPEN the same command walks the highlight instead, which is what
+			// invnext already does in that state.
 			if( cyc && !cyc_prev )
-				Cbuf_AddText( vr.turn_x > 0.0f ? "invnext\n" : "invprev\n" );
+			{
+				const char *dir = ( vr.turn_x > 0.0f ) ? "invnext" : "invprev";
+				
+				if( vr.select_open )
+					Cbuf_AddText( va( "%s\n", dir ));
+				else
+					Cbuf_AddText( va( "hud_fastswitch 1; %s\n", dir ));
+			}
 	
 			if( click && !click_prev )
 			{
@@ -5764,7 +5781,15 @@ static void VR_SyncInput( void )
 		// The mod closes the select itself once fire confirms, so put the
 		// player's own fast-switch setting back rather than leaving it off for
 		// the rest of the session.
-		if( vr.select_open && vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
+		// Closed on the trigger RELEASE, not the press.
+		//
+		// CL_CreateCmd and this sync are not ordered against each other within a
+		// frame. Clearing the flag on the press would let the command builder run
+		// afterwards, see the select already closed, and send the confirm as
+		// SECONDARY fire - the grip is still held - so the weapon would never be
+		// taken. Waiting for the release guarantees the flag is still set for
+		// every frame the trigger is down, whichever way round they run.
+		if( vr.select_open && !vr.btn[VRA_ATTACK] && vr.btn_prev[VRA_ATTACK] )
 		{
 			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
 			vr.select_open = false;

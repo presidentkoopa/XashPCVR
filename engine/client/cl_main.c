@@ -993,7 +993,11 @@ static void CL_CreateCmd( void )
 		// free while doubling every other control on the hand.
 		if( VR_GetButton( VR_BTN_ATTACK ))
 		{
-			if( VR_GetButton( VR_BTN_ATTACK2 ))
+			// While the select is open FIRE MEANS TAKE, whatever the grip is
+			// doing. The grip is necessarily held at that moment - it is what
+			// walks the highlight - so without this exception the confirm
+			// arrives as secondary fire and the weapon is never taken.
+			if( VR_GetButton( VR_BTN_ATTACK2 ) && !VR_SelectOpen( ))
 				cmd->buttons |= IN_ATTACK2;
 			else
 				cmd->buttons |= IN_ATTACK;
