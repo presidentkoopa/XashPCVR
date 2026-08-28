@@ -67,6 +67,7 @@ static CVAR_DEFINE_AUTO( vr_snap_turn, "1", FCVAR_ARCHIVE, "1 = snap turning, 0 
 static CVAR_DEFINE_AUTO( vr_snap_angle, "30", FCVAR_ARCHIVE, "snap turn step in degrees" );
 static CVAR_DEFINE_AUTO( vr_deadzone, "0.2", FCVAR_ARCHIVE, "thumbstick deadzone (0-1)" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
+static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
 CVAR_DEFINE_AUTO( vr_hands, "1", FCVAR_ARCHIVE, "pin the viewmodel to the right controller" );
 CVAR_DEFINE_AUTO( vr_hud, "1", FCVAR_ARCHIVE, "draw the 2D HUD/menu inside the headset" );
 
@@ -294,6 +295,7 @@ static CVAR_DEFINE_AUTO( vr_grip_snap, "1", FCVAR_ARCHIVE, "post the supporting 
 static CVAR_DEFINE_AUTO( vr_touch_hold, "0.3", FCVAR_ARCHIVE, "seconds contact is held after the hand stops touching" );
 static CVAR_DEFINE_AUTO( vr_touch_backoff, "24", FCVAR_ARCHIVE, "units behind the hand the use ray starts, so large objects still register" );
 static CVAR_DEFINE_AUTO( vr_touch_reach, "3", FCVAR_ARCHIVE, "how far past your hand counts as touching, units" );
+static CVAR_DEFINE_AUTO( vr_touch_los, "1", FCVAR_ARCHIVE, "require a clear line from eye to hand before the hand can use anything" );
 static CVAR_DEFINE_AUTO( vr_touch_use, "1", FCVAR_ARCHIVE, "press buttons and levers with your hand instead of the crosshair" );
 static CVAR_DEFINE_AUTO( vr_step_smooth, "12", FCVAR_ARCHIVE, "ease the view up steps instead of snapping (0 = off)" );
 static CVAR_DEFINE_AUTO( vr_roomscale, "1", FCVAR_ARCHIVE, "walking in your room walks in the game" );
@@ -488,6 +490,10 @@ static struct
 	qboolean      frame_started;  // between xrBeginFrame and xrEndFrame
 	qboolean      eyes_submitted; // at least one eye was rendered this frame
 	int           eyes_this_frame; // how many eyes actually filled proj_views[]
+	int           cur_eye;         // eye currently being rendered, for the 2D
+	                               // pass - VR_Begin2D composites per eye and
+	                               // needs to know which one to bias the HUD's
+	                               // stereo disparity toward
 	qboolean      menu_frame;     // this frame is the menu-only path (no world)
 	double        next_system_retry;
 	int           frames_submitted;
@@ -3016,6 +3022,49 @@ void VR_DiagModelAngles( const vec3_t raw, const vec3_t after_cal, const vec3_t 
 		cl.local.health );
 }
 
+/*
+================
+VR_HandReachable
+
+Is there a clear line from the player's own eye to this hand?
+
+Room-scale lets a hand go where the body cannot follow - most often by being
+rested on cover, which puts it through a thin wall. Stock PlayerUse() cannot
+notice: it is a sphere search plus an un-normalised dot test with no trace in
+it at all. Our substitution then moves its origin onto the hand, which promotes
+whatever is on the far side from "unreachable" to "nearest candidate".
+
+The problem this actually causes is not cheating, it is unintended activation.
+Contact alone raises IN_USE and holds it for vr_touch_hold afterwards, so
+leaning a hand on a wall can press a button on the other side that the player
+never reached for and cannot see.
+
+World brushes only. A func_button, func_door or func_breakable must never block
+itself, and keeping brush entities non-blocking preserves the existing
+reach-extender behaviour for things behind glass.
+================
+*/
+static qboolean VR_HandReachable( const vec3_t hand )
+{
+	cl_entity_t *player = CL_GetLocalPlayer();
+	vec3_t eye, target;
+	pmtrace_t tr;
+
+	if( vr_touch_los.value == 0.0f )
+		return true;
+
+	// No body to measure from yet - do not start refusing interactions.
+	if( !player )
+		return true;
+
+	VectorAdd( player->origin, cl.viewheight, eye );
+	VectorCopy( hand, target );
+
+	tr = CL_TraceLine( eye, target, PM_STUDIO_IGNORE );
+
+	return ( tr.fraction >= 1.0f || tr.ent != 0 ) ? true : false;
+}
+
 qboolean VR_GetTouchContact( void )
 {
 	vec3_t org, ang, fwd, start, end;
@@ -3030,6 +3079,12 @@ qboolean VR_GetTouchContact( void )
 	}
 
 	if( !VR_GetHandWorld( VR_OffHand(), org, ang ))
+	{
+		was_touching = false;
+		return false;
+	}
+
+	if( !VR_HandReachable( org ))
 	{
 		was_touching = false;
 		return false;
@@ -3088,6 +3143,13 @@ qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang )
 		return false;
 
 	if( !VR_GetHandWorld( VR_OffHand(), out_org, ang ))
+		return false;
+
+	// Same reachability rule as the contact probe. Refusing here leaves
+	// sv_pmove.c's PreThink substitution unarmed, so the mod's ordinary
+	// crosshair-based use runs instead of the hand-sourced one - a graceful
+	// degradation rather than the interaction silently doing nothing.
+	if( !VR_HandReachable( out_org ))
 		return false;
 
 	// Rest-pose correction, so "forward" is where the hand actually points
@@ -4204,6 +4266,30 @@ void VR_Begin2D( void )
 	x = ( ew - w ) / 2;
 	y = ( eh - h ) / 2;
 
+	// STEREO DEPTH. Shift the rect horizontally, in opposite directions per eye.
+	//
+	// Compositing the identical rect into both eyes gives zero disparity, and
+	// zero disparity is what "infinitely far away" looks like - while the world
+	// behind it sits a couple of metres off. The eyes cannot converge on both
+	// at once, so the HUD splits into two overlapping copies and the player
+	// fights it for the whole session. It reads as eye strain rather than as a
+	// bug, which is why it survives being looked at.
+	//
+	// Shifting the LEFT eye's copy right and the RIGHT eye's left is crossed
+	// disparity, which pulls the HUD in front of infinity to roughly
+	//     D ~= IPD / ( parallax * horizontal FOV )
+	// - about two metres at the default, a comfortable reading distance and
+	// close to where the weapon already is, so the eyes barely re-converge
+	// when glancing between them. vr_hud_parallax 0 restores the old
+	// at-infinity behaviour for anyone who prefers it.
+	{
+		float p = bound( 0.0f, vr_hud_parallax.value, 0.1f );
+		int shift = (int)(( ew * p ) * 0.5f );
+
+		if( vr.cur_eye == 0 )      x += shift;
+		else if( vr.cur_eye == 1 ) x -= shift;
+	}
+
 	vrgl.Viewport( x, y, w, h );
 }
 
@@ -4309,6 +4395,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_snap_angle );
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
+	Cvar_RegisterVariable( &vr_hud_parallax );
 	Cvar_RegisterVariable( &vr_mirror );
 	Cvar_RegisterVariable( &vr_hand_pitch_offset );
 	Cvar_RegisterVariable( &vr_hand_yaw_offset );
@@ -4345,6 +4432,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_weapon_origin );
 	Cvar_RegisterVariable( &vr_touch_use );
 	Cvar_RegisterVariable( &vr_touch_reach );
+	Cvar_RegisterVariable( &vr_touch_los );
 	Cvar_RegisterVariable( &vr_touch_backoff );
 	Cvar_RegisterVariable( &vr_touch_hold );
 	Cvar_RegisterVariable( &vr_grip_snap );
@@ -5394,6 +5482,9 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 
 	if( !VR_IsActive() || eye < 0 || eye >= vr.eye_count )
 		return false;
+
+	// Which eye the 2D pass is about to composite into - see VR_Begin2D.
+	vr.cur_eye = eye;
 
 	sc = &vr.swapchains[eye];
 
