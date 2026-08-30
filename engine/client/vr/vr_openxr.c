@@ -231,8 +231,8 @@ static CVAR_DEFINE_AUTO( vr_weapon_roll_offset,  "0",   FCVAR_ARCHIVE, "weapon v
 static CVAR_DEFINE_AUTO( vr_twohand,        "1",  FCVAR_ARCHIVE, "two-handed weapon stabilisation (aim along the hand-to-hand vector)" );
 static CVAR_DEFINE_AUTO( vr_twohand_min,    "5",  FCVAR_ARCHIVE, "two-hand: min hand separation to engage, HL units" );
 static CVAR_DEFINE_AUTO( vr_twohand_max,    "30", FCVAR_ARCHIVE, "two-hand: max hand separation to stay engaged, HL units" );
-static CVAR_DEFINE_AUTO( vr_twohand_radius, "1.7",  FCVAR_ARCHIVE, "two-hand: how close the off hand must come to the barrel line, HL units" );
-static CVAR_DEFINE_AUTO( vr_twohand_barrel, "22", FCVAR_ARCHIVE, "two-hand: barrel length used for the grip test, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_radius, "5",  FCVAR_ARCHIVE, "two-hand: how close the off hand must come to the barrel line, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_barrel, "22", FCVAR_ARCHIVE, "two-hand: FALLBACK barrel length, used only when the model has no attachment - otherwise the real grip-to-muzzle distance wins" );
 static CVAR_DEFINE_AUTO( vr_twohand_smooth, "0.12", FCVAR_ARCHIVE, "two-hand: engage/release blend time, seconds (0 = instant)" );
 
 // ---------------------------------------------------------------------
@@ -1896,7 +1896,19 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 			VectorCopy( axis, vr_grip_axis );
 			vr_grip_valid = true;
 
-			if( latched || VectorLength( gap ) <= vr_twohand_radius.value )
+			// HYSTERESIS ON THE DISTANCE, not a bypass of it.
+			//
+			// This was  latched || gap <= radius  - so the instant it engaged the
+			// geometry test stopped being applied at all, and the only thing still
+			// holding the grip was hand separation, which permits 91cm once the
+			// 1.5x latch margin is counted. The off hand could wander clean across
+			// the body and stay gripped, with the DRAWN hand slammed onto the
+			// barrel throughout - reported as the grab volume being a sphere
+			// rather than something that follows the shape of the weapon.
+			//
+			// Widening the radius while latched stops the release chattering at the
+			// boundary, without ever abandoning the capsule the test is built on.
+			if( VectorLength( gap ) <= vr_twohand_radius.value * ( latched ? 1.6f : 1.0f ))
 				target = 1.0f;
 		}
 	}
