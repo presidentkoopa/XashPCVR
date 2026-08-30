@@ -601,6 +601,7 @@ static struct
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
 	double        sh_step_time;     // when that step was issued
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
+	char          sh_restore_name[32]; // weapon to jump straight back to
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
@@ -3329,6 +3330,77 @@ Output is in the usercmd's own frame, so it needs the yaw that cmd will carry.
 ================
 */
 /*
+=================================================================
+	Weapon identity, learned from the mod's own messages
+
+Half-Life switches weapons BY NAME: the weapon select confirm calls
+ServerCmd( gpActiveSel->szName ). So one command switches instantly, and the
+only question is what the weapon is called.
+
+The mod tells us, without being asked. Every GoldSrc mod announces its
+weapons in a WeaponList user message carrying name, slot, position and id,
+and reports the held one in CurWeapon. The engine already intercepts user
+messages by name (ScreenShake, ScreenFade in cl_parse.c), so observing two
+more costs nothing and the mod still receives them untouched.
+
+That is what makes this mod-agnostic: no weapon table is written here, it is
+read from whatever the mod happens to ship.
+=================================================================
+*/
+#define VR_MAX_WEAPON_IDS 64
+
+static struct
+{
+	char names[VR_MAX_WEAPON_IDS][32];
+	int  cur_id;
+} vr_wlist;
+
+void VR_ObserveUserMessage( const char *name, int size, const void *buf )
+{
+	const byte *p = (const byte *)buf;
+
+	if( !name || !p || size <= 0 )
+		return;
+
+	if( !Q_strcmp( name, "CurWeapon" ) && size >= 2 )
+	{
+		// state, id, clip - a negative id means "nothing held".
+		signed char id = (signed char)p[1];
+
+		if( id >= 0 && id < VR_MAX_WEAPON_IDS )
+			vr_wlist.cur_id = id;
+		return;
+	}
+
+	if( !Q_strcmp( name, "WeaponList" ))
+	{
+		// null-terminated name, then ammo1/max1/ammo2/max2/slot/pos/id/flags
+		int len = 0;
+
+		while( len < size && p[len] )
+			len++;
+
+		if( len > 0 && len + 8 < size )
+		{
+			int id = p[len + 7];
+
+			if( id >= 0 && id < VR_MAX_WEAPON_IDS )
+				Q_strncpy( vr_wlist.names[id], (const char *)p, sizeof( vr_wlist.names[id] ));
+		}
+	}
+}
+
+// Name of the weapon currently held, or NULL if the mod has not said.
+static const char *VR_CurrentWeaponName( void )
+{
+	if( vr_wlist.cur_id < 0 || vr_wlist.cur_id >= VR_MAX_WEAPON_IDS )
+		return NULL;
+	if( !vr_wlist.names[vr_wlist.cur_id][0] )
+		return NULL;
+	return vr_wlist.names[vr_wlist.cur_id];
+}
+
+/*
 ================
 VR_NeckOrigin
 
@@ -5045,6 +5117,10 @@ static void VR_UpdateShoulderMelee( void )
 		{
 			vr.sh_restore_id = cl.local.viewmodel;
 			Cbuf_AddText( "hud_fastswitch 1; slot1\n" );
+			{
+				const char *wn = VR_CurrentWeaponName();
+				Q_strncpy( vr.sh_restore_name, wn ? wn : "", sizeof( vr.sh_restore_name ));
+			}
 			vr.sh_swapped = true;
 			VR_DiagPrintf( "SHOULDER stored id %d, drawing melee\n", vr.sh_restore_id );
 			vr.sh_restore_tries = 0;
@@ -5053,9 +5129,25 @@ static void VR_UpdateShoulderMelee( void )
 		{
 			// Bounded by what can be carried, so a weapon dropped while
 			// swapped cannot spin this forever.
-			vr.sh_restore_tries = 12;
-			vr.sh_seen_id = cl.local.viewmodel;
-			vr.sh_phase = 0;
+			// Straight there when the mod has told us the name - Half-Life's own
+			// select confirms with ServerCmd( name ), and an unrecognised console
+			// command is forwarded to the server, so this is one command and one
+			// switch with no cycling through weapons the player did not ask for.
+			if( vr.sh_restore_name[0] )
+			{
+				Cbuf_AddText( va( "%s\n", vr.sh_restore_name ));
+				vr.sh_swapped = false;
+				vr.sh_restore_tries = 0;
+				VR_Haptic( VR_DominantHand(), 0.04f, 0.0f, 0.5f );
+				VR_DiagPrintf( "SHOULDER jumped back to %s\n", vr.sh_restore_name );
+			}
+			else
+			{
+				// Fallback: no name yet, walk it the slow way.
+				vr.sh_restore_tries = 12;
+				vr.sh_seen_id = cl.local.viewmodel;
+				vr.sh_phase = 0;
+			}
 			vr.sh_step_time = 0.0;	// step immediately on the next frame
 			VR_DiagPrintf( "SHOULDER restoring, want %d\n", vr.sh_restore_id );
 		}
@@ -6855,6 +6947,7 @@ void     VR_UpdateTurn( float frametime ) { }
 qboolean VR_GetButton( int btn ) { return false; }
 qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang ) { return false; }
 qboolean VR_GetListener( vec3_t out_org, vec3_t out_ang ) { return false; }
+void     VR_ObserveUserMessage( const char *name, int size, const void *buf ) { }
 void     VR_UpdateTeleport( void ) { }
 qboolean VR_TeleportAiming( void ) { return false; }
 qboolean VR_ConsumeTeleport( vec3_t out_dest ) { return false; }

@@ -237,6 +237,11 @@ void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side );
 // VR_ConsumeTeleport is the SERVER side - it returns true exactly once per
 // committed teleport, and is read directly out of client state the same way
 // VR_GetWeaponAim already is, so nothing is added to the network protocol.
+// Observe a mod user message. Non-destructive - the mod still receives it.
+// Used to learn weapon names from WeaponList/CurWeapon, so a weapon can be
+// switched to directly by name instead of cycled to.
+void     VR_ObserveUserMessage( const char *name, int size, const void *buf );
+
 void     VR_UpdateTeleport( void );
 qboolean VR_TeleportAiming( void );
 qboolean VR_ConsumeTeleport( vec3_t out_dest );

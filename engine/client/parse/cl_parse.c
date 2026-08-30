@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include "shake.h"
 #include "input.h"
 #include "eiface.h"
+#include "vr/vr_openxr.h"	// VR_ObserveUserMessage - learn weapon names from the mod
 
 #if XASH_LOW_MEMORY != 2
 int CL_UPDATE_BACKUP = SINGLEPLAYER_BACKUP;
@@ -2272,6 +2273,12 @@ void CL_ParseUserMessage( sizebuf_t *msg, int svc_num, connprotocol_t proto )
 
 	// parse user message into buffer
 	MSG_ReadBytes( msg, pbuf, sizeof( pbuf ), iSize );
+
+	// PCVR fork: observe only. The mod still gets the message below; this
+	// just learns weapon names so the VR layer can switch by name rather
+	// than cycling. Same pattern as the ScreenShake/ScreenFade intercepts
+	// above, minus the consuming.
+	VR_ObserveUserMessage( clgame.msg[i].name, iSize, pbuf );
 
 	if( cl_trace_messages.value )
 	{
