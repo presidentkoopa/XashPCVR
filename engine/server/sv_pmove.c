@@ -1073,7 +1073,17 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	//
 	// Swept with the real player hull, so a ceiling or floor stops the climb
 	// instead of pushing the player through it.
-	if( NET_IsLocalAddress( cl->netchan.remote_address ) && VR_LadderHands( ))
+	// Gated on the CLIMB VALUE, not on VR_LadderHands.
+	//
+	// That flag is computed on the client tick, and SV_RunCmd does not run in
+	// lockstep with it - a command can be run twice for one client frame, or
+	// none. Reading the flag here meant the server sometimes saw "not
+	// gripping" while a perfectly good climb value sat waiting, and skipped
+	// the move: the player climbed on some pulls and not others.
+	//
+	// The climb is only ever non-zero while gripping a rung on a ladder, so
+	// it already carries the condition and cannot disagree with itself.
+	if( NET_IsLocalAddress( cl->netchan.remote_address ))
 	{
 		float climb = VR_GetLadderClimb();
 

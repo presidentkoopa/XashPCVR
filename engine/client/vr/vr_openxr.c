@@ -3767,6 +3767,22 @@ float VR_GetLadderMove( void )
 		else if( move < -cap ) move = -cap;
 	}
 
+	// HOLD IT BRIEFLY after the last gripping frame.
+	//
+	// Tracked grip is not perfectly steady, and a single dropped frame here
+	// unstows the weapon, re-arms the weapon-cycle modifier and cancels the
+	// climb - all of which the player sees as the ladder working sometimes
+	// and not others. Nobody lets go of a rung for a sixtieth of a second
+	// on purpose, so a short hold costs nothing and removes the flicker.
+	{
+		static double hold_until = 0.0;
+
+		if( held )
+			hold_until = host.realtime + 0.25;
+		else if( host.realtime < hold_until )
+			held = true;
+	}
+
 	vr.ladder_gripping = held;
 	vr.ladder_climb = move;
 
