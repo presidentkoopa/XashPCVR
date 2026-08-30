@@ -334,7 +334,8 @@ static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of st
 static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
 static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
 static CVAR_DEFINE_AUTO( vr_ladder_hands, "1", FCVAR_ARCHIVE, "both hands on the ladder: stows the weapon and disables stick climbing" );
-static CVAR_DEFINE_AUTO( vr_ladder_speed, "12", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
+static CVAR_DEFINE_AUTO( vr_ladder_speed, "1", FCVAR_ARCHIVE, "hand pull to climb ratio; 1 = your hand moves you 1:1" );
+static CVAR_DEFINE_AUTO( vr_ladder_max, "180", FCVAR_ARCHIVE, "fastest a pull can climb, units/sec" );
 static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
 static CVAR_DEFINE_AUTO( vr_vignette_size, "0.62", FCVAR_ARCHIVE, "how much of the view stays clear at full speed" );
 static CVAR_DEFINE_AUTO( vr_vignette_fade, "6", FCVAR_ARCHIVE, "how fast the vignette opens and closes" );
@@ -3737,6 +3738,18 @@ float VR_GetLadderMove( void )
 	// against a ladder brush. VR_OnLadder is proximity, and suppressing the
 	// stick on proximity alone stranded the player: movement went dead just
 	// for being near a ladder, with no way to walk back off it.
+	// CAP IT. The pull is a real hand velocity, and a sharp jerk is easily
+	// several metres per second - unclamped that launches the player up the
+	// shaft like a superhero. The cap is near GoldSrc MAX_CLIMB_SPEED, so a
+	// hard pull tops out at about the speed the game would climb anyway while
+	// a gentle one stays proportional.
+	{
+		float cap = Q_max( 1.0f, vr_ladder_max.value );
+
+		if( move > cap ) move = cap;
+		else if( move < -cap ) move = -cap;
+	}
+
 	vr.ladder_gripping = held;
 	vr.ladder_climb = move;
 
@@ -5540,6 +5553,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_walkdirection );
 	Cvar_RegisterVariable( &vr_ladder_hands );
 	Cvar_RegisterVariable( &vr_ladder_speed );
+	Cvar_RegisterVariable( &vr_ladder_max );
 	Cvar_RegisterVariable( &vr_vignette );
 	Cvar_RegisterVariable( &vr_vignette_size );
 	Cvar_RegisterVariable( &vr_vignette_fade );
