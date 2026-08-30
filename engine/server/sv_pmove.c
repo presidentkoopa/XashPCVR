@@ -1035,6 +1035,20 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 	SV_PlayerRunThink( clent, frametime, cl->timebase );
 
+
+	// If conveyor, or think, set basevelocity, then send to client asap too.
+	if( !VectorIsNull( clent->v.basevelocity ))
+		VectorCopy( clent->v.basevelocity, clent->v.clbasevelocity );
+
+	// setup playermove state
+	SV_SetupPMove( svgame.pmove, cl, ucmd, cl->physinfo );
+
+	// motor!
+	svgame.dllFuncs.pfnPM_Move( svgame.pmove, true );
+
+	// copy results back to client
+	SV_FinishPMove( svgame.pmove, cl );
+
 #if !XASH_DEDICATED
 	// LADDER CLIMBING, driven straight from the hands.
 	//
@@ -1048,7 +1062,14 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	// So the engine moves the player itself, which it is entitled to do:
 	// origin is engine-owned memory, and this is the same authoritative move
 	// SV_PushEntity performs and that teleport locomotion already uses.
-	// Applied after the think so pmove cannot overwrite it in the same frame.
+	// Applied after SV_FinishPMove, which is the ONLY place it survives.
+	// It was previously placed after SV_PlayerRunThink, on the assumption
+	// that was past the movement - it is not. pfnPM_Move runs fifty lines
+	// later and SV_FinishPMove then stamps pmove's own result back onto the
+	// entity, so every frame the climb moved the player up and pmove put
+	// them straight back. Everything else worked - the weapon stowed, the
+	// ladder sounds played, the climb value was correct - and the player did
+	// not move.
 	//
 	// Swept with the real player hull, so a ceiling or floor stops the climb
 	// instead of pushing the player through it.
@@ -1076,20 +1097,6 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		}
 	}
 #endif
-
-
-	// If conveyor, or think, set basevelocity, then send to client asap too.
-	if( !VectorIsNull( clent->v.basevelocity ))
-		VectorCopy( clent->v.basevelocity, clent->v.clbasevelocity );
-
-	// setup playermove state
-	SV_SetupPMove( svgame.pmove, cl, ucmd, cl->physinfo );
-
-	// motor!
-	svgame.dllFuncs.pfnPM_Move( svgame.pmove, true );
-
-	// copy results back to client
-	SV_FinishPMove( svgame.pmove, cl );
 
 	if( clent->v.solid != SOLID_NOT && !sv.playersonly )
 	{
