@@ -332,7 +332,7 @@ static CVAR_DEFINE_AUTO( vr_height_offset, "0", FCVAR_ARCHIVE, "shift the view u
 static CVAR_DEFINE_AUTO( vr_mantle, "1", FCVAR_ARCHIVE, "on a ladder, look at a surface and pull the trigger to step onto it" );
 static CVAR_DEFINE_AUTO( vr_mantle_range, "96", FCVAR_ARCHIVE, "how far the dismount will reach, units" );
 static CVAR_DEFINE_AUTO( vr_seated, "0", FCVAR_ARCHIVE, "seated play: no physical crouch, and the view is raised to standing height" );
-static CVAR_DEFINE_AUTO( vr_seated_lift, "18", FCVAR_ARCHIVE, "units the seated view is raised, roughly standing minus sitting eye height" );
+static CVAR_DEFINE_AUTO( vr_seated_lift, "0", FCVAR_ARCHIVE, "extra height for seated play; normally 0 - the view is already anchored to the mod's eye position, so lifting it only makes the player tall" );
 static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
 static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of standing height that counts as crouched" );
 static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
