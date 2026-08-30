@@ -329,6 +329,8 @@ static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-sc
 static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
 static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye height in units, ~1 unit per inch" );
 static CVAR_DEFINE_AUTO( vr_height_offset, "0", FCVAR_ARCHIVE, "shift the view up or down from the tracked height" );
+static CVAR_DEFINE_AUTO( vr_mantle, "1", FCVAR_ARCHIVE, "on a ladder, look at a surface and pull the trigger to step onto it" );
+static CVAR_DEFINE_AUTO( vr_mantle_range, "96", FCVAR_ARCHIVE, "how far the dismount will reach, units" );
 static CVAR_DEFINE_AUTO( vr_seated, "0", FCVAR_ARCHIVE, "seated play: no physical crouch, and the view is raised to standing height" );
 static CVAR_DEFINE_AUTO( vr_seated_lift, "18", FCVAR_ARCHIVE, "units the seated view is raised, roughly standing minus sitting eye height" );
 static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
@@ -607,6 +609,8 @@ static struct
 	double        sh_step_time;     // when that step was issued
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
 	qboolean      ladder_gripping;  // a hand is actually holding a rung
+	qboolean      mantle_valid;     // a dismount target is in view
+	vec3_t        mantle_dest;      // where stepping off would put us
 	float         ladder_climb;     // last computed climb, units/sec
 	char          sh_restore_name[32]; // weapon to jump straight back to
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
@@ -4798,6 +4802,106 @@ qboolean VR_ConsumeTeleport( vec3_t out_dest )
 	return true;
 }
 
+/*
+================
+VR_UpdateMantle
+
+Getting OFF a ladder.
+
+Climbing to the top of a ladder leaves the player hanging at the lip with
+nowhere to go: the rungs run out, and stepping forward means walking into the
+edge rather than over it. Every ladder in the game ends this way.
+
+So look where you want to end up. A ray from the head finds the first surface
+flat enough to stand on, a marker shows exactly where you would arrive, and
+the trigger puts you there.
+
+The trigger is free precisely because you are on a ladder - the weapon is
+stowed and firing is already suppressed - so this needs no new binding and
+cannot be confused with shooting.
+
+Validation and the move itself are the teleport locomotion path, unchanged:
+the same floor-normal and headroom tests, and the same server-side move that
+re-checks with the real player hull before committing. Only the aiming
+differs - a straight look rather than a thrown arc, because this is a step
+onto something you can see rather than a jump across a room.
+================
+*/
+static void VR_UpdateMantle( void )
+{
+	static qboolean fire_prev = false;
+	vec3_t head, hang, fwd, end, from, to;
+	pmtrace_t tr;
+	qboolean fire;
+
+	vr.mantle_valid = false;
+
+	if( !VR_IsActive() || vr_mantle.value == 0.0f || !VR_LadderHands( ))
+	{
+		fire_prev = false;
+		return;
+	}
+
+	if( !VR_GetListener( head, hang ))
+		return;
+
+	AngleVectors( hang, fwd, NULL, NULL );
+	VectorMA( head, Q_max( 8.0f, vr_mantle_range.value ), fwd, end );
+
+	tr = CL_TraceLine( head, end, PM_STUDIO_IGNORE );
+
+	// Has to be something to stand ON. A wall or the underside of a ledge is
+	// not a dismount, and 0.7 is the same slope limit the teleport uses.
+	if( tr.fraction >= 1.0f || tr.plane.normal[2] < 0.7f )
+	{
+		fire_prev = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+		return;
+	}
+
+	// Room to stand once we are there.
+	VectorCopy( tr.endpos, from );
+	from[2] += 1.0f;
+	VectorCopy( from, to );
+	to[2] += 72.0f;
+
+	if( CL_TraceLine( from, to, PM_STUDIO_IGNORE ).fraction < 1.0f )
+	{
+		fire_prev = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+		return;
+	}
+
+	VectorCopy( tr.endpos, vr.mantle_dest );
+	vr.mantle_valid = true;
+
+	fire = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+
+	if( fire && !fire_prev )
+	{
+		// Handed to the teleport commit, which re-validates with the real
+		// player hull server-side before moving anything.
+		VectorCopy( vr.mantle_dest, vr_tp_pending_dest );
+		vr_tp_pending = true;
+		VR_Haptic( VR_DominantHand(), 0.06f, 0.0f, 0.8f );
+		VR_DiagPrintf( "MANTLE to (%.0f %.0f %.0f)\n",
+			vr.mantle_dest[0], vr.mantle_dest[1], vr.mantle_dest[2] );
+	}
+
+	fire_prev = fire;
+}
+
+static void VR_DrawMantle( void )
+{
+	if( !vr.mantle_valid )
+		return;
+
+	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+	VR_BindOverlayTexture();
+	ref.dllFuncs.Color4f( 0.2f, 1.0f, 0.4f, 0.9f );
+	ref.dllFuncs.Begin( TRI_QUADS );
+	VR_Marker( vr.mantle_dest, 7.0f );
+	ref.dllFuncs.End();
+}
+
 static void VR_DrawTeleportArc( void )
 {
 	vec3_t dest;
@@ -4861,6 +4965,7 @@ void VR_DrawOverlays( void )
 
 	VR_DrawArc();
 	VR_DrawTeleportArc();
+	VR_DrawMantle();
 	VR_DrawLaser();
 }
 
@@ -5589,6 +5694,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_lefthand );
 	Cvar_RegisterVariable( &vr_height );
 	Cvar_RegisterVariable( &vr_height_offset );
+	Cvar_RegisterVariable( &vr_mantle );
+	Cvar_RegisterVariable( &vr_mantle_range );
 	Cvar_RegisterVariable( &vr_seated );
 	Cvar_RegisterVariable( &vr_seated_lift );
 	Cvar_RegisterVariable( &vr_crouch );
@@ -6758,6 +6865,7 @@ qboolean VR_BeginFrame( void )
 	// path - the main menu never reaches CL_CreateCmd at all.
 	VR_UpdateDeath();
 	VR_UpdateShoulderMelee();
+	VR_UpdateMantle();
 	VR_UpdateMenu2D();
 
 	VR_DiagSample();
