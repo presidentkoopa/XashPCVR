@@ -603,6 +603,7 @@ static struct
 	double        sh_step_time;     // when that step was issued
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
 	qboolean      ladder_gripping;  // a hand is actually holding a rung
+	float         ladder_climb;     // last computed climb, units/sec
 	char          sh_restore_name[32]; // weapon to jump straight back to
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
@@ -3591,6 +3592,22 @@ Suppressing the stick while on a ladder is what makes the hands the actual
 means of climbing.
 ================
 */
+/*
+================
+VR_GetLadderClimb
+
+The climb rate computed this frame, without recomputing it.
+
+VR_GetLadderMove differentiates hand height, so calling it twice in a frame
+would consume the same movement twice and halve it. The server reads this
+instead.
+================
+*/
+float VR_GetLadderClimb( void )
+{
+	return vr.ladder_climb;
+}
+
 qboolean VR_LadderHands( void )
 {
 	// GRIPPING, not merely on a ladder. VR_OnLadder is proximity - it is true
@@ -3674,6 +3691,7 @@ float VR_GetLadderMove( void )
 	{
 		have_last[0] = have_last[1] = false;
 		vr.ladder_gripping = false;
+		vr.ladder_climb = 0.0f;
 		return 0.0f;
 	}
 
@@ -3720,6 +3738,7 @@ float VR_GetLadderMove( void )
 	// stick on proximity alone stranded the player: movement went dead just
 	// for being near a ladder, with no way to walk back off it.
 	vr.ladder_gripping = held;
+	vr.ladder_climb = move;
 
 	if( vr_diag.value != 0.0f && ( held || move != 0.0f ))
 		VR_DiagPrintf( "LADDER held=%d move=%.1f onladder=%d\n",
@@ -7033,6 +7052,7 @@ int      VR_OffHand( void ) { return 0; }
 qboolean VR_GetPhysicalCrouch( void ) { return false; }
 qboolean VR_OnLadder( void ) { return false; }
 qboolean VR_LadderHands( void ) { return false; }
+float    VR_GetLadderClimb( void ) { return 0.0f; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }

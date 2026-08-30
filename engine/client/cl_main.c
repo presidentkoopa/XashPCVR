@@ -998,6 +998,11 @@ static void CL_CreateCmd( void )
 			{
 				cmd->forwardmove = 0.0f;
 				cmd->sidemove = 0.0f;
+
+				// The climb itself is applied SERVER-SIDE - see sv_pmove.c. Nothing
+			// PM_LadderMove reads can express "pull down to go up": it takes
+			// IN_FORWARD/IN_BACK projected along the view angles and ignores
+			// upmove entirely, so driving it from here meant fighting it.
 			}
 		}
 		// Main-hand grip is a MODIFIER, not a button of its own.

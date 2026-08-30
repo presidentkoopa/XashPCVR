@@ -258,6 +258,10 @@ float    VR_GetLadderMove( void );
 // suppressed and the stick cannot climb, so the hands are what move you.
 qboolean VR_LadderHands( void );
 
+// Climb rate for this frame in units/sec, already computed. Read by the
+// server; recomputing it would consume the same hand movement twice.
+float    VR_GetLadderClimb( void );
+
 // VR akimbo. The off hand fires the equipped weapon a second time on its own
 // cooldown. The engine only supplies WHERE that shot comes from, via
 // pev->vuser1/vuser2; the second shot itself is the game DLL's
