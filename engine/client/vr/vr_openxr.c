@@ -5138,6 +5138,11 @@ static void VR_UpdateShoulderMelee( void )
 				Cbuf_AddText( va( "%s\n", vr.sh_restore_name ));
 				vr.sh_swapped = false;
 				vr.sh_restore_tries = 0;
+				// The same confirm sound Half-Life plays when you pick a weapon from
+				// its own select. Switching by name bypasses that HUD path entirely, so
+				// the swap was silent - correct, but it did not feel like it had
+				// happened.
+				S_StartLocalSound( "common/wpn_select.wav", VOL_NORM, false );
 				VR_Haptic( VR_DominantHand(), 0.04f, 0.0f, 0.5f );
 				VR_DiagPrintf( "SHOULDER jumped back to %s\n", vr.sh_restore_name );
 			}
