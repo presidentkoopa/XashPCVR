@@ -602,6 +602,7 @@ static struct
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
 	double        sh_step_time;     // when that step was issued
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
+	qboolean      ladder_gripping;  // a hand is actually holding a rung
 	char          sh_restore_name[32]; // weapon to jump straight back to
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
@@ -3592,8 +3593,12 @@ means of climbing.
 */
 qboolean VR_LadderHands( void )
 {
+	// GRIPPING, not merely on a ladder. VR_OnLadder is proximity - it is true
+	// whenever the player is against the brush - so keying the stow and the
+	// stick suppression off it killed movement for standing near a ladder and
+	// left no way to walk back off.
 	return ( VR_IsActive() && vr_ladder_hands.value != 0.0f
-		&& vr_ladder.value != 0.0f && VR_OnLadder( )) ? true : false;
+		&& vr_ladder.value != 0.0f && vr.ladder_gripping ) ? true : false;
 }
 
 qboolean VR_OnLadder( void )
@@ -3645,6 +3650,7 @@ float VR_GetLadderMove( void )
 	static float last_z[2];
 	static qboolean have_last[2];
 	float move = 0.0f;
+	qboolean held = false;
 	int hand;
 
 	// ONLY while actually on a ladder.
@@ -3667,6 +3673,7 @@ float VR_GetLadderMove( void )
 	if( !VR_IsActive() || vr_ladder.value == 0.0f || !VR_OnLadder( ))
 	{
 		have_last[0] = have_last[1] = false;
+		vr.ladder_gripping = false;
 		return 0.0f;
 	}
 
@@ -3703,7 +3710,20 @@ float VR_GetLadderMove( void )
 
 		last_z[hand] = z;
 		have_last[hand] = gripping;
+
+		if( gripping )
+			held = true;
 	}
+
+	// Whether a rung is actually being HELD, as opposed to merely standing
+	// against a ladder brush. VR_OnLadder is proximity, and suppressing the
+	// stick on proximity alone stranded the player: movement went dead just
+	// for being near a ladder, with no way to walk back off it.
+	vr.ladder_gripping = held;
+
+	if( vr_diag.value != 0.0f && ( held || move != 0.0f ))
+		VR_DiagPrintf( "LADDER held=%d move=%.1f onladder=%d\n",
+			held ? 1 : 0, move, VR_OnLadder() ? 1 : 0 );
 
 	return move;
 }
