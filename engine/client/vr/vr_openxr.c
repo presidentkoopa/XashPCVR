@@ -334,7 +334,7 @@ static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of st
 static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
 static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
 static CVAR_DEFINE_AUTO( vr_ladder_hands, "1", FCVAR_ARCHIVE, "both hands on the ladder: stows the weapon and disables stick climbing" );
-static CVAR_DEFINE_AUTO( vr_ladder_speed, "8", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
+static CVAR_DEFINE_AUTO( vr_ladder_speed, "12", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
 static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
 static CVAR_DEFINE_AUTO( vr_vignette_size, "0.62", FCVAR_ARCHIVE, "how much of the view stays clear at full speed" );
 static CVAR_DEFINE_AUTO( vr_vignette_fade, "6", FCVAR_ARCHIVE, "how fast the vignette opens and closes" );
@@ -1756,6 +1756,13 @@ Returns true if two-handed aim was applied.
 */
 qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 {
+	// Not while climbing. The off-hand grip means "hold this rung" on a
+	// ladder, and the weapon is stowed anyway - so steadying a gun that is
+	// not in the player's hands with a hand that is holding the ladder is
+	// two kinds of wrong at once.
+	if( VR_LadderHands( ))
+		return false;
+
 	static float blend = 0.0f;	// 0 = one-handed, 1 = fully two-handed
 	static qboolean latched = false;	// see the hysteresis note below
 	vec3_t off_org, off_ang, delta, dir, fwd, aim, va;
@@ -3679,10 +3686,19 @@ float VR_GetLadderMove( void )
 
 		z = pose->origin[2];
 
-		if( gripping && have_last[hand] )
+		if( gripping && have_last[hand] && host.frametime > 0.0 )
 		{
 			// Pulling the hand DOWN (z decreasing) climbs UP.
-			move += ( last_z[hand] - z ) * vr_ladder_speed.value;
+			//
+			// A VELOCITY, not a per-frame delta. This was
+			//     ( last_z - z ) * speed
+			// which is two bugs at once: a brisk pull moves the hand about 0.2
+			// units per frame, so at the old default of 8 it produced an upmove
+			// of roughly 1.6 against the hundreds pm_shared expects - and being
+			// per-frame it also climbed at different rates on different hardware.
+			// Dividing by frametime gives units per second, which is the same
+			// quantity forwardmove and upmove are already expressed in.
+			move += (( last_z[hand] - z ) / (float)host.frametime ) * vr_ladder_speed.value;
 		}
 
 		last_z[hand] = z;
