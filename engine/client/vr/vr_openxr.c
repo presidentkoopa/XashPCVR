@@ -4832,7 +4832,10 @@ static void VR_UpdateDeath( void )
 		return;
 
 	dead = ( cl.frames[cl.parsecountmod].clientdata.deadflag != 0 );
-	fire = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+	// Either trigger, and the grip too. Dead is no time to be precise about
+	// which button, and none of them mean anything else while dead.
+	fire = ( VR_GetButton( VR_BTN_ATTACK ) || VR_GetButton( VR_BTN_ATTACK2 )
+		|| VR_GetButton( VR_BTN_USE )) ? true : false;
 
 	if( dead )
 	{

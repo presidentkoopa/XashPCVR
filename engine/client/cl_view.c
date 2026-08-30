@@ -560,7 +560,12 @@ void V_RenderView( void )
 					// feedback loop. A measurement has nothing to oscillate
 					// against, which is what made the earlier version shake
 					// the moment two-handed aiming drove the same angles.
-					if( !VR_AlignModelToFireRay( hand_ang ))
+					// NEVER on melee. A crowbar has no barrel, so the two
+					// attachments this measures are not a bore and aligning to
+					// them rotates the model wherever they happen to point -
+					// reported in a headset as the crowbar being upside down.
+					// Melee falls through to its own rest-pose constant.
+					if( VR_HoldingMelee() || !VR_AlignModelToFireRay( hand_ang ))
 					{
 						// No attachment on this mesh - nothing to measure,
 						// so fall back to the tuned constant.
