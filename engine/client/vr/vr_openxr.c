@@ -596,9 +596,9 @@ static struct
 	qboolean      sh_inside;        // dominant hand is in the shoulder hotspot
 	qboolean      sh_light_inside;  // off hand is in the flashlight hotspot
 	qboolean      sh_swapped;       // we swapped to melee from the hotspot
-	int           sh_restore_id;    // weapon m_iId to walk back to
+	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
-	int           sh_seen_id;       // m_iId when the last invnext was issued
+	int           sh_seen_id;       // viewmodel index when the last invnext went out
 	double        sh_step_time;     // when that step was issued
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
@@ -4977,7 +4977,7 @@ static void VR_UpdateShoulderMelee( void )
 	// weapon dropped while swapped) and m_iId therefore never moves.
 	if( vr.sh_restore_tries > 0 )
 	{
-		int now_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
+		int now_id = cl.local.viewmodel;
 
 		if( now_id == vr.sh_restore_id )
 		{
@@ -5013,7 +5013,7 @@ static void VR_UpdateShoulderMelee( void )
 	{
 		if( !vr.sh_swapped )
 		{
-			vr.sh_restore_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
+			vr.sh_restore_id = cl.local.viewmodel;
 			Cbuf_AddText( "hud_fastswitch 1; slot1\n" );
 			vr.sh_swapped = true;
 			VR_DiagPrintf( "SHOULDER stored id %d, drawing melee\n", vr.sh_restore_id );
@@ -5024,7 +5024,7 @@ static void VR_UpdateShoulderMelee( void )
 			// Bounded by what can be carried, so a weapon dropped while
 			// swapped cannot spin this forever.
 			vr.sh_restore_tries = 12;
-			vr.sh_seen_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
+			vr.sh_seen_id = cl.local.viewmodel;
 			vr.sh_step_time = 0.0;	// step immediately on the next frame
 			VR_DiagPrintf( "SHOULDER restoring, want %d\n", vr.sh_restore_id );
 		}
