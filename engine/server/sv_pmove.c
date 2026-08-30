@@ -1102,6 +1102,24 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			{
 				VectorCopy( tr.endpos, clent->v.origin );
 				clent->v.velocity[2] = 0.0f;	// no momentum to carry off the top
+
+				// LET GO OF THE FLOOR.
+				//
+				// Reported precisely: climbing worked well once airborne, and not at
+				// all from standing - a small jump first made it work. That is the
+				// ground logic re-seating the player every frame. A pull lifts them
+				// about half a unit per frame, which is nothing against being planted
+				// back down, so the first rung could never be left.
+				//
+				// Clearing FL_ONGROUND while climbing is what jumping was doing by
+				// accident. The player is hanging off a ladder; they are not standing
+				// on anything, and saying so is simply true.
+				if( climb > 0.0f )
+				{
+					clent->v.flags = (int)clent->v.flags & ~FL_ONGROUND;
+					clent->v.groundentity = NULL;
+				}
+
 				SV_LinkEdict( clent, true );
 			}
 		}
