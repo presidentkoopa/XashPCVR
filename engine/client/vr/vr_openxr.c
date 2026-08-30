@@ -329,6 +329,8 @@ static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-sc
 static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
 static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye height in units, ~1 unit per inch" );
 static CVAR_DEFINE_AUTO( vr_height_offset, "0", FCVAR_ARCHIVE, "shift the view up or down from the tracked height" );
+static CVAR_DEFINE_AUTO( vr_seated, "0", FCVAR_ARCHIVE, "seated play: no physical crouch, and the view is raised to standing height" );
+static CVAR_DEFINE_AUTO( vr_seated_lift, "18", FCVAR_ARCHIVE, "units the seated view is raised, roughly standing minus sitting eye height" );
 static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
 static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of standing height that counts as crouched" );
 static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
@@ -3051,6 +3053,13 @@ gets calibrated (see vr_calibrate); the ratio then holds for everyone.
 */
 qboolean VR_GetPhysicalCrouch( void )
 {
+	// Never while seated. Physical crouch measures the head against a STANDING
+	// baseline, and a seated player is permanently below it - so the game ducks
+	// them and never stops, and they cannot stand up to cancel it. Reported as
+	// spawning half in the floor.
+	if( vr_seated.value != 0.0f )
+		return false;
+
 	float standing, head;
 
 	if( !VR_IsActive() || vr_crouch.value == 0.0f )
@@ -5580,6 +5589,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_lefthand );
 	Cvar_RegisterVariable( &vr_height );
 	Cvar_RegisterVariable( &vr_height_offset );
+	Cvar_RegisterVariable( &vr_seated );
+	Cvar_RegisterVariable( &vr_seated_lift );
 	Cvar_RegisterVariable( &vr_crouch );
 	Cvar_RegisterVariable( &vr_crouch_ratio );
 	Cvar_RegisterVariable( &vr_ladder );
@@ -6831,7 +6842,12 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 			// floating above it, and none of that is fixable from the game
 			// side. Applied to the EYE only, so shot origins and hand poses,
 			// which are anchored to the same reference, move with it.
-			rvp->vieworigin[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + rel[2] + vr_height_offset.value;
+			// Seated play sits the real head well below standing eye height, and the
+			// view follows it down. vr_seated_lift puts the eye back where a standing
+			// player would have it, so the world is the right size from a chair.
+			rvp->vieworigin[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + rel[2]
+				+ vr_height_offset.value
+				+ (( vr_seated.value != 0.0f ) ? vr_seated_lift.value : 0.0f );
 
 			// Head owns pitch and roll outright - letting the game pitch or roll a
 			// VR player's view is a reliable way to make them sick. Yaw is additive
