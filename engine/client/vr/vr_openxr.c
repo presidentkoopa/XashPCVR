@@ -320,11 +320,11 @@ static CVAR_DEFINE_AUTO( vr_touch_los, "1", FCVAR_ARCHIVE, "require a clear line
 static CVAR_DEFINE_AUTO( vr_touch_use, "1", FCVAR_ARCHIVE, "press buttons and levers with your hand instead of the crosshair" );
 static CVAR_DEFINE_AUTO( vr_step_smooth, "12", FCVAR_ARCHIVE, "ease the view up steps instead of snapping (0 = off)" );
 static CVAR_DEFINE_AUTO( vr_roomscale, "1", FCVAR_ARCHIVE, "walking in your room walks in the game" );
-static CVAR_DEFINE_AUTO( vr_roomscale_gain, "10", FCVAR_ARCHIVE, "how hard the body chases your real position" );
+static CVAR_DEFINE_AUTO( vr_roomscale_gain, "1", FCVAR_ARCHIVE, "how hard the body chases your real position" );
 static CVAR_DEFINE_AUTO( vr_neck_model, "1", FCVAR_ARCHIVE, "drive room-scale from the base of the neck, so tilting your head does not walk you" );
 static CVAR_DEFINE_AUTO( vr_neck_up, "8", FCVAR_ARCHIVE, "units from the headset down to the neck pivot" );
 static CVAR_DEFINE_AUTO( vr_neck_fwd, "4", FCVAR_ARCHIVE, "units from the headset back to the neck pivot" );
-static CVAR_DEFINE_AUTO( vr_roomscale_deadzone, "2.5", FCVAR_ARCHIVE, "units of head sway ignored before room-scale walks the body" );
+static CVAR_DEFINE_AUTO( vr_roomscale_noise, "0.03", FCVAR_ARCHIVE, "per-frame head motion below this is tracker noise, units" );
 static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-scale move speed" );
 static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
 static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye height in units, ~1 unit per inch" );
@@ -551,7 +551,8 @@ static struct
 	                              // room-scale's own share may close the loop; see
 	                              // VR_SetWorldReference.
 	qboolean      roomscale_cmd_valid;
-	qboolean      roomscale_engaged;  // dead-zone hysteresis, see VR_GetRoomScaleMove
+	vec3_t        neck_prev;        // neck position last frame, play space
+	qboolean      neck_prev_valid;
 	float         body_yaw;       // play-space rotation in world (mouse/stick turn)
 	float         injected_yaw;   // head yaw written into cl.viewangles last frame
 	float         turn_delta;     // stick turn accumulated this frame, consumed by
@@ -1446,6 +1447,10 @@ void VR_SetWorldReference( const vec3_t origin )
 	{
 		VectorCopy( vr.hmd_pose.origin, vr.hmd_origin_at_sync );
 		vr.hmd_origin_at_sync_valid = true;
+
+		// A teleport or level change is not head movement. Drop the previous
+		// sample so the discontinuity is not read as an enormous step.
+		vr.neck_prev_valid = false;
 	}
 }
 
@@ -3453,61 +3458,50 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 	if( !vr.hmd_origin_at_sync_valid )
 		return;
 
-	// How far the NECK has drifted from where the body was last synced.
+	// DISPLACEMENT MATCHING, not a position servo.
 	//
-	// Both sides go through the same transform, so the offset cancels while
-	// standing still and only real body movement survives. Measuring the
-	// headset instead made every head tilt look like a step.
+	// This used to measure how far the head had drifted from a sync point and
+	// command movement to close that gap. That is a servo, and it has a
+	// structural fault: standing off-centre in the play space IS a permanent
+	// gap, so it commanded movement forever and the player drifted while
+	// standing still. Widening the dead zone only enlarges the region where
+	// room-scale does not work; it cannot fix it, because the error being
+	// integrated is a position rather than a motion.
+	//
+	// Match the displacement instead: the head moved this far this frame, so
+	// move the body that far. No target, no gap, nothing to converge on.
+	//
+	// The property that matters is that it is MEMORYLESS. Standing off-centre
+	// is not motion, so it commands nothing however far off-centre it is.
+	// Sway nets to zero because the deltas cancel. Errors cannot accumulate
+	// into sustained motion, which is what a dead zone was papering over -
+	// so all that is left to reject is genuine tracker noise.
+	//
+	// It is also what room-scale physically means. You do not move because
+	// your head is somewhere; you move because your head went somewhere.
 	{
-		vec3_t neck_now, neck_sync;
-		vr_pose_t sync_pose;
+		vec3_t neck_now, delta;
+		float len;
 
 		VR_NeckOrigin( &vr.hmd_pose, neck_now );
 
-		sync_pose = vr.hmd_pose;
-		VectorCopy( vr.hmd_origin_at_sync, sync_pose.origin );
-		VR_NeckOrigin( &sync_pose, neck_sync );
-
-		VectorSubtract( neck_now, neck_sync, rel );
-	}
-	rel[2] = 0.0f;	// horizontal only - ducking is VR_GetPhysicalCrouch
-
-	// DEAD ZONE, sized against a standing human rather than against tracker
-	// noise.
-	//
-	// This was 0.5 units - about 1.3 cm - described as the tracking noise floor.
-	// It is, but that is the wrong quantity: a person standing still sways far
-	// more than their tracker is noisy. Measured live from vr_diag.log while
-	// deliberately standing still, the horizontal offset sat between 1.2 and
-	// 3.1 units continuously, so room-scale was ALWAYS commanding movement.
-	//
-	// The loop cannot close in that state either. The commanded velocity turns
-	// into a slow creep once pm_shared's friction has had its say, and the body
-	// closes the offset more slowly than the sway regenerates it - so the
-	// player drifts steadily across the map while standing perfectly still.
-	//
-	// That drift is not new, but it used to be invisible: before the play-space
-	// anchor was fixed the eye did not follow the body, so the entity crept
-	// while the view stayed put. Fixing the anchor is what made it visible.
-	//
-	// Hysteresis, because a bare threshold chatters exactly at the crossing -
-	// once room-scale is engaged it stays engaged down to half the dead zone,
-	// so a step that starts is allowed to finish.
-	{
-		float dz = Q_max( 0.0f, vr_roomscale_deadzone.value );
-		float len = VectorLength( rel );
-
-		if( vr.roomscale_engaged )
+		if( !vr.neck_prev_valid )
 		{
-			if( len < dz * 0.5f )
-				vr.roomscale_engaged = false;
-		}
-		else if( len >= dz )
-		{
-			vr.roomscale_engaged = true;
+			VectorCopy( neck_now, vr.neck_prev );
+			vr.neck_prev_valid = true;
+			return;
 		}
 
-		if( !vr.roomscale_engaged )
+		VectorSubtract( neck_now, vr.neck_prev, rel );
+		VectorCopy( neck_now, vr.neck_prev );
+		rel[2] = 0.0f;	// horizontal only - height is VR_GetPhysicalCrouch
+
+		len = VectorLength( rel );
+
+		// Only the tracker's own jitter is rejected now, not a band of real
+		// movement. A tenth of a millimetre per frame is noise; anything a
+		// person actually does is far above it.
+		if( len < Q_max( 0.0f, vr_roomscale_noise.value ))
 			return;
 	}
 
@@ -3517,13 +3511,12 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 	world[1] = rel[0] * s + rel[1] * c;
 	world[2] = 0.0f;
 
-	// Gain and cap are a scalar and a magnitude clamp, and the transform below
-	// is a pure rotation, so applying them here in world space is arithmetically
-	// identical to applying them after it. Doing it here is what lets
-	// vr.roomscale_cmd record the request in WORLD units, which is the frame
-	// VR_SetWorldReference compares against.
-	gain = vr_roomscale_gain.value;
-	VectorScale( world, gain, world );
+	// forwardmove and sidemove are velocities, and this is a displacement, so
+	// dividing by frametime asks for exactly the distance the head covered -
+	// no more, no less. vr_roomscale_gain is left as a trim for players who
+	// want more or less than 1:1 in a small play space.
+	if( host.frametime > 0.0 )
+		VectorScale( world, vr_roomscale_gain.value / (float)host.frametime, world );
 
 	// Cap it. A tracking glitch that reports the headset several metres away
 	// would otherwise fire the player across the map in one frame.
@@ -5449,7 +5442,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_neck_model );
 	Cvar_RegisterVariable( &vr_neck_up );
 	Cvar_RegisterVariable( &vr_neck_fwd );
-	Cvar_RegisterVariable( &vr_roomscale_deadzone );
+	Cvar_RegisterVariable( &vr_roomscale_noise );
 	Cvar_RegisterVariable( &vr_lefthand );
 	Cvar_RegisterVariable( &vr_height );
 	Cvar_RegisterVariable( &vr_height_offset );
