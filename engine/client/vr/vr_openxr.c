@@ -321,6 +321,9 @@ static CVAR_DEFINE_AUTO( vr_touch_use, "1", FCVAR_ARCHIVE, "press buttons and le
 static CVAR_DEFINE_AUTO( vr_step_smooth, "12", FCVAR_ARCHIVE, "ease the view up steps instead of snapping (0 = off)" );
 static CVAR_DEFINE_AUTO( vr_roomscale, "1", FCVAR_ARCHIVE, "walking in your room walks in the game" );
 static CVAR_DEFINE_AUTO( vr_roomscale_gain, "10", FCVAR_ARCHIVE, "how hard the body chases your real position" );
+static CVAR_DEFINE_AUTO( vr_neck_model, "1", FCVAR_ARCHIVE, "drive room-scale from the base of the neck, so tilting your head does not walk you" );
+static CVAR_DEFINE_AUTO( vr_neck_up, "8", FCVAR_ARCHIVE, "units from the headset down to the neck pivot" );
+static CVAR_DEFINE_AUTO( vr_neck_fwd, "4", FCVAR_ARCHIVE, "units from the headset back to the neck pivot" );
 static CVAR_DEFINE_AUTO( vr_roomscale_deadzone, "2.5", FCVAR_ARCHIVE, "units of head sway ignored before room-scale walks the body" );
 static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-scale move speed" );
 static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
@@ -3322,6 +3325,41 @@ every room-scale game does short of fading the screen out.
 Output is in the usercmd's own frame, so it needs the yaw that cmd will carry.
 ================
 */
+/*
+================
+VR_NeckOrigin
+
+Where the base of the neck is, in play space.
+
+A head does not rotate in place - it swings on a neck, so tilting or leaning
+TRANSLATES the headset by several units without the body going anywhere. Room
+scale reads that translation as intent to walk, and the player drifts in
+whichever direction they tilted. No dead zone fixes it: leaning clears any
+threshold big enough to still allow real stepping.
+
+Measuring from the neck pivot instead removes the whole class of error. The
+pivot barely moves when the head turns or tilts, and moves fully when the body
+walks - which is exactly the distinction room-scale needs and could not
+otherwise make.
+================
+*/
+static void VR_NeckOrigin( const vr_pose_t *pose, vec3_t out )
+{
+	vec3_t fwd, right, up;
+
+	VectorCopy( pose->origin, out );
+
+	if( vr_neck_model.value == 0.0f )
+		return;
+
+	AngleVectors( pose->angles, fwd, right, up );
+
+	// Down and back from the headset, in the HEAD's own frame - that is what
+	// makes the pivot stay put while the head swings around it.
+	VectorMA( out, -vr_neck_up.value, up, out );
+	VectorMA( out, -vr_neck_fwd.value, fwd, out );
+}
+
 void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 {
 	vec3_t rel, world;
@@ -3340,8 +3378,23 @@ void VR_GetRoomScaleMove( float view_yaw, float *forward, float *side )
 	if( !vr.hmd_origin_at_sync_valid )
 		return;
 
-	// How far the headset has drifted from where the body was last synced.
-	VectorSubtract( vr.hmd_pose.origin, vr.hmd_origin_at_sync, rel );
+	// How far the NECK has drifted from where the body was last synced.
+	//
+	// Both sides go through the same transform, so the offset cancels while
+	// standing still and only real body movement survives. Measuring the
+	// headset instead made every head tilt look like a step.
+	{
+		vec3_t neck_now, neck_sync;
+		vr_pose_t sync_pose;
+
+		VR_NeckOrigin( &vr.hmd_pose, neck_now );
+
+		sync_pose = vr.hmd_pose;
+		VectorCopy( vr.hmd_origin_at_sync, sync_pose.origin );
+		VR_NeckOrigin( &sync_pose, neck_sync );
+
+		VectorSubtract( neck_now, neck_sync, rel );
+	}
 	rel[2] = 0.0f;	// horizontal only - ducking is VR_GetPhysicalCrouch
 
 	// DEAD ZONE, sized against a standing human rather than against tracker
@@ -5233,6 +5286,9 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_roomscale );
 	Cvar_RegisterVariable( &vr_roomscale_gain );
 	Cvar_RegisterVariable( &vr_roomscale_max );
+	Cvar_RegisterVariable( &vr_neck_model );
+	Cvar_RegisterVariable( &vr_neck_up );
+	Cvar_RegisterVariable( &vr_neck_fwd );
 	Cvar_RegisterVariable( &vr_roomscale_deadzone );
 	Cvar_RegisterVariable( &vr_lefthand );
 	Cvar_RegisterVariable( &vr_height );
