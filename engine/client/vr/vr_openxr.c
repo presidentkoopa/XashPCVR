@@ -598,6 +598,8 @@ static struct
 	qboolean      sh_swapped;       // we swapped to melee from the hotspot
 	int           sh_restore_id;    // weapon m_iId to walk back to
 	int           sh_restore_tries; // attempts left before giving up
+	int           sh_seen_id;       // m_iId when the last invnext was issued
+	double        sh_step_time;     // when that step was issued
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
@@ -4962,20 +4964,41 @@ static void VR_UpdateShoulderMelee( void )
 	if( vr_shoulder_melee.value == 0.0f )
 		return;
 
-	// Walk back toward the remembered weapon, one step per frame.
+	// Walk back toward the remembered weapon, ONE ACKNOWLEDGED STEP AT A TIME.
+	//
+	// This used to fire an invnext every frame. m_iId only updates once the
+	// server has acknowledged the switch, which takes several frames, so a
+	// per-frame loop issued a dozen switches before the first one landed -
+	// cycling clean past the target weapon and then giving up. Reported as
+	// simply not swapping back.
+	//
+	// So step only when the previous step has visibly taken effect, with a
+	// wall-clock timeout in case a switch is refused outright (no ammo, a
+	// weapon dropped while swapped) and m_iId therefore never moves.
 	if( vr.sh_restore_tries > 0 )
 	{
-		if( cl.frames[cl.parsecountmod].clientdata.m_iId == vr.sh_restore_id )
+		int now_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
+
+		if( now_id == vr.sh_restore_id )
 		{
 			vr.sh_restore_tries = 0;
 			vr.sh_swapped = false;
+			VR_Haptic( VR_DominantHand(), 0.04f, 0.0f, 0.5f );
+			VR_DiagPrintf( "SHOULDER restored to id %d\n", now_id );
 		}
-		else
+		else if( now_id != vr.sh_seen_id || host.realtime > vr.sh_step_time + 0.35 )
 		{
 			Cbuf_AddText( "hud_fastswitch 1; invnext\n" );
+			vr.sh_seen_id = now_id;
+			vr.sh_step_time = host.realtime;
 			vr.sh_restore_tries--;
+
 			if( vr.sh_restore_tries == 0 )
+			{
 				vr.sh_swapped = false;
+				VR_DiagPrintf( "SHOULDER gave up, want %d have %d\n",
+					vr.sh_restore_id, now_id );
+			}
 		}
 	}
 
@@ -4993,11 +5016,17 @@ static void VR_UpdateShoulderMelee( void )
 			vr.sh_restore_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
 			Cbuf_AddText( "hud_fastswitch 1; slot1\n" );
 			vr.sh_swapped = true;
+			VR_DiagPrintf( "SHOULDER stored id %d, drawing melee\n", vr.sh_restore_id );
 			vr.sh_restore_tries = 0;
 		}
 		else
 		{
+			// Bounded by what can be carried, so a weapon dropped while
+			// swapped cannot spin this forever.
 			vr.sh_restore_tries = 12;
+			vr.sh_seen_id = cl.frames[cl.parsecountmod].clientdata.m_iId;
+			vr.sh_step_time = 0.0;	// step immediately on the next frame
+			VR_DiagPrintf( "SHOULDER restoring, want %d\n", vr.sh_restore_id );
 		}
 
 		VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.7f );
