@@ -386,6 +386,10 @@ static void R_SetupProjectionMatrix( matrix4x4 m )
 	GLfloat zNear = RI.rvp.vr_active ? 1.0f : 4.0f;
 	GLfloat zFar = Q_max( 256.0f, RI.farClip );
 
+	// Hand the range out so the depth buffer can be read back meaningfully.
+	gpGlobals->zNear = zNear;
+	gpGlobals->zFar  = zFar;
+
 	GLfloat yMax, yMin, xMax, xMin;
 
 	if( RI.rvp.vr_active )

@@ -164,6 +164,16 @@ typedef struct ref_globals_s
 	vec3_t vieworg;
 	vec3_t viewangles;
 
+	// Depth range the last view was drawn with, in world units.
+	//
+	// Published by the renderer because that is where the projection is
+	// built. Anything that has to interpret the depth buffer afterwards -
+	// the VR layer hands it to the OpenXR runtime, which needs the range to
+	// reproject a frame - would otherwise have to duplicate the projection
+	// maths and hope it stayed in step with this file.
+	float zNear;
+	float zFar;
+
 	// todo: fill this without engine help
 	// move to local
 

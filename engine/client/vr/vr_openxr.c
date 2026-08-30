@@ -101,6 +101,9 @@ CVAR_DEFINE_AUTO( vr_hud, "1", FCVAR_ARCHIVE, "draw the 2D HUD/menu inside the h
 // this symptom (a mesh whose forward axis is a quarter-turn off from
 // standard), so it is the default rather than 0 - not a guess shipped blind,
 // a specific candidate chosen from the reported numbers.
+static CVAR_DEFINE_AUTO( vr_supersample, "1.0", FCVAR_ARCHIVE, "render scale per eye; 1 = the runtime's own recommendation" );
+static CVAR_DEFINE_AUTO( vr_msaa, "4", FCVAR_ARCHIVE, "multisample samples per eye: 0, 2, 4 or 8" );
+static CVAR_DEFINE_AUTO( vr_depth_submit, "1", FCVAR_ARCHIVE, "give the runtime our depth buffer so it can reproject accurately" );
 CVAR_DEFINE_AUTO( vr_mirror, "1", FCVAR_ARCHIVE, "mirror the left eye to the desktop window" );
 
 // DEFAULT 0, deliberately. A 90-degree pitch "calibration" lived here for a
@@ -407,6 +410,9 @@ typedef unsigned int GLbitfield_t;
 #define GL_DRAW_FRAMEBUFFER_T       0x8CA9
 #define GL_COLOR_BUFFER_BIT_T       0x00004000
 #define GL_LINEAR_T                 0x2601
+#define GL_NEAREST_T                0x2600
+#define GL_DEPTH_BUFFER_BIT_T       0x00000100
+#define GL_RGBA8_T                  0x8058
 
 static struct
 {
@@ -423,6 +429,9 @@ static struct
 	void (APIENTRY *Viewport)( GLint_t, GLint_t, GLsizei_t, GLsizei_t );
 	void (APIENTRY *BlitFramebuffer)( GLint_t, GLint_t, GLint_t, GLint_t,
 		GLint_t, GLint_t, GLint_t, GLint_t, GLbitfield_t, GLenum_t );
+	// Optional - MSAA needs it, everything else works without it.
+	void (APIENTRY *RenderbufferStorageMultisample)( GLenum_t, GLsizei_t,
+		GLenum_t, GLsizei_t, GLsizei_t );
 	qboolean loaded;
 } vrgl;
 
@@ -448,6 +457,11 @@ static qboolean VR_LoadGLFuncs( void )
 	GETPROC( Viewport,               "glViewport" )
 	GETPROC( BlitFramebuffer,        "glBlitFramebuffer" )
 #undef GETPROC
+
+	// Not fatal if absent: without it MSAA is unavailable, which is a quality
+	// setting rather than a requirement for putting a frame on the headset.
+	vrgl.RenderbufferStorageMultisample =
+		(void *)SDL_GL_GetProcAddress( "glRenderbufferStorageMultisample" );
 
 	vrgl.loaded = true;
 	return true;
@@ -507,8 +521,23 @@ typedef struct
 	uint32_t               image_count;
 	XrSwapchainImageOpenGLKHR *images;   // GL texture names
 	GLuint_t              *fbos;         // one FBO per swapchain image
-	GLuint_t               depth_rb;     // shared depth renderbuffer
+	GLuint_t               depth_rb;     // private depth, when not submitting it
 	uint32_t               acquired_index;
+
+	// Multisampled render target. The eye is drawn here and resolved into the
+	// swapchain image at the end, because runtimes do not hand out
+	// multisampled swapchains and the resolve has to happen somewhere.
+	GLuint_t               msaa_fbo;
+	GLuint_t               msaa_color;
+	GLuint_t               msaa_depth;
+	int                    samples;      // 0 = no MSAA
+
+	// Depth handed to the compositor (XR_KHR_composition_layer_depth).
+	XrSwapchain            depth_handle;
+	XrSwapchainImageOpenGLKHR *depth_images;
+	uint32_t               depth_image_count;
+	uint32_t               depth_acquired_index;
+	qboolean               depth_ready;  // acquired and usable THIS frame
 } vr_swapchain_t;
 
 static struct
@@ -575,6 +604,8 @@ static struct
 	XrViewConfigurationView view_configs[VR_MAX_EYES];
 	XrView        views[VR_MAX_EYES];
 	XrCompositionLayerProjectionView proj_views[VR_MAX_EYES];
+	XrCompositionLayerDepthInfoKHR   depth_info[VR_MAX_EYES];
+	qboolean      have_depth_ext;  // runtime accepts a depth layer
 	vr_swapchain_t swapchains[VR_MAX_EYES];
 
 	XrFrameState  frame_state;
@@ -5579,6 +5610,7 @@ qboolean VR_Init( void )
 	uint32_t count = 0, i;
 	XrExtensionProperties *exts;
 	qboolean have_gl = false;
+	qboolean have_depth = false;
 	XrInstanceCreateInfo ci = { XR_TYPE_INSTANCE_CREATE_INFO };
 	const char *enabled[4];
 	uint32_t n_enabled = 0;
@@ -5642,6 +5674,9 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_teleport_step_time );
 	Cvar_RegisterVariable( &vr_teleport_width );
 	Cvar_RegisterVariable( &vr_teleport_alpha );
+	Cvar_RegisterVariable( &vr_supersample );
+	Cvar_RegisterVariable( &vr_msaa );
+	Cvar_RegisterVariable( &vr_depth_submit );
 	Cvar_RegisterVariable( &vr_mirror );
 	Cvar_RegisterVariable( &vr_hand_pitch_offset );
 	Cvar_RegisterVariable( &vr_hand_yaw_offset );
@@ -5762,6 +5797,8 @@ qboolean VR_Init( void )
 	{
 		if( !Q_strcmp( exts[i].extensionName, XR_KHR_OPENGL_ENABLE_EXTENSION_NAME ))
 			have_gl = true;
+		if( !Q_strcmp( exts[i].extensionName, XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME ))
+			have_depth = true;
 		if( vr_debug.value )
 			Con_Printf( "VR: ext %s v%u\n", exts[i].extensionName, exts[i].extensionVersion );
 	}
@@ -5775,6 +5812,26 @@ qboolean VR_Init( void )
 	}
 
 	enabled[n_enabled++] = XR_KHR_OPENGL_ENABLE_EXTENSION_NAME;
+
+	// SUBMIT DEPTH ALONGSIDE COLOUR.
+	//
+	// The compositor reprojects every frame it shows to wherever the head
+	// actually ended up, and with colour alone it has to assume the whole
+	// image sits on one flat plane. Everything at the wrong distance then
+	// shears against head motion - worst on near geometry, which in this
+	// game means the weapon and the hands, the two things always in view.
+	//
+	// Given depth it can reproject per pixel instead, and the shear goes.
+	// Optional because not every runtime offers it, and losing it costs
+	// only accuracy in reprojection, never a frame.
+	if( have_depth && vr_depth_submit.value != 0.0f )
+	{
+		enabled[n_enabled++] = XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME;
+		vr.have_depth_ext = true;
+	}
+	else if( vr_depth_submit.value != 0.0f )
+		Con_Printf( "VR: runtime has no %s, reprojection will be flat-plane\n",
+			XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME );
 
 	// --- instance ---
 	// IMPORTANT: request 1.0, not XR_CURRENT_API_VERSION. Shipping runtimes
@@ -5829,13 +5886,32 @@ static qboolean VR_CreateSwapchain( int eye )
 	XrSwapchainCreateInfo ci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	uint32_t n = 0, i;
 
-	sc->width  = vr.view_configs[eye].recommendedImageRectWidth;
-	sc->height = vr.view_configs[eye].recommendedImageRectHeight;
+	// SUPERSAMPLING.
+	//
+	// The runtime recommends a size that lands roughly one rendered pixel
+	// per display pixel at the centre of the lens. That is a floor, not a
+	// target: the optics stretch the image unevenly, so a 1:1 render is
+	// already undersampled over most of the view, and the distortion pass
+	// resamples it again on the way out. Rendering larger and letting the
+	// compositor downsample is the single biggest quality dial in VR.
+	//
+	// Cost scales with the square, so 1.5 is over twice the pixels of 1.0.
+	// Clamped rather than trusted - a stray 4 here would ask for sixteen
+	// times the work and simply stop the headset.
+	{
+		float ss = vr_supersample.value;
+
+		if( ss < 0.5f ) ss = 0.5f;
+		if( ss > 2.0f ) ss = 2.0f;
+
+		sc->width  = (uint32_t)( vr.view_configs[eye].recommendedImageRectWidth  * ss + 0.5f );
+		sc->height = (uint32_t)( vr.view_configs[eye].recommendedImageRectHeight * ss + 0.5f );
+	}
 
 	ci.arraySize   = 1;
 	ci.mipCount    = 1;
 	ci.faceCount   = 1;
-	ci.format      = 0x8058; // GL_RGBA8
+	ci.format      = GL_RGBA8_T;
 	ci.width       = sc->width;
 	ci.height      = sc->height;
 	ci.sampleCount = 1;
@@ -5854,11 +5930,126 @@ static qboolean VR_CreateSwapchain( int eye )
 	XR_CHECK( xrEnumerateSwapchainImages( sc->handle, n, &n,
 		(XrSwapchainImageBaseHeader *)sc->images ), "xrEnumerateSwapchainImages(fill)" );
 
-	// one shared depth buffer per eye
-	vrgl.GenRenderbuffers( 1, &sc->depth_rb );
-	vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, sc->depth_rb );
-	vrgl.RenderbufferStorage( GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT24_EXT, sc->width, sc->height );
-	vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, 0 );
+	// DEPTH THE COMPOSITOR CAN READ.
+	//
+	// A second swapchain, owned by the runtime the same way the colour one
+	// is, acquired and released alongside it every frame. Only created when
+	// the runtime advertised the extension; otherwise depth stays private
+	// below and nothing downstream changes.
+	if( vr.have_depth_ext )
+	{
+		XrSwapchainCreateInfo dci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+		uint32_t dn = 0, k;
+
+		dci.arraySize   = 1;
+		dci.mipCount    = 1;
+		dci.faceCount   = 1;
+		dci.format      = GL_DEPTH_COMPONENT24_EXT;
+		dci.width       = sc->width;
+		dci.height      = sc->height;
+		dci.sampleCount = 1;
+		dci.usageFlags  = XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+		// Not fatal. A runtime may advertise the extension and still refuse
+		// this format, and a frame without depth is only a less accurate
+		// reprojection - never a missing frame.
+		if( XR_SUCCEEDED( xrCreateSwapchain( vr.session, &dci, &sc->depth_handle ))
+			&& XR_SUCCEEDED( xrEnumerateSwapchainImages( sc->depth_handle, 0, &dn, NULL ))
+			&& dn > 0 )
+		{
+			sc->depth_image_count = dn;
+			sc->depth_images = Mem_Calloc( host.mempool,
+				sizeof( XrSwapchainImageOpenGLKHR ) * dn );
+
+			for( k = 0; k < dn; k++ )
+				sc->depth_images[k].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR;
+
+			if( XR_FAILED( xrEnumerateSwapchainImages( sc->depth_handle, dn, &dn,
+				(XrSwapchainImageBaseHeader *)sc->depth_images )))
+			{
+				Mem_Free( sc->depth_images );
+				sc->depth_images = NULL;
+				xrDestroySwapchain( sc->depth_handle );
+				sc->depth_handle = 0;
+			}
+		}
+		else
+		{
+			if( sc->depth_handle ) xrDestroySwapchain( sc->depth_handle );
+			sc->depth_handle = 0;
+			Con_Printf( "VR: eye %d depth swapchain unavailable, colour only\n", eye );
+		}
+	}
+
+	// Private depth, ONLY when the runtime is not taking it. With a depth
+	// swapchain the attachment changes every frame to whichever image was
+	// acquired, so a fixed renderbuffer here would only be overwritten.
+	if( !sc->depth_handle )
+	{
+		vrgl.GenRenderbuffers( 1, &sc->depth_rb );
+		vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, sc->depth_rb );
+		vrgl.RenderbufferStorage( GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT24_EXT,
+			sc->width, sc->height );
+		vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, 0 );
+	}
+
+	// MULTISAMPLED RENDER TARGET.
+	//
+	// Half-Life is built out of railings, grates, pipes and ladder rungs -
+	// thin high-contrast edges everywhere - and in stereo each eye aliases
+	// them differently. The result does not read as jagged so much as
+	// unstable, because the two eyes disagree about where the edge is and
+	// the disagreement shifts with every small movement of the head.
+	//
+	// Runtimes hand out single-sampled swapchain images, so the eye is drawn
+	// into this instead and resolved across in VR_EndEye.
+	sc->samples = (int)vr_msaa.value;
+	if( sc->samples != 2 && sc->samples != 4 && sc->samples != 8 )
+		sc->samples = 0;
+
+	if( sc->samples && !vrgl.RenderbufferStorageMultisample )
+	{
+		Con_Printf( "VR: no glRenderbufferStorageMultisample, MSAA off\n" );
+		sc->samples = 0;
+	}
+
+	if( sc->samples )
+	{
+		GLenum_t st;
+
+		vrgl.GenRenderbuffers( 1, &sc->msaa_color );
+		vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, sc->msaa_color );
+		vrgl.RenderbufferStorageMultisample( GL_RENDERBUFFER_EXT, sc->samples,
+			GL_RGBA8_T, sc->width, sc->height );
+
+		vrgl.GenRenderbuffers( 1, &sc->msaa_depth );
+		vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, sc->msaa_depth );
+		vrgl.RenderbufferStorageMultisample( GL_RENDERBUFFER_EXT, sc->samples,
+			GL_DEPTH_COMPONENT24_EXT, sc->width, sc->height );
+		vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, 0 );
+
+		vrgl.GenFramebuffers( 1, &sc->msaa_fbo );
+		vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->msaa_fbo );
+		vrgl.FramebufferRenderbuffer( GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+			GL_RENDERBUFFER_EXT, sc->msaa_color );
+		vrgl.FramebufferRenderbuffer( GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
+			GL_RENDERBUFFER_EXT, sc->msaa_depth );
+		st = vrgl.CheckFramebufferStatus( GL_FRAMEBUFFER_EXT );
+		vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, 0 );
+
+		// Fall back to no MSAA rather than refuse to render. An unsupported
+		// sample count is a setting to ignore, not a reason to lose the game.
+		if( st != GL_FRAMEBUFFER_COMPLETE_EXT )
+		{
+			Con_Printf( S_ERROR "VR: eye %d %dx MSAA unavailable (0x%x), falling back\n",
+				eye, sc->samples, st );
+			vrgl.DeleteFramebuffers( 1, &sc->msaa_fbo );
+			vrgl.DeleteRenderbuffers( 1, &sc->msaa_color );
+			vrgl.DeleteRenderbuffers( 1, &sc->msaa_depth );
+			sc->msaa_fbo = sc->msaa_color = sc->msaa_depth = 0;
+			sc->samples = 0;
+		}
+	}
 
 	// wrap each swapchain texture in an FBO once, up front
 	vrgl.GenFramebuffers( n, sc->fbos );
@@ -5869,8 +6060,9 @@ static qboolean VR_CreateSwapchain( int eye )
 		vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->fbos[i] );
 		vrgl.FramebufferTexture2D( GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
 			GL_TEXTURE_2D_T, sc->images[i].image, 0 );
-		vrgl.FramebufferRenderbuffer( GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
-			GL_RENDERBUFFER_EXT, sc->depth_rb );
+		if( sc->depth_rb )
+			vrgl.FramebufferRenderbuffer( GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
+				GL_RENDERBUFFER_EXT, sc->depth_rb );
 
 		status = vrgl.CheckFramebufferStatus( GL_FRAMEBUFFER_EXT );
 		if( status != GL_FRAMEBUFFER_COMPLETE_EXT )
@@ -5882,7 +6074,9 @@ static qboolean VR_CreateSwapchain( int eye )
 	}
 	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, 0 );
 
-	Con_Printf( "VR: eye %d swapchain %ux%u, %u images\n", eye, sc->width, sc->height, n );
+	Con_Printf( "VR: eye %d swapchain %ux%u, %u images, %dx MSAA, depth %s\n",
+		eye, sc->width, sc->height, n, sc->samples ? sc->samples : 1,
+		sc->depth_handle ? "submitted" : "private" );
 	return true;
 }
 
@@ -5906,6 +6100,15 @@ static void VR_DestroySession( void )
 			vrgl.DeleteFramebuffers( sc->image_count, sc->fbos );
 		if( sc->depth_rb && vrgl.loaded )
 			vrgl.DeleteRenderbuffers( 1, &sc->depth_rb );
+		if( sc->msaa_fbo && vrgl.loaded )
+			vrgl.DeleteFramebuffers( 1, &sc->msaa_fbo );
+		if( sc->msaa_color && vrgl.loaded )
+			vrgl.DeleteRenderbuffers( 1, &sc->msaa_color );
+		if( sc->msaa_depth && vrgl.loaded )
+			vrgl.DeleteRenderbuffers( 1, &sc->msaa_depth );
+		if( sc->depth_handle )
+			xrDestroySwapchain( sc->depth_handle );
+		if( sc->depth_images ) Mem_Free( sc->depth_images );
 		if( sc->handle )
 			xrDestroySwapchain( sc->handle );
 		if( sc->images ) Mem_Free( sc->images );
@@ -6914,8 +7117,56 @@ qboolean VR_BeginEye( int eye, ref_viewpass_t *rvp )
 		return false;
 	}
 
+	// Take a depth image too, when the compositor is going to read one.
+	//
+	// Its own pool, its own index - there is no promise the colour and depth
+	// images line up, so the pairing is made here each frame rather than
+	// baked into the FBOs at creation.
+	//
+	// Every failure below leaves depth_ready false and the frame renders
+	// exactly as it would without the extension. Losing depth costs
+	// reprojection accuracy; refusing the frame would cost the frame.
+	sc->depth_ready = false;
+
+	if( sc->depth_handle )
+	{
+		XrSwapchainImageAcquireInfo dai = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+		XrSwapchainImageWaitInfo dwi = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+
+		if( XR_SUCCEEDED( xrAcquireSwapchainImage( sc->depth_handle, &dai,
+			&sc->depth_acquired_index )))
+		{
+			dwi.timeout = XR_INFINITE_DURATION;
+
+			if( XR_SUCCEEDED( xrWaitSwapchainImage( sc->depth_handle, &dwi )))
+			{
+				sc->depth_ready = true;
+			}
+			else
+			{
+				// Hand it straight back. An image acquired and never released is
+				// gone from the pool for good, and a few of those empty it.
+				XrSwapchainImageReleaseInfo dri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+
+				xrReleaseSwapchainImage( sc->depth_handle, &dri );
+			}
+		}
+	}
+
+	// Point this frame's colour FBO at this frame's depth image.
+	if( sc->depth_ready )
+	{
+		vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->fbos[sc->acquired_index] );
+		vrgl.FramebufferTexture2D( GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
+			GL_TEXTURE_2D_T, sc->depth_images[sc->depth_acquired_index].image, 0 );
+	}
+
 	// ref_gl renders into whatever framebuffer is bound and never rebinds one.
-	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->fbos[sc->acquired_index] );
+	// With MSAA that is the multisampled target, resolved across in VR_EndEye.
+	if( sc->samples )
+		vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->msaa_fbo );
+	else
+		vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, sc->fbos[sc->acquired_index] );
 
 	// fill the viewpass from the OpenXR eye pose
 	if( rvp )
@@ -7012,6 +7263,30 @@ void VR_EndEye( int eye )
 
 	sc = &vr.swapchains[eye];
 
+	// RESOLVE THE MULTISAMPLED EYE into the swapchain image.
+	//
+	// Colour is filtered because that is the whole point of drawing it
+	// multisampled. Depth is not: a depth value is a position, and averaging
+	// two of them invents a surface that was never there. Nearest keeps a
+	// real sample, which is what the compositor needs to reproject against.
+	//
+	// Done before the mirror blit so the desktop shows the resolved image
+	// rather than a raw multisample buffer it cannot read.
+	if( sc->samples )
+	{
+		vrgl.BindFramebuffer( GL_READ_FRAMEBUFFER_T, sc->msaa_fbo );
+		vrgl.BindFramebuffer( GL_DRAW_FRAMEBUFFER_T, sc->fbos[sc->acquired_index] );
+
+		vrgl.BlitFramebuffer( 0, 0, (GLint_t)sc->width, (GLint_t)sc->height,
+			0, 0, (GLint_t)sc->width, (GLint_t)sc->height,
+			GL_COLOR_BUFFER_BIT_T, GL_LINEAR_T );
+
+		if( sc->depth_ready )
+			vrgl.BlitFramebuffer( 0, 0, (GLint_t)sc->width, (GLint_t)sc->height,
+				0, 0, (GLint_t)sc->width, (GLint_t)sc->height,
+				GL_DEPTH_BUFFER_BIT_T, GL_NEAREST_T );
+	}
+
 	// Desktop mirror: copy the left eye into the window before releasing the
 	// swapchain image back to the runtime.
 	//
@@ -7062,6 +7337,13 @@ void VR_EndEye( int eye )
 	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, 0 );
 	xrReleaseSwapchainImage( sc->handle, &ri );
 
+	if( sc->depth_ready )
+	{
+		XrSwapchainImageReleaseInfo dri = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+
+		xrReleaseSwapchainImage( sc->depth_handle, &dri );
+	}
+
 	// record the layer view for submission
 	vr.proj_views[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
 	vr.proj_views[eye].pose = vr.views[eye].pose;
@@ -7072,6 +7354,39 @@ void VR_EndEye( int eye )
 	vr.proj_views[eye].subImage.imageRect.extent.width  = sc->width;
 	vr.proj_views[eye].subImage.imageRect.extent.height = sc->height;
 	vr.proj_views[eye].subImage.imageArrayIndex = 0;
+	vr.proj_views[eye].next = NULL;
+
+	// TELL THE COMPOSITOR WHAT THE DEPTH MEANS.
+	//
+	// The buffer alone is unreadable - the values are whatever the
+	// projection encoded, so the range that produced them has to travel
+	// with it. The renderer publishes that range rather than this file
+	// guessing, because it is the renderer that builds the projection and a
+	// guess here would silently drift the moment it changed there.
+	//
+	// Skipped rather than faked if the range looks wrong - a menu frame that
+	// never drew a 3D view leaves it unset, and handing the runtime a bad
+	// range is worse than handing it none.
+	if( sc->depth_ready && refState.zNear > 0.0f && refState.zFar > refState.zNear )
+	{
+		XrCompositionLayerDepthInfoKHR *di = &vr.depth_info[eye];
+
+		di->type = XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR;
+		di->next = NULL;
+		di->subImage.swapchain = sc->depth_handle;
+		di->subImage.imageRect = vr.proj_views[eye].subImage.imageRect;
+		di->subImage.imageArrayIndex = 0;
+
+		// The GL depth range, untouched.
+		di->minDepth = 0.0f;
+		di->maxDepth = 1.0f;
+
+		// OpenXR works in metres and the game does not.
+		di->nearZ = refState.zNear / VR_UNITS_PER_METER;
+		di->farZ  = refState.zFar / VR_UNITS_PER_METER;
+
+		vr.proj_views[eye].next = di;
+	}
 
 	vr.eyes_submitted = true;
 	vr.eyes_this_frame++;
