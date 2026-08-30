@@ -231,7 +231,7 @@ static CVAR_DEFINE_AUTO( vr_weapon_roll_offset,  "0",   FCVAR_ARCHIVE, "weapon v
 static CVAR_DEFINE_AUTO( vr_twohand,        "1",  FCVAR_ARCHIVE, "two-handed weapon stabilisation (aim along the hand-to-hand vector)" );
 static CVAR_DEFINE_AUTO( vr_twohand_min,    "5",  FCVAR_ARCHIVE, "two-hand: min hand separation to engage, HL units" );
 static CVAR_DEFINE_AUTO( vr_twohand_max,    "30", FCVAR_ARCHIVE, "two-hand: max hand separation to stay engaged, HL units" );
-static CVAR_DEFINE_AUTO( vr_twohand_radius, "5",  FCVAR_ARCHIVE, "two-hand: how close the off hand must come to the barrel line, HL units" );
+static CVAR_DEFINE_AUTO( vr_twohand_radius, "1.7",  FCVAR_ARCHIVE, "two-hand: how close the off hand must come to the barrel line, HL units" );
 static CVAR_DEFINE_AUTO( vr_twohand_barrel, "22", FCVAR_ARCHIVE, "two-hand: barrel length used for the grip test, HL units" );
 static CVAR_DEFINE_AUTO( vr_twohand_smooth, "0.12", FCVAR_ARCHIVE, "two-hand: engage/release blend time, seconds (0 = instant)" );
 
@@ -333,7 +333,9 @@ static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically duck
 static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of standing height that counts as crouched" );
 static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
 static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
-static CVAR_DEFINE_AUTO( vr_ladder_speed, "8", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
+static CVAR_DEFINE_AUTO( vr_ladder_hands, "1", FCVAR_ARCHIVE, "both hands on the ladder: stows the weapon and disables stick climbing" );
+static CVAR_DEFINE_AUTO( vr_ladder_speed, "1", FCVAR_ARCHIVE, "hand pull to climb ratio; 1 = your hand moves you 1:1" );
+static CVAR_DEFINE_AUTO( vr_ladder_max, "180", FCVAR_ARCHIVE, "fastest a pull can climb, units/sec" );
 static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
 static CVAR_DEFINE_AUTO( vr_vignette_size, "0.62", FCVAR_ARCHIVE, "how much of the view stays clear at full speed" );
 static CVAR_DEFINE_AUTO( vr_vignette_fade, "6", FCVAR_ARCHIVE, "how fast the vignette opens and closes" );
@@ -602,6 +604,8 @@ static struct
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
 	double        sh_step_time;     // when that step was issued
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
+	qboolean      ladder_gripping;  // a hand is actually holding a rung
+	float         ladder_climb;     // last computed climb, units/sec
 	char          sh_restore_name[32]; // weapon to jump straight back to
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
@@ -1760,6 +1764,13 @@ Returns true if two-handed aim was applied.
 */
 qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 {
+	// Not while climbing. The off-hand grip means "hold this rung" on a
+	// ladder, and the weapon is stowed anyway - so steadying a gun that is
+	// not in the player's hands with a hand that is holding the ladder is
+	// two kinds of wrong at once.
+	if( VR_LadderHands( ))
+		return false;
+
 	static float blend = 0.0f;	// 0 = one-handed, 1 = fully two-handed
 	static qboolean latched = false;	// see the hysteresis note below
 	vec3_t off_org, off_ang, delta, dir, fwd, aim, va;
@@ -3556,6 +3567,51 @@ independent of where you are looking or facing.
 Returns 0 when not climbing.
 ================
 */
+/*
+================
+VR_LadderHands
+
+True while the player is on a ladder and climbing it by hand.
+
+You cannot climb a ladder holding a shotgun. The weapon is stowed for the
+duration - drawn away, unable to fire, and both hands appear on the rungs -
+and comes back the instant you step off. Automatic rather than a holster the
+player has to remember: Half-Life has a great many ladders, and a required
+gesture at each one is friction, not immersion.
+
+It also removes the reason hand-over-hand felt pointless: stock GoldSrc
+ladder movement is driven by forwardmove along the view direction, so pushing
+the stick climbs perfectly well and the hands were decoration on top of it.
+Suppressing the stick while on a ladder is what makes the hands the actual
+means of climbing.
+================
+*/
+/*
+================
+VR_GetLadderClimb
+
+The climb rate computed this frame, without recomputing it.
+
+VR_GetLadderMove differentiates hand height, so calling it twice in a frame
+would consume the same movement twice and halve it. The server reads this
+instead.
+================
+*/
+float VR_GetLadderClimb( void )
+{
+	return vr.ladder_climb;
+}
+
+qboolean VR_LadderHands( void )
+{
+	// GRIPPING, not merely on a ladder. VR_OnLadder is proximity - it is true
+	// whenever the player is against the brush - so keying the stow and the
+	// stick suppression off it killed movement for standing near a ladder and
+	// left no way to walk back off.
+	return ( VR_IsActive() && vr_ladder_hands.value != 0.0f
+		&& vr_ladder.value != 0.0f && vr.ladder_gripping ) ? true : false;
+}
+
 qboolean VR_OnLadder( void )
 {
 	int i;
@@ -3605,6 +3661,7 @@ float VR_GetLadderMove( void )
 	static float last_z[2];
 	static qboolean have_last[2];
 	float move = 0.0f;
+	qboolean held = false;
 	int hand;
 
 	// ONLY while actually on a ladder.
@@ -3627,6 +3684,8 @@ float VR_GetLadderMove( void )
 	if( !VR_IsActive() || vr_ladder.value == 0.0f || !VR_OnLadder( ))
 	{
 		have_last[0] = have_last[1] = false;
+		vr.ladder_gripping = false;
+		vr.ladder_climb = 0.0f;
 		return 0.0f;
 	}
 
@@ -3646,15 +3705,50 @@ float VR_GetLadderMove( void )
 
 		z = pose->origin[2];
 
-		if( gripping && have_last[hand] )
+		if( gripping && have_last[hand] && host.frametime > 0.0 )
 		{
 			// Pulling the hand DOWN (z decreasing) climbs UP.
-			move += ( last_z[hand] - z ) * vr_ladder_speed.value;
+			//
+			// A VELOCITY, not a per-frame delta. This was
+			//     ( last_z - z ) * speed
+			// which is two bugs at once: a brisk pull moves the hand about 0.2
+			// units per frame, so at the old default of 8 it produced an upmove
+			// of roughly 1.6 against the hundreds pm_shared expects - and being
+			// per-frame it also climbed at different rates on different hardware.
+			// Dividing by frametime gives units per second, which is the same
+			// quantity forwardmove and upmove are already expressed in.
+			move += (( last_z[hand] - z ) / (float)host.frametime ) * vr_ladder_speed.value;
 		}
 
 		last_z[hand] = z;
 		have_last[hand] = gripping;
+
+		if( gripping )
+			held = true;
 	}
+
+	// Whether a rung is actually being HELD, as opposed to merely standing
+	// against a ladder brush. VR_OnLadder is proximity, and suppressing the
+	// stick on proximity alone stranded the player: movement went dead just
+	// for being near a ladder, with no way to walk back off it.
+	// CAP IT. The pull is a real hand velocity, and a sharp jerk is easily
+	// several metres per second - unclamped that launches the player up the
+	// shaft like a superhero. The cap is near GoldSrc MAX_CLIMB_SPEED, so a
+	// hard pull tops out at about the speed the game would climb anyway while
+	// a gentle one stays proportional.
+	{
+		float cap = Q_max( 1.0f, vr_ladder_max.value );
+
+		if( move > cap ) move = cap;
+		else if( move < -cap ) move = -cap;
+	}
+
+	vr.ladder_gripping = held;
+	vr.ladder_climb = move;
+
+	if( vr_diag.value != 0.0f && ( held || move != 0.0f ))
+		VR_DiagPrintf( "LADDER held=%d move=%.1f onladder=%d\n",
+			held ? 1 : 0, move, VR_OnLadder() ? 1 : 0 );
 
 	return move;
 }
@@ -5450,7 +5544,9 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_crouch_ratio );
 	Cvar_RegisterVariable( &vr_ladder );
 	Cvar_RegisterVariable( &vr_walkdirection );
+	Cvar_RegisterVariable( &vr_ladder_hands );
 	Cvar_RegisterVariable( &vr_ladder_speed );
+	Cvar_RegisterVariable( &vr_ladder_max );
 	Cvar_RegisterVariable( &vr_vignette );
 	Cvar_RegisterVariable( &vr_vignette_size );
 	Cvar_RegisterVariable( &vr_vignette_fade );
@@ -6186,7 +6282,12 @@ static void VR_SyncInput( void )
 	*/
 	{
 		static qboolean cyc_prev = false, click_prev = false;
-		qboolean grip  = vr.btn[VRA_ATTACK2];
+		// The grip is the rung on a ladder, not a modifier. Both hands are
+		// climbing, the weapon is stowed, and there is nothing to cycle - so
+		// letting it double as the weapon-select layer meant every pull on a
+		// rung also armed the modifier. That overload is what made the whole
+		// ladder feature unusable the first time.
+		qboolean grip  = vr.btn[VRA_ATTACK2] && !VR_LadderHands();
 		// The toggle is the thumbstick CLICK, and the same thumbstick is being
 		// flicked left and right to cycle. Pressing a stick slightly inward while
 		// pushing it sideways is close to unavoidable, so a bare click test made
@@ -6962,6 +7063,8 @@ int      VR_DominantHand( void ) { return 1; }
 int      VR_OffHand( void ) { return 0; }
 qboolean VR_GetPhysicalCrouch( void ) { return false; }
 qboolean VR_OnLadder( void ) { return false; }
+qboolean VR_LadderHands( void ) { return false; }
+float    VR_GetLadderClimb( void ) { return 0.0f; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }

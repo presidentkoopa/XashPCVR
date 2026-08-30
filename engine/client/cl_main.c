@@ -982,6 +982,28 @@ static void CL_CreateCmd( void )
 
 			if( climb != 0.0f )
 				cmd->upmove += climb;
+
+			// BOTH HANDS ON THE LADDER.
+			//
+			// Stock GoldSrc ladder movement reads forwardmove along the view
+			// direction, so the stick climbs perfectly well on its own - which is
+			// why hand-over-hand felt like decoration rather than the mechanism.
+			// Zeroing the axes here leaves the hands as the only way up.
+			//
+			// Jump still detaches, so the ladder is never a trap.
+			// Only while a rung is actually HELD. Standing against a ladder must
+			// still let the player walk away - suppressing on proximity alone
+			// stranded them with no way off.
+			if( VR_LadderHands( ))
+			{
+				cmd->forwardmove = 0.0f;
+				cmd->sidemove = 0.0f;
+
+				// The climb itself is applied SERVER-SIDE - see sv_pmove.c. Nothing
+			// PM_LadderMove reads can express "pull down to go up": it takes
+			// IN_FORWARD/IN_BACK projected along the view angles and ignores
+			// upmove entirely, so driving it from here meant fighting it.
+			}
 		}
 		// Main-hand grip is a MODIFIER, not a button of its own.
 		//
@@ -997,7 +1019,8 @@ static void CL_CreateCmd( void )
 			// client DLL's "+attack" command instead (see VR_SyncInput), because
 			// that is the only thing ammo.cpp actually watches - and routing the
 			// usercmd bit as well would fire the weapon it just drew.
-			if( !VR_SelectOpen( ))
+			// Nothing to fire with while both hands are on a ladder.
+			if( !VR_SelectOpen() && !VR_LadderHands( ))
 			{
 				if( VR_GetButton( VR_BTN_ATTACK2 ))
 					cmd->buttons |= IN_ATTACK2;
