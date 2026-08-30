@@ -4830,9 +4830,10 @@ onto something you can see rather than a jump across a room.
 static void VR_UpdateMantle( void )
 {
 	static qboolean fire_prev = false;
-	vec3_t head, hang, fwd, end, from, to;
+	vec3_t head, hang, fwd, flat, out, down, from, to;
 	pmtrace_t tr;
 	qboolean fire;
+	float reach;
 
 	vr.mantle_valid = false;
 
@@ -4845,16 +4846,57 @@ static void VR_UpdateMantle( void )
 	if( !VR_GetListener( head, hang ))
 		return;
 
+	fire = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+
+	// REACH OVER THE EDGE, do not look at it.
+	//
+	// A straight ray along the gaze found nothing at the top of a ladder,
+	// because what you are looking at there is the LIP - a vertical face,
+	// which is correctly rejected as unstandable. The floor you actually
+	// want is past that edge and below your sightline, so no amount of
+	// looking at it will find it.
+	//
+	// So probe the way a person reaches: out along the horizontal facing,
+	// then down. That is an L, not a line, and it lands on the surface
+	// beyond the lip rather than on the lip itself.
+	VectorCopy( fwd, flat );
 	AngleVectors( hang, fwd, NULL, NULL );
-	VectorMA( head, Q_max( 8.0f, vr_mantle_range.value ), fwd, end );
 
-	tr = CL_TraceLine( head, end, PM_STUDIO_IGNORE );
+	// Horizontal only: looking down at your feet must not shorten the reach,
+	// and looking up must not send it into the ceiling.
+	flat[0] = fwd[0];
+	flat[1] = fwd[1];
+	flat[2] = 0.0f;
 
-	// Has to be something to stand ON. A wall or the underside of a ledge is
-	// not a dismount, and 0.7 is the same slope limit the teleport uses.
+	if( VectorNormalizeLength( flat ) == 0.0f )
+	{
+		fire_prev = fire;
+		return;
+	}
+
+	reach = Q_max( 8.0f, vr_mantle_range.value );
+
+	// Out from the head at head height. Stop short if something blocks it -
+	// then we probe down from wherever we got to, which is what makes this
+	// find the near edge of a platform rather than overshooting past it.
+	VectorMA( head, reach, flat, out );
+	tr = CL_TraceLine( head, out, PM_STUDIO_IGNORE );
+	VectorCopy( tr.endpos, out );
+
+	// Back off the wall a little so the downward probe does not just scrape
+	// its face all the way to the floor.
+	if( tr.fraction < 1.0f )
+		VectorMA( out, -4.0f, flat, out );
+
+	// Now straight down, looking for something to stand on.
+	VectorCopy( out, down );
+	down[2] -= reach;
+
+	tr = CL_TraceLine( out, down, PM_STUDIO_IGNORE );
+
 	if( tr.fraction >= 1.0f || tr.plane.normal[2] < 0.7f )
 	{
-		fire_prev = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+		fire_prev = fire;
 		return;
 	}
 
@@ -4866,14 +4908,12 @@ static void VR_UpdateMantle( void )
 
 	if( CL_TraceLine( from, to, PM_STUDIO_IGNORE ).fraction < 1.0f )
 	{
-		fire_prev = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+		fire_prev = fire;
 		return;
 	}
 
 	VectorCopy( tr.endpos, vr.mantle_dest );
 	vr.mantle_valid = true;
-
-	fire = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
 
 	if( fire && !fire_prev )
 	{
