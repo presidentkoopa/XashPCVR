@@ -5251,6 +5251,21 @@ against a stale value and run to its limit every time.
 */
 static void VR_UpdateShoulderMelee( void )
 {
+	// NOT WHILE CLIMBING.
+	//
+	// Reaching up for a rung puts the hand beside the head, which is exactly
+	// the shoulder-holster gesture - so climbing a ladder kept triggering the
+	// crowbar swap. Worse, the weapon is stowed while climbing so the
+	// viewmodel is 0, the restore could never match its target, and its phase
+	// machine ran over and over issuing "hud_fastswitch 0; invnext" - which
+	// left the weapon select permanently open on screen.
+	if( VR_LadderHands( ))
+	{
+		vr.sh_inside = vr.sh_light_inside = false;
+		vr.sh_restore_tries = 0;
+		return;
+	}
+
 	qboolean inside;
 
 	if( !VR_IsActive( ))
@@ -5356,6 +5371,11 @@ static void VR_UpdateShoulderMelee( void )
 	{
 		if( !vr.sh_swapped )
 		{
+			// A stowed weapon has no viewmodel, so there would be nothing to come
+			// back to and the walk would never terminate.
+			if( cl.local.viewmodel == 0 )
+				return;
+
 			vr.sh_restore_id = cl.local.viewmodel;
 			Cbuf_AddText( "hud_fastswitch 1; slot1\n" );
 			{
