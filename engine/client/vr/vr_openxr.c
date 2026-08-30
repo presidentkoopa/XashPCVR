@@ -1892,9 +1892,21 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 			// virtual barrel is a solid object, so the two disagree by
 			// however far you over-reached - and the hand is drawn inside the
 			// weapon. Snapping to the barrel line hides that.
-			VectorCopy( closest, vr_grip_org );
-			VectorCopy( axis, vr_grip_axis );
-			vr_grip_valid = true;
+			// Only once the hand is ACTUALLY ON THE WEAPON.
+			//
+			// This used to be set here unconditionally, before the distance test
+			// below - so it fired on hand SEPARATION alone, anywhere from 6 to 24
+			// units. A hand held out to the side, well clear of the gun and never
+			// engaging two-handed aim, still had its drawn model teleported onto
+			// the barrel. That is the snap-from-across-the-body: not the grab
+			// volume being too large, but the hand POSTING having no volume test at
+			// all.
+			if( VectorLength( gap ) <= vr_twohand_radius.value * ( latched ? 1.6f : 1.0f ))
+			{
+				VectorCopy( closest, vr_grip_org );
+				VectorCopy( axis, vr_grip_axis );
+				vr_grip_valid = true;
+			}
 
 			// HYSTERESIS ON THE DISTANCE, not a bypass of it.
 			//
