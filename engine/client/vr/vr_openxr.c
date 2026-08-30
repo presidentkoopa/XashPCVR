@@ -607,6 +607,8 @@ static struct
 	double        sh_step_time;     // when that step was issued
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
 	qboolean      ladder_gripping;  // a hand is actually holding a rung
+	vec3_t        ladder_center;    // middle of the rungs we are on
+	qboolean      ladder_have_dir;  // ladder_center is good this frame
 	float         ladder_climb;     // last computed climb, units/sec
 	char          sh_restore_name[32]; // weapon to jump straight back to
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
@@ -3692,10 +3694,54 @@ qboolean VR_OnLadder( void )
 		if( p[0] >= mins[0] && p[0] <= maxs[0] &&
 		    p[1] >= mins[1] && p[1] <= maxs[1] &&
 		    p[2] >= mins[2] && p[2] <= maxs[2] )
+		{
+			// Keep where the rungs are. Which way the ladder faces is what
+			// decides whether a pull climbs it or shoves the player off it,
+			// and this loop is the only place that knows.
+			VectorAdd( pe->model->mins, pe->model->maxs, vr.ladder_center );
+			VectorScale( vr.ladder_center, 0.5f, vr.ladder_center );
+			VectorAdd( vr.ladder_center, pe->origin, vr.ladder_center );
+			vr.ladder_have_dir = true;
 			return true;
+		}
 	}
 
 	return false;
+}
+
+/*
+================
+VR_GetLadderDir
+
+Which way the ladder is, flat, from where the player stands.
+
+Needed because pm_shared decides what a climb input MEANS from the view
+angles: it dots the intended velocity against the ladder face and turns the
+part going into the ladder to vertical. Face the rungs and forward climbs;
+face away and the same input is read as stepping off, which on the ground it
+answers by shoving the player clear at full climb speed.
+
+That is correct for a keyboard, where forward is wherever you look. It is
+wrong for hands, where the pull carries its own direction and the head is
+free to look anywhere - including down at the very rung being grabbed, which
+is exactly when it threw the player backwards off the ladder.
+================
+*/
+qboolean VR_GetLadderDir( vec3_t out )
+{
+	vec3_t d;
+
+	if( !VR_IsActive() || !vr.ladder_have_dir )
+		return false;
+
+	VectorSubtract( vr.ladder_center, cl.simorg, d );
+	d[2] = 0.0f;
+
+	if( VectorNormalizeLength( d ) == 0.0f )
+		return false;
+
+	VectorCopy( d, out );
+	return true;
 }
 
 float VR_GetLadderMove( void )
@@ -7169,6 +7215,7 @@ qboolean VR_OnLadder( void ) { return false; }
 qboolean VR_LadderHands( void ) { return false; }
 float    VR_GetLadderClimb( void ) { return 0.0f; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
+qboolean VR_GetLadderDir( vec3_t out ) { return false; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }
 qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang ) { return false; }

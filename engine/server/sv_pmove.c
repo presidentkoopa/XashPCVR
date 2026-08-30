@@ -1068,6 +1068,8 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	// call, put back after.
 	float vr_saved_maxspeed = svgame.pmove->maxspeed;
 	qboolean vr_climbing = false;
+	vec3_t vr_saved_angles, vr_ladder_dir;
+	qboolean vr_aimed = false;
 
 	if( NET_IsLocalAddress( cl->netchan.remote_address ))
 	{
@@ -1084,6 +1086,32 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 			svgame.pmove->maxspeed = speed;
 			vr_climbing = true;
+
+			// AND POINT THE MOVEMENT AT THE LADDER, NOT AT THE GAZE.
+			//
+			// PM_LadderMove reads direction from the view angles, dots it against
+			// the ladder face, and turns the part heading into the ladder into
+			// vertical motion. Facing the rungs, forward climbs. Facing away, the
+			// SAME input means stepping off - and while stood on the floor it
+			// answers that by shoving the player clear at MAX_CLIMB_SPEED.
+			//
+			// That is why grabbing a ladder pushed the player away from it. A pull
+			// is not a gaze: the hands carry their own direction, and the head is
+			// free to look wherever it likes - very often down at the rung being
+			// grabbed, which is precisely the look that reads as walking away.
+			//
+			// So borrow the angles for the length of the call and aim them at the
+			// rungs. Pull down climbs, pull up descends, and where the player is
+			// looking stops meaning anything - which is what hand-over-hand was
+			// supposed to be. Restored immediately after, so nothing else sees it.
+			if( VR_GetLadderDir( vr_ladder_dir ))
+			{
+				VectorCopy( svgame.pmove->angles, vr_saved_angles );
+				VectorClear( svgame.pmove->angles );
+				svgame.pmove->angles[YAW] = ( atan2( vr_ladder_dir[1], vr_ladder_dir[0] )
+					* 180.0f / M_PI_F );
+				vr_aimed = true;
+			}
 		}
 	}
 #endif
@@ -1093,6 +1121,9 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 #if !XASH_DEDICATED
 	if( vr_climbing )
 		svgame.pmove->maxspeed = vr_saved_maxspeed;
+
+	if( vr_aimed )
+		VectorCopy( vr_saved_angles, svgame.pmove->angles );
 #endif
 
 	// copy results back to client

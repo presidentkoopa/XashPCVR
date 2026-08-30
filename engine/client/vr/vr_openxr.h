@@ -261,6 +261,7 @@ qboolean VR_LadderHands( void );
 // Climb rate for this frame in units/sec, already computed. Read by the
 // server; recomputing it would consume the same hand movement twice.
 float    VR_GetLadderClimb( void );
+qboolean VR_GetLadderDir( vec3_t out );
 
 // VR akimbo. The off hand fires the equipped weapon a second time on its own
 // cooldown. The engine only supplies WHERE that shot comes from, via
