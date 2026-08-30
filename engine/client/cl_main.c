@@ -1009,6 +1009,51 @@ static void CL_CreateCmd( void )
 				else if( climb < 0.0f )
 					cmd->buttons |= IN_BACK;
 			}
+			else if( VR_LadderHandsOnly() && VR_OnLadder( ))
+			{
+				vec3_t ldir;
+
+				// THE STICK DOES NOT CLIMB.
+				//
+				// pm_shared turns any movement INTO the rungs into vertical motion,
+				// so a ladder goes up under stick input whether or not the player
+				// reaches for it - which makes hand-over-hand decoration, since the
+				// duller option is always available and always faster.
+				//
+				// Only the part of the input heading INTO the ladder is dropped, and
+				// that distinction is the whole thing. Killing movement outright on
+				// ladder proximity is what once stranded the player: they walked near
+				// a ladder, the stick went dead, and there was no way back off it.
+				// Away from the rungs still moves, so a ladder is somewhere you can
+				// always leave - it just cannot be ridden up without hands.
+				if( VR_GetLadderDir( ldir ))
+				{
+					vec3_t vfwd, vright, want;
+					float f = 0.0f, r = 0.0f;
+
+					// Read from the BUTTONS, because that is the only channel
+					// PM_LadderMove looks at - it never sees forwardmove.
+					if( cmd->buttons & IN_FORWARD )   f += 1.0f;
+					if( cmd->buttons & IN_BACK )      f -= 1.0f;
+					if( cmd->buttons & IN_MOVERIGHT ) r += 1.0f;
+					if( cmd->buttons & IN_MOVELEFT )  r -= 1.0f;
+
+					if( f != 0.0f || r != 0.0f )
+					{
+						AngleVectors( cmd->viewangles, vfwd, vright, NULL );
+						VectorScale( vfwd, f, want );
+						VectorMA( want, r, vright, want );
+						want[2] = 0.0f;
+
+						if( DotProduct( want, ldir ) > 0.0f )
+						{
+							cmd->buttons &= ~( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT );
+							cmd->forwardmove = 0.0f;
+							cmd->sidemove = 0.0f;
+						}
+					}
+				}
+			}
 		}
 		// Main-hand grip is a MODIFIER, not a button of its own.
 		//

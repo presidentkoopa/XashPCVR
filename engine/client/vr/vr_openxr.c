@@ -337,6 +337,7 @@ static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where y
 static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
 static CVAR_DEFINE_AUTO( vr_ladder_hands, "1", FCVAR_ARCHIVE, "both hands on the ladder: stows the weapon and disables stick climbing" );
 static CVAR_DEFINE_AUTO( vr_ladder_speed, "1", FCVAR_ARCHIVE, "hand pull to climb ratio; 1 = your hand moves you 1:1" );
+static CVAR_DEFINE_AUTO( vr_ladder_hands_only, "1", FCVAR_ARCHIVE, "ladders can ONLY be climbed by hand; the stick will not do it" );
 static CVAR_DEFINE_AUTO( vr_ladder_max, "180", FCVAR_ARCHIVE, "fastest a pull can climb, units/sec" );
 static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
 static CVAR_DEFINE_AUTO( vr_vignette_size, "0.62", FCVAR_ARCHIVE, "how much of the view stays clear at full speed" );
@@ -3727,6 +3728,30 @@ free to look anywhere - including down at the very rung being grabbed, which
 is exactly when it threw the player backwards off the ladder.
 ================
 */
+/*
+================
+VR_LadderHandsOnly
+
+Whether the stick is allowed to climb a ladder at all.
+
+It climbs perfectly well on its own - pm_shared turns any movement into the
+rungs into vertical motion, so a ladder goes up under stick input whether or
+not anyone reaches for it. That leaves hand-over-hand as decoration: the
+faster, duller option is always right there, and the climb never has to be
+performed to be passed.
+
+Off by default is the wrong default while the gesture is still being proven -
+if the stick is available it is what gets used, and the hands never get
+tested. A cvar rather than a hard removal because this is a comfort choice in
+the end, not a correctness one, and the launcher will want to offer it.
+================
+*/
+qboolean VR_LadderHandsOnly( void )
+{
+	return ( VR_IsActive() && vr_ladder.value != 0.0f
+		&& vr_ladder_hands_only.value != 0.0f ) ? true : false;
+}
+
 qboolean VR_GetLadderDir( vec3_t out )
 {
 	vec3_t d;
@@ -5690,6 +5715,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_walkdirection );
 	Cvar_RegisterVariable( &vr_ladder_hands );
 	Cvar_RegisterVariable( &vr_ladder_speed );
+	Cvar_RegisterVariable( &vr_ladder_hands_only );
 	Cvar_RegisterVariable( &vr_ladder_max );
 	Cvar_RegisterVariable( &vr_vignette );
 	Cvar_RegisterVariable( &vr_vignette_size );
@@ -7216,6 +7242,7 @@ qboolean VR_LadderHands( void ) { return false; }
 float    VR_GetLadderClimb( void ) { return 0.0f; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
 qboolean VR_GetLadderDir( vec3_t out ) { return false; }
+qboolean VR_LadderHandsOnly( void ) { return false; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }
 qboolean VR_GetUseSource( vec3_t out_org, vec3_t out_ang ) { return false; }
