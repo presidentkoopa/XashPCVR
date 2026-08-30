@@ -78,6 +78,8 @@ static CVAR_DEFINE_AUTO( vr_teleport_width, "1.0", FCVAR_ARCHIVE, "teleport arc 
 static CVAR_DEFINE_AUTO( vr_teleport_alpha, "0.7", FCVAR_ARCHIVE, "teleport arc opacity" );
 static CVAR_DEFINE_AUTO( vr_hud_scale, "0.55", FCVAR_ARCHIVE, "HUD size within the eye (0.2-1.0)" );
 static CVAR_DEFINE_AUTO( vr_hud_parallax, "0.02", FCVAR_ARCHIVE, "HUD stereo disparity as a fraction of eye width; 0 puts the HUD at infinity" );
+static CVAR_DEFINE_AUTO( vr_deathload, "1", FCVAR_ARCHIVE, "pull the trigger while dead to reload the last quicksave" );
+static CVAR_DEFINE_AUTO( vr_autosave, "120", FCVAR_ARCHIVE, "seconds between automatic quicksaves; 0 = off" );
 static CVAR_DEFINE_AUTO( vr_shoulder_light, "1", FCVAR_ARCHIVE, "reach beside your head with the off hand to toggle the flashlight" );
 static CVAR_DEFINE_AUTO( vr_shoulder_melee, "1", FCVAR_ARCHIVE, "reach beside your head to swap to the melee weapon and back" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
@@ -3146,7 +3148,23 @@ static qboolean VR_HandReachable( const vec3_t hand )
 
 	tr = CL_TraceLine( eye, target, PM_STUDIO_IGNORE );
 
-	return ( tr.fraction >= 1.0f || tr.ent != 0 ) ? true : false;
+	if( tr.fraction >= 1.0f || tr.ent != 0 )
+		return true;
+
+	// Blocked by world - but allow it if the blocker is essentially AT the
+	// hand rather than between the player and it.
+	//
+	// Half-Life recesses its chargers and buttons into wall alcoves, so
+	// reaching for one clips the surrounding brush and a strict test refused
+	// the interaction - the select sound played and nothing charged. Reaching
+	// THROUGH a wall puts the blocker far short of the hand instead, which is
+	// the case worth refusing.
+	{
+		vec3_t miss;
+
+		VectorSubtract( target, tr.endpos, miss );
+		return ( VectorLength( miss ) < 10.0f ) ? true : false;
+	}
 }
 
 qboolean VR_GetTouchContact( void )
@@ -3187,7 +3205,19 @@ qboolean VR_GetTouchContact( void )
 	VectorMA( org, vr_touch_reach.value, fwd, end );
 
 	tr = CL_TraceLine( start, end, PM_STUDIO_BOX );
-	touching = ( tr.fraction < 1.0f ) ? true : false;
+
+	// ONLY ENTITIES COUNT, NEVER THE WORLD.
+	//
+	// This used to raise IN_USE for anything the hand touched, including
+	// plain walls - and pm_shared.c cuts maxspeed to a THIRD while IN_USE is
+	// held (PM_CheckParamters). So resting a hand in geometry, which happens
+	// constantly in room-scale, silently crippled movement speed.
+	//
+	// Filtering on tr.ent stays mod-agnostic: everything usable in GoldSrc is
+	// a brush or point ENTITY - buttons, doors, chargers, levers - and world
+	// geometry is never usable. So the engine can tell the difference without
+	// knowing what any of them are.
+	touching = ( tr.fraction < 1.0f && tr.ent != 0 ) ? true : false;
 
 	// HOLD contact briefly after the probe stops hitting.
 	//
@@ -4725,6 +4755,57 @@ void VR_Begin2D( void )
 
 /*
 ================
+VR_UpdateDeath
+
+Dying in VR is a dead end without a keyboard.
+
+Half-Life singleplayer has no respawn - death drops you at the load menu, and
+reaching that in a headset means taking it off. So the trigger reloads the
+last quicksave, and one is kept current automatically so there is always
+something to load.
+
+Autosave is deliberately not tied to anything clever: a fixed interval, only
+while alive, only in single player - the engine refuses to save at all when
+maxclients != 1, so this can never fire during co-op or crossplay.
+================
+*/
+static void VR_UpdateDeath( void )
+{
+	static qboolean fire_prev = false;
+	static double next_save = 0.0;
+	qboolean fire, dead;
+
+	if( !VR_IsActive() || cls.state != ca_active )
+		return;
+
+	dead = ( cl.frames[cl.parsecountmod].clientdata.deadflag != 0 );
+	fire = VR_GetButton( VR_BTN_ATTACK ) ? true : false;
+
+	if( dead )
+	{
+		if( vr_deathload.value != 0.0f && fire && !fire_prev )
+			Cbuf_AddText( "load quick\n" );
+
+		// Do not let the timer fire while dead - it would overwrite the
+		// save being reloaded with the corpse.
+		next_save = host.realtime + Q_max( 5.0f, vr_autosave.value );
+	}
+	else if( vr_autosave.value > 0.0f && cl.maxclients == 1 )
+	{
+		if( next_save == 0.0 )
+			next_save = host.realtime + vr_autosave.value;
+		else if( host.realtime >= next_save )
+		{
+			Cbuf_AddText( "save quick\n" );
+			next_save = host.realtime + vr_autosave.value;
+		}
+	}
+
+	fire_prev = fire;
+}
+
+/*
+================
 VR_HandInHeadSpot
 
 Is `hand` inside a hotspot hung off the head, `side` units out along the
@@ -4741,15 +4822,29 @@ the fire ray is computed once and cached.
 */
 static qboolean VR_HandInHeadSpot( int hand_id, float side )
 {
-	vec3_t hand, hang, fwd, right, up, spot, d;
+	vec3_t hand, hang, head, hang_w, fwd, right, up, spot, d;
 
 	if( !VR_GetHandWorld( hand_id, hand, hang ))
 		return false;
 
-	AngleVectors( vr.hmd_pose.angles, fwd, right, up );
+	// The REAL tracked head, in world space - not a reconstruction.
+	//
+	// This was built as world_origin + vr_height with vr.hmd_pose.angles, and
+	// both halves were in the wrong frame. world_origin is the BODY, while the
+	// hands come through VR_PlayToWorld and carry the room-scale lean, which
+	// runs 3-7 units in ordinary play - so the spot and the hands were never
+	// measured from the same place. And hmd_pose.angles is PLAY space, missing
+	// body_yaw, so "beside your head" pointed somewhere else entirely unless
+	// the player happened to be facing world north.
+	//
+	// VR_GetListener already returns the head through the same transform the
+	// hands use, so both are in one frame by construction.
+	if( !VR_GetListener( head, hang_w ))
+		return false;
 
-	VectorCopy( vr.world_origin, spot );
-	spot[2] = ( vr.smooth_z_valid ? vr.smooth_z : vr.world_origin[2] ) + vr_height.value;
+	AngleVectors( hang_w, fwd, right, up );
+
+	VectorCopy( head, spot );
 	VectorMA( spot, side, right, spot );
 	VectorMA( spot, -vr_shoulder_back.value, fwd, spot );
 	spot[2] += vr_shoulder_up.value;
@@ -5069,6 +5164,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_deadzone );
 	Cvar_RegisterVariable( &vr_hud_scale );
 	Cvar_RegisterVariable( &vr_hud_parallax );
+	Cvar_RegisterVariable( &vr_deathload );
+	Cvar_RegisterVariable( &vr_autosave );
 	Cvar_RegisterVariable( &vr_shoulder_light );
 	Cvar_RegisterVariable( &vr_shoulder_melee );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
@@ -6298,6 +6395,7 @@ qboolean VR_BeginFrame( void )
 	// Menu anchor and pointer. Here rather than in CL_CreateCmd because this
 	// is the one per-frame point common to the world path and the menu-only
 	// path - the main menu never reaches CL_CreateCmd at all.
+	VR_UpdateDeath();
 	VR_UpdateShoulderMelee();
 	VR_UpdateMenu2D();
 
