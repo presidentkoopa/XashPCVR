@@ -1103,21 +1103,84 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 				VectorCopy( tr.endpos, clent->v.origin );
 				clent->v.velocity[2] = 0.0f;	// no momentum to carry off the top
 
-				// LET GO OF THE FLOOR.
-				//
-				// Reported precisely: climbing worked well once airborne, and not at
-				// all from standing - a small jump first made it work. That is the
-				// ground logic re-seating the player every frame. A pull lifts them
-				// about half a unit per frame, which is nothing against being planted
-				// back down, so the first rung could never be left.
-				//
-				// Clearing FL_ONGROUND while climbing is what jumping was doing by
-				// accident. The player is hanging off a ladder; they are not standing
-				// on anything, and saying so is simply true.
 				if( climb > 0.0f )
 				{
-					clent->v.flags = (int)clent->v.flags & ~FL_ONGROUND;
-					clent->v.groundentity = NULL;
+					vec3_t fwd, over, drop;
+					trace_t ft, dt;
+					qboolean crested = false;
+
+					// GETTING OVER THE TOP.
+					//
+					// A purely vertical climb rises alongside the wall and runs out of
+					// ladder at the lip with nothing to step onto - which is where every
+					// ladder in the game leaves you, and no amount of pulling helps.
+					//
+					// HLVR gets over this by extending the ladder volume upward (done
+					// too, in VR_OnLadder) so their movement keeps running past the top,
+					// and their ladder movement carries the player FORWARD as well as up
+					// - so cresting simply walks them over the edge. The forward part is
+					// what was missing here.
+					//
+					// It needs no detection of the top at all, because the wall is its
+					// own gate: beside the ladder this sweep hits stone and stops dead,
+					// costing nothing on every frame of the climb. The moment the player
+					// clears the lip it comes free and lands them on the platform.
+					//
+					// A previous attempt aimed a ray where the player was LOOKING and
+					// teleported them to it. It could never work: what you look at from
+					// the top of a ladder is the lip - a vertical face, correctly
+					// rejected as unstandable - while the floor you want is past it and
+					// below your sightline.
+					AngleVectors( clent->v.v_angle, fwd, NULL, NULL );
+					fwd[2] = 0.0f;
+
+					if( VectorNormalizeLength( fwd ) > 0.0f )
+					{
+						VectorMA( clent->v.origin, 24.0f, fwd, over );
+
+						ft = SV_Move( clent->v.origin, clent->v.mins, clent->v.maxs,
+							over, MOVE_NORMAL, clent, false );
+
+						if( !ft.allsolid && !ft.startsolid && ft.fraction > 0.5f )
+						{
+							VectorCopy( ft.endpos, drop );
+							drop[2] -= 32.0f;
+
+							dt = SV_Move( ft.endpos, clent->v.mins, clent->v.maxs,
+								drop, MOVE_NORMAL, clent, false );
+
+							// Only where there is real floor to arrive on. Climbing an
+							// open shaft while facing away from the rungs must not walk
+							// the player out into the drop.
+							if( !dt.allsolid && !dt.startsolid && dt.fraction < 1.0f
+								&& dt.plane.normal[2] >= 0.7f )
+							{
+								VectorCopy( dt.endpos, clent->v.origin );
+								crested = true;
+							}
+						}
+					}
+
+					// LET GO OF THE FLOOR.
+					//
+					// Reported precisely: climbing worked well once airborne, and not
+					// at all from standing - a small jump first made it work. That is
+					// the ground logic re-seating the player every frame. A pull lifts
+					// them about half a unit per frame, which is nothing against being
+					// planted back down, so the first rung could never be left.
+					//
+					// Clearing FL_ONGROUND while climbing is what jumping was doing by
+					// accident. The player is hanging off a ladder; they are not
+					// standing on anything, and saying so is simply true.
+					//
+					// Not once they have crested, though - then they ARE standing on
+					// the platform, and unsticking them from it would drop them back
+					// down the shaft they just climbed.
+					if( !crested )
+					{
+						clent->v.flags = (int)clent->v.flags & ~FL_ONGROUND;
+						clent->v.groundentity = NULL;
+					}
 				}
 
 				SV_LinkEdict( clent, true );
