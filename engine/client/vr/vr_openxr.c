@@ -600,6 +600,7 @@ static struct
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
 	double        sh_step_time;     // when that step was issued
+	int           sh_phase;         // 0 highlight, 1 press, 2 release
 	float         select_fastswitch; // player's hud_fastswitch, restored on close
 	qboolean      btn[VRA_COUNT];
 	qboolean      btn_prev[VRA_COUNT];
@@ -4964,7 +4965,16 @@ static void VR_UpdateShoulderMelee( void )
 	if( vr_shoulder_melee.value == 0.0f )
 		return;
 
-	// Walk back toward the remembered weapon, ONE ACKNOWLEDGED STEP AT A TIME.
+	// Walk back toward the remembered weapon: highlight, then CONFIRM.
+	//
+	// invnext DOES NOT SWITCH WEAPONS. CHudAmmo::UserCmd_NextWeapon only moves
+	// gpActiveSel, the selection highlight - the switch happens when a confirm
+	// reaches ammo.cpp and it calls ServerCmd( name ). The earlier version fired
+	// twelve invnexts and changed nothing; telemetry showed the viewmodel sitting
+	// at one index through every step.
+	//
+	// slotN is the exception, and the reason DRAWING the crowbar always worked:
+	// with fast-switch on it selects outright when the bucket holds one weapon.
 	//
 	// This used to fire an invnext every frame. m_iId only updates once the
 	// server has acknowledged the switch, which takes several frames, so a
@@ -4982,23 +4992,43 @@ static void VR_UpdateShoulderMelee( void )
 		if( now_id == vr.sh_restore_id )
 		{
 			vr.sh_restore_tries = 0;
+			vr.sh_phase = 0;
 			vr.sh_swapped = false;
+			Cbuf_AddText( "hud_fastswitch 1\n" );
 			VR_Haptic( VR_DominantHand(), 0.04f, 0.0f, 0.5f );
-			VR_DiagPrintf( "SHOULDER restored to id %d\n", now_id );
+			VR_DiagPrintf( "SHOULDER restored to %d\n", now_id );
 		}
-		else if( now_id != vr.sh_seen_id || host.realtime > vr.sh_step_time + 0.35 )
+		else if( host.realtime >= vr.sh_step_time )
 		{
-			Cbuf_AddText( "hud_fastswitch 1; invnext\n" );
-			vr.sh_seen_id = now_id;
-			vr.sh_step_time = host.realtime;
-			vr.sh_restore_tries--;
-
-			if( vr.sh_restore_tries == 0 )
+			switch( vr.sh_phase )
 			{
-				vr.sh_swapped = false;
-				VR_DiagPrintf( "SHOULDER gave up, want %d have %d\n",
-					vr.sh_restore_id, now_id );
+			case 0:
+				Cbuf_AddText( "hud_fastswitch 0; invnext\n" );
+				vr.sh_phase = 1;
+				break;
+			case 1:
+				Cbuf_AddText( "+attack\n" );
+				vr.sh_phase = 2;
+				break;
+			default:
+				Cbuf_AddText( "-attack\n" );
+				vr.sh_phase = 0;
+				vr.sh_restore_tries--;
+				VR_DiagPrintf( "SHOULDER step have=%d want=%d left=%d\n",
+					now_id, vr.sh_restore_id, vr.sh_restore_tries );
+				if( vr.sh_restore_tries == 0 )
+				{
+					vr.sh_swapped = false;
+					Cbuf_AddText( "hud_fastswitch 1\n" );
+					VR_DiagPrintf( "SHOULDER gave up, want %d have %d\n",
+						vr.sh_restore_id, now_id );
+				}
+				break;
 			}
+
+			// One phase per 60ms: +attack must survive a frame to be sampled by
+			// CL_ButtonBits, so press and release cannot share a command string.
+			vr.sh_step_time = host.realtime + 0.06;
 		}
 	}
 
@@ -5025,6 +5055,7 @@ static void VR_UpdateShoulderMelee( void )
 			// swapped cannot spin this forever.
 			vr.sh_restore_tries = 12;
 			vr.sh_seen_id = cl.local.viewmodel;
+			vr.sh_phase = 0;
 			vr.sh_step_time = 0.0;	// step immediately on the next frame
 			VR_DiagPrintf( "SHOULDER restoring, want %d\n", vr.sh_restore_id );
 		}
