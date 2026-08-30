@@ -474,7 +474,9 @@ void V_RenderView( void )
 		// Pin the weapon to the right controller. The mod positioned the
 		// viewmodel relative to a mouse-look camera; in VR the hand owns it.
 		{
-			qboolean weapon_equipped = ( cl.local.viewmodel != 0 );
+			// Stowed while climbing: the weapon is neither drawn nor pinned to a
+			// hand, and VR_DrawHands below then puts BOTH hands on the rungs.
+			qboolean weapon_equipped = ( cl.local.viewmodel != 0 ) && !VR_LadderHands();
 			cl_entity_t *view = &clgame.viewent;
 			qboolean pinned = false;
 

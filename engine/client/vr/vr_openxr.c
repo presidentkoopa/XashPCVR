@@ -333,6 +333,7 @@ static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically duck
 static CVAR_DEFINE_AUTO( vr_crouch_ratio, "0.75", FCVAR_ARCHIVE, "fraction of standing height that counts as crouched" );
 static CVAR_DEFINE_AUTO( vr_walkdirection, "0", FCVAR_ARCHIVE, "0 = walk where you look, 1 = walk where your off hand points" );
 static CVAR_DEFINE_AUTO( vr_ladder, "1", FCVAR_ARCHIVE, "climb ladders by pulling with your hands" );
+static CVAR_DEFINE_AUTO( vr_ladder_hands, "1", FCVAR_ARCHIVE, "both hands on the ladder: stows the weapon and disables stick climbing" );
 static CVAR_DEFINE_AUTO( vr_ladder_speed, "8", FCVAR_ARCHIVE, "how strongly a hand pull drives ladder climbing" );
 static CVAR_DEFINE_AUTO( vr_vignette, "1", FCVAR_ARCHIVE, "comfort vignette that closes in while moving" );
 static CVAR_DEFINE_AUTO( vr_vignette_size, "0.62", FCVAR_ARCHIVE, "how much of the view stays clear at full speed" );
@@ -3563,6 +3564,31 @@ independent of where you are looking or facing.
 Returns 0 when not climbing.
 ================
 */
+/*
+================
+VR_LadderHands
+
+True while the player is on a ladder and climbing it by hand.
+
+You cannot climb a ladder holding a shotgun. The weapon is stowed for the
+duration - drawn away, unable to fire, and both hands appear on the rungs -
+and comes back the instant you step off. Automatic rather than a holster the
+player has to remember: Half-Life has a great many ladders, and a required
+gesture at each one is friction, not immersion.
+
+It also removes the reason hand-over-hand felt pointless: stock GoldSrc
+ladder movement is driven by forwardmove along the view direction, so pushing
+the stick climbs perfectly well and the hands were decoration on top of it.
+Suppressing the stick while on a ladder is what makes the hands the actual
+means of climbing.
+================
+*/
+qboolean VR_LadderHands( void )
+{
+	return ( VR_IsActive() && vr_ladder_hands.value != 0.0f
+		&& vr_ladder.value != 0.0f && VR_OnLadder( )) ? true : false;
+}
+
 qboolean VR_OnLadder( void )
 {
 	int i;
@@ -5457,6 +5483,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_crouch_ratio );
 	Cvar_RegisterVariable( &vr_ladder );
 	Cvar_RegisterVariable( &vr_walkdirection );
+	Cvar_RegisterVariable( &vr_ladder_hands );
 	Cvar_RegisterVariable( &vr_ladder_speed );
 	Cvar_RegisterVariable( &vr_vignette );
 	Cvar_RegisterVariable( &vr_vignette_size );
@@ -6969,6 +6996,7 @@ int      VR_DominantHand( void ) { return 1; }
 int      VR_OffHand( void ) { return 0; }
 qboolean VR_GetPhysicalCrouch( void ) { return false; }
 qboolean VR_OnLadder( void ) { return false; }
+qboolean VR_LadderHands( void ) { return false; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }

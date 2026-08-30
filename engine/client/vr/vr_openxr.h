@@ -254,6 +254,10 @@ qboolean VR_ConsumeTeleport( vec3_t out_dest );
 qboolean VR_OnLadder( void );
 float    VR_GetLadderMove( void );
 
+// True while climbing a ladder by hand: the weapon is stowed, firing is
+// suppressed and the stick cannot climb, so the hands are what move you.
+qboolean VR_LadderHands( void );
+
 // VR akimbo. The off hand fires the equipped weapon a second time on its own
 // cooldown. The engine only supplies WHERE that shot comes from, via
 // pev->vuser1/vuser2; the second shot itself is the game DLL's
