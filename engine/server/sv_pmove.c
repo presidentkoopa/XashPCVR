@@ -1044,150 +1044,59 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	SV_SetupPMove( svgame.pmove, cl, ucmd, cl->physinfo );
 
 	// motor!
-	svgame.dllFuncs.pfnPM_Move( svgame.pmove, true );
-
-	// copy results back to client
-	SV_FinishPMove( svgame.pmove, cl );
-
 #if !XASH_DEDICATED
-	// LADDER CLIMBING, driven straight from the hands.
+	// CLIMB AT HAND SPEED, THROUGH THE GAME'S OWN LADDER MOVEMENT.
 	//
-	// PM_LadderMove cannot express this. It reads IN_FORWARD/IN_BACK
-	// projected along the view angles and never looks at upmove, so a pull
-	// gesture has no channel into it. Both reference ports solved that by
-	// forking the SDK - Lambda1VR added pmove->angles2 for the off-hand
-	// direction, HLVR routed ladders through its own movement handler -
-	// and neither route is open to a fork that must run unmodified game DLLs.
+	// Every previous attempt here wrote the player's origin directly and
+	// fought pm_shared for the result. That was never going to hold, because
+	// PM_LadderMove is not a passive thing to be overridden: it sets
+	// MOVETYPE_FLY and zeroes gravity - the game is ALREADY hanging the
+	// player on the ladder - and then drives them by velocity. An origin
+	// write lands in the middle of that and is undone the next frame, and
+	// clearing FL_ONGROUND to compensate was patching a symptom of the fight.
 	//
-	// So the engine moves the player itself, which it is entitled to do:
-	// origin is engine-owned memory, and this is the same authoritative move
-	// SV_PushEntity performs and that teleport locomotion already uses.
-	// Applied after SV_FinishPMove, which is the ONLY place it survives.
-	// It was previously placed after SV_PlayerRunThink, on the assumption
-	// that was past the movement - it is not. pfnPM_Move runs fifty lines
-	// later and SV_FinishPMove then stamps pmove's own result back onto the
-	// entity, so every frame the climb moved the player up and pmove put
-	// them straight back. Everything else worked - the weapon stowed, the
-	// ladder sounds played, the climb value was correct - and the player did
-	// not move.
+	// Worse, bypassing it threw away everything it does for free: staying
+	// attached to the rungs, sliding along them, and stepping off at the top.
+	// That last one is why walking up a ladder always worked and climbing it
+	// by hand always stranded the player at the lip.
 	//
-	// Swept with the real player hull, so a ceiling or floor stops the climb
-	// instead of pushing the player through it.
-	// Gated on the CLIMB VALUE, not on VR_LadderHands.
-	//
-	// That flag is computed on the client tick, and SV_RunCmd does not run in
-	// lockstep with it - a command can be run twice for one client frame, or
-	// none. Reading the flag here meant the server sometimes saw "not
-	// gripping" while a perfectly good climb value sat waiting, and skipped
-	// the move: the player climbed on some pulls and not others.
-	//
-	// The climb is only ever non-zero while gripping a rung on a ladder, so
-	// it already carries the condition and cannot disagree with itself.
+	// So let the game move the player, and change only how fast. PM_LadderMove
+	// climbs at MAX_CLIMB_SPEED capped by pmove->maxspeed, so substituting the
+	// cap for the duration of the call makes the pull one-to-one with the hand
+	// without the mod knowing anything happened. Same shape as the view_ofs
+	// substitution around PostThink: engine-owned state, borrowed around one
+	// call, put back after.
+	float vr_saved_maxspeed = svgame.pmove->maxspeed;
+	qboolean vr_climbing = false;
+
 	if( NET_IsLocalAddress( cl->netchan.remote_address ))
 	{
 		float climb = VR_GetLadderClimb();
 
 		if( climb != 0.0f )
 		{
-			vec3_t dest;
-			trace_t tr;
+			float speed = fabs( climb );
 
-			VectorCopy( clent->v.origin, dest );
-			dest[2] += climb * frametime;
+			// A floor so a slow, careful pull still moves, and the existing
+			// ceiling so nobody rockets up a shaft on one big swing.
+			if( speed < 16.0f ) speed = 16.0f;
+			if( speed > 200.0f ) speed = 200.0f;
 
-			tr = SV_Move( clent->v.origin, clent->v.mins, clent->v.maxs,
-				dest, MOVE_NORMAL, clent, false );
-
-			if( !tr.allsolid && !tr.startsolid )
-			{
-				VectorCopy( tr.endpos, clent->v.origin );
-				clent->v.velocity[2] = 0.0f;	// no momentum to carry off the top
-
-				if( climb > 0.0f )
-				{
-					vec3_t fwd, over, drop;
-					trace_t ft, dt;
-					qboolean crested = false;
-
-					// GETTING OVER THE TOP.
-					//
-					// A purely vertical climb rises alongside the wall and runs out of
-					// ladder at the lip with nothing to step onto - which is where every
-					// ladder in the game leaves you, and no amount of pulling helps.
-					//
-					// HLVR gets over this by extending the ladder volume upward (done
-					// too, in VR_OnLadder) so their movement keeps running past the top,
-					// and their ladder movement carries the player FORWARD as well as up
-					// - so cresting simply walks them over the edge. The forward part is
-					// what was missing here.
-					//
-					// It needs no detection of the top at all, because the wall is its
-					// own gate: beside the ladder this sweep hits stone and stops dead,
-					// costing nothing on every frame of the climb. The moment the player
-					// clears the lip it comes free and lands them on the platform.
-					//
-					// A previous attempt aimed a ray where the player was LOOKING and
-					// teleported them to it. It could never work: what you look at from
-					// the top of a ladder is the lip - a vertical face, correctly
-					// rejected as unstandable - while the floor you want is past it and
-					// below your sightline.
-					AngleVectors( clent->v.v_angle, fwd, NULL, NULL );
-					fwd[2] = 0.0f;
-
-					if( VectorNormalizeLength( fwd ) > 0.0f )
-					{
-						VectorMA( clent->v.origin, 24.0f, fwd, over );
-
-						ft = SV_Move( clent->v.origin, clent->v.mins, clent->v.maxs,
-							over, MOVE_NORMAL, clent, false );
-
-						if( !ft.allsolid && !ft.startsolid && ft.fraction > 0.5f )
-						{
-							VectorCopy( ft.endpos, drop );
-							drop[2] -= 32.0f;
-
-							dt = SV_Move( ft.endpos, clent->v.mins, clent->v.maxs,
-								drop, MOVE_NORMAL, clent, false );
-
-							// Only where there is real floor to arrive on. Climbing an
-							// open shaft while facing away from the rungs must not walk
-							// the player out into the drop.
-							if( !dt.allsolid && !dt.startsolid && dt.fraction < 1.0f
-								&& dt.plane.normal[2] >= 0.7f )
-							{
-								VectorCopy( dt.endpos, clent->v.origin );
-								crested = true;
-							}
-						}
-					}
-
-					// LET GO OF THE FLOOR.
-					//
-					// Reported precisely: climbing worked well once airborne, and not
-					// at all from standing - a small jump first made it work. That is
-					// the ground logic re-seating the player every frame. A pull lifts
-					// them about half a unit per frame, which is nothing against being
-					// planted back down, so the first rung could never be left.
-					//
-					// Clearing FL_ONGROUND while climbing is what jumping was doing by
-					// accident. The player is hanging off a ladder; they are not
-					// standing on anything, and saying so is simply true.
-					//
-					// Not once they have crested, though - then they ARE standing on
-					// the platform, and unsticking them from it would drop them back
-					// down the shaft they just climbed.
-					if( !crested )
-					{
-						clent->v.flags = (int)clent->v.flags & ~FL_ONGROUND;
-						clent->v.groundentity = NULL;
-					}
-				}
-
-				SV_LinkEdict( clent, true );
-			}
+			svgame.pmove->maxspeed = speed;
+			vr_climbing = true;
 		}
 	}
 #endif
+
+	svgame.dllFuncs.pfnPM_Move( svgame.pmove, true );
+
+#if !XASH_DEDICATED
+	if( vr_climbing )
+		svgame.pmove->maxspeed = vr_saved_maxspeed;
+#endif
+
+	// copy results back to client
+	SV_FinishPMove( svgame.pmove, cl );
 
 	if( clent->v.solid != SOLID_NOT && !sv.playersonly )
 	{

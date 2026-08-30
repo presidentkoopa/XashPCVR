@@ -974,35 +974,40 @@ static void CL_CreateCmd( void )
 		if( VR_GetButton( VR_BTN_CROUCH ) || VR_GetPhysicalCrouch( ))
 			cmd->buttons |= IN_DUCK;
 
-		// Hand-over-hand ladder climbing. Ladder movement reads usercmd
-		// upmove and lives in pm_shared, which is engine code, so this needs
-		// nothing from the mod.
+		// Hand-over-hand ladder climbing.
+		//
+		// Expressed as IN_FORWARD/IN_BACK because that is the ONLY thing
+		// PM_LadderMove reads - it ignores forwardmove, sidemove and upmove
+		// entirely and takes its direction from the buttons projected along the
+		// view angles. Sending a pull through any other channel was sending it
+		// somewhere nothing was listening.
+		//
+		// Pulling a hand DOWN presses forward, which on a ladder you are facing
+		// climbs you up: pm_shared decomposes the velocity you aim into the
+		// ladder face and turns that component vertical. Pull up to descend.
 		{
 			float climb = VR_GetLadderMove();
 
-			if( climb != 0.0f )
-				cmd->upmove += climb;
-
 			// BOTH HANDS ON THE LADDER.
 			//
-			// Stock GoldSrc ladder movement reads forwardmove along the view
-			// direction, so the stick climbs perfectly well on its own - which is
-			// why hand-over-hand felt like decoration rather than the mechanism.
-			// Zeroing the axes here leaves the hands as the only way up.
+			// The stick climbs perfectly well on its own, which is what made
+			// hand-over-hand feel like decoration rather than the mechanism.
+			// Dropping the movement buttons leaves the hands as the only way up.
 			//
-			// Jump still detaches, so the ladder is never a trap.
 			// Only while a rung is actually HELD. Standing against a ladder must
 			// still let the player walk away - suppressing on proximity alone
-			// stranded them with no way off.
+			// stranded them with no way off. Jump still detaches either way, so
+			// the ladder is never a trap.
 			if( VR_LadderHands( ))
 			{
 				cmd->forwardmove = 0.0f;
 				cmd->sidemove = 0.0f;
+				cmd->buttons &= ~( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT );
 
-				// The climb itself is applied SERVER-SIDE - see sv_pmove.c. Nothing
-			// PM_LadderMove reads can express "pull down to go up": it takes
-			// IN_FORWARD/IN_BACK projected along the view angles and ignores
-			// upmove entirely, so driving it from here meant fighting it.
+				if( climb > 0.0f )
+					cmd->buttons |= IN_FORWARD;
+				else if( climb < 0.0f )
+					cmd->buttons |= IN_BACK;
 			}
 		}
 		// Main-hand grip is a MODIFIER, not a button of its own.
