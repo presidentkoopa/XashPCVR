@@ -474,20 +474,9 @@ void V_RenderView( void )
 		// Pin the weapon to the right controller. The mod positioned the
 		// viewmodel relative to a mouse-look camera; in VR the hand owns it.
 		{
+			// Stowed while climbing: the weapon is neither drawn nor pinned to a
+			// hand, and VR_DrawHands below then puts BOTH hands on the rungs.
 			qboolean weapon_equipped = ( cl.local.viewmodel != 0 ) && !VR_LadderHands();
-
-			// ACTUALLY HIDE IT while climbing, do not merely stop pinning it.
-			//
-			// Clearing weapon_equipped alone only skips the VR pin - the renderer
-			// still draws the viewmodel, and without the pin it lands at the mod's
-			// default camera-relative place, which is directly in front of the
-			// player's face. Worse, two-handed grab then still has something to
-			// reach for. Dropping the model is what stows it.
-			if( VR_LadderHands( ))
-			{
-				clgame.viewent.model = NULL;
-				clgame.viewent.curstate.modelindex = 0;
-			}
 			cl_entity_t *view = &clgame.viewent;
 			qboolean pinned = false;
 

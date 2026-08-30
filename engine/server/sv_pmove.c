@@ -1035,49 +1035,6 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 	SV_PlayerRunThink( clent, frametime, cl->timebase );
 
-#if !XASH_DEDICATED
-	// LADDER CLIMBING, driven straight from the hands.
-	//
-	// PM_LadderMove cannot express this. It reads IN_FORWARD/IN_BACK
-	// projected along the view angles and never looks at upmove, so a pull
-	// gesture has no channel into it. Both reference ports solved that by
-	// forking the SDK - Lambda1VR added pmove->angles2 for the off-hand
-	// direction, HLVR routed ladders through its own movement handler -
-	// and neither route is open to a fork that must run unmodified game DLLs.
-	//
-	// So the engine moves the player itself, which it is entitled to do:
-	// origin is engine-owned memory, and this is the same authoritative move
-	// SV_PushEntity performs and that teleport locomotion already uses.
-	// Applied after the think so pmove cannot overwrite it in the same frame.
-	//
-	// Swept with the real player hull, so a ceiling or floor stops the climb
-	// instead of pushing the player through it.
-	if( NET_IsLocalAddress( cl->netchan.remote_address ) && VR_LadderHands( ))
-	{
-		float climb = VR_GetLadderClimb();
-
-		if( climb != 0.0f )
-		{
-			vec3_t dest;
-			trace_t tr;
-
-			VectorCopy( clent->v.origin, dest );
-			dest[2] += climb * frametime;
-
-			tr = SV_Move( clent->v.origin, clent->v.mins, clent->v.maxs,
-				dest, MOVE_NORMAL, clent, false );
-
-			if( !tr.allsolid && !tr.startsolid )
-			{
-				VectorCopy( tr.endpos, clent->v.origin );
-				clent->v.velocity[2] = 0.0f;	// no momentum to carry off the top
-				SV_LinkEdict( clent, true );
-			}
-		}
-	}
-#endif
-
-
 	// If conveyor, or think, set basevelocity, then send to client asap too.
 	if( !VectorIsNull( clent->v.basevelocity ))
 		VectorCopy( clent->v.basevelocity, clent->v.clbasevelocity );

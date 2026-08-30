@@ -991,18 +991,10 @@ static void CL_CreateCmd( void )
 			// Zeroing the axes here leaves the hands as the only way up.
 			//
 			// Jump still detaches, so the ladder is never a trap.
-			// Only while a rung is actually HELD. Standing against a ladder must
-			// still let the player walk away - suppressing on proximity alone
-			// stranded them with no way off.
 			if( VR_LadderHands( ))
 			{
 				cmd->forwardmove = 0.0f;
 				cmd->sidemove = 0.0f;
-
-				// The climb itself is applied SERVER-SIDE - see sv_pmove.c. Nothing
-			// PM_LadderMove reads can express "pull down to go up": it takes
-			// IN_FORWARD/IN_BACK projected along the view angles and ignores
-			// upmove entirely, so driving it from here meant fighting it.
 			}
 		}
 		// Main-hand grip is a MODIFIER, not a button of its own.
