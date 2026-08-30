@@ -1087,6 +1087,32 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			svgame.pmove->maxspeed = speed;
 			vr_climbing = true;
 
+			// STANDING ON THE FLOOR, THERE IS NO DOWN.
+			//
+			// This is the other half of the push-off branch, and the half that
+			// was throwing the player off the ladder as they grabbed it.
+			//
+			// To pm_shared, climbing DOWN and STEPPING OFF are the same input -
+			// both are movement away from the rungs - and the only thing telling
+			// them apart is whether the player is on the ground:
+			//
+			//     if( onFloor && normal > 0 )   // On ground moving away
+			//         VectorMA( velocity, MAX_CLIMB_SPEED, plane.normal, ... )
+			//
+			// Reaching UP to take hold of a rung moves the hand up, which reads
+			// as descend, which at the foot of a ladder reads as stepping off -
+			// answered with a shove at full climb speed. The single most natural
+			// motion for starting a climb was the one that ended it.
+			//
+			// Stood on solid ground there is nothing below to climb to, so the
+			// input has no meaning worth keeping and dropping it costs nothing.
+			if( climb < 0.0f && ( (int)clent->v.flags & FL_ONGROUND ))
+			{
+				svgame.pmove->cmd.buttons &= ~IN_BACK;
+				vr_climbing = false;
+				svgame.pmove->maxspeed = vr_saved_maxspeed;
+			}
+
 			// AND POINT THE MOVEMENT AT THE LADDER, NOT AT THE GAZE.
 			//
 			// PM_LadderMove reads direction from the view angles, dots it against

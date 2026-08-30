@@ -1004,9 +1004,13 @@ static void CL_CreateCmd( void )
 				cmd->sidemove = 0.0f;
 				cmd->buttons &= ~( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT );
 
-				if( climb > 0.0f )
+				// A REAL PULL, not a twitch. Hand tracking is never perfectly still,
+				// and every frame of drift used to become a movement button - which
+				// on a ladder is not a harmless nudge, since pm_shared reads movement
+				// away from the rungs as stepping off and acts on it hard.
+				if( climb > 12.0f )
 					cmd->buttons |= IN_FORWARD;
-				else if( climb < 0.0f )
+				else if( climb < -12.0f )
 					cmd->buttons |= IN_BACK;
 			}
 			else if( VR_LadderHandsOnly() && VR_OnLadder( ))
