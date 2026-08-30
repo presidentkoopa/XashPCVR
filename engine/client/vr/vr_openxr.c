@@ -3745,7 +3745,25 @@ float VR_GetLadderMove( void )
 
 		gripping = ( hand == VR_OffHand() ) ? VR_GetButton( VR_BTN_OFFGRIP ) : VR_GetButton( VR_BTN_ATTACK2 );
 
-		z = pose->origin[2];
+		// MEASURED AGAINST THE PLAYER, NOT THE WORLD.
+		//
+		// pose->origin is world space, and sampling the climb there makes it a
+		// servo that cancels itself: pull the hand down half a unit, the climb
+		// lifts the player half a unit, and the hand's WORLD height has not
+		// changed - so the next frame reads no pull and the climb stops. The
+		// better it worked the less it worked, settling at a hair above zero.
+		//
+		// It is the whole reason this felt haunted rather than broken: "it wants
+		// to work but something is stopping it", climbing that only took hold
+		// after a jump (airborne, the player moves for reasons the hand is not
+		// cancelling), and a log full of move=0.2 flickering between signs while
+		// a rung was plainly being hauled on.
+		//
+		// Subtracting the player origin measures the hand where the gesture
+		// actually lives - against the body making it - so climbing cannot eat
+		// its own input no matter how well it works. Same lesson as room-scale
+		// movement, which had to stop servoing to a position for this reason.
+		z = pose->origin[2] - cl.simorg[2];
 
 		if( gripping && have_last[hand] && host.frametime > 0.0 )
 		{
