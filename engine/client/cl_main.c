@@ -1000,8 +1000,28 @@ static void CL_CreateCmd( void )
 			// the ladder is never a trap.
 			if( VR_LadderHands( ))
 			{
-				cmd->forwardmove = 0.0f;
-				cmd->sidemove = 0.0f;
+				// DROP THE BUTTONS, KEEP forwardmove.
+				//
+				// Clearing the movement buttons is what stops the stick climbing,
+				// because buttons are the only thing PM_LadderMove reads.
+				//
+				// forwardmove is a different matter, and zeroing it here stranded the
+				// player completely. PM_Ladder requires the origin to be INSIDE the
+				// ladder brush before the game will run its ladder code at all:
+				//
+				//     if( PM_HullPointContents( hull, num, test ) == CONTENTS_EMPTY )
+				//         continue;
+				//
+				// VR_OnLadder is far looser than that - a generous margin on every
+				// side, deliberately, so the gesture engages before the player is
+				// perfectly positioned. That leaves a wide band where WE believe we
+				// are on a ladder and the GAME does not, and in that band buttons go
+				// nowhere because PM_LadderMove never runs. Zeroing forwardmove as
+				// well removed the one channel still capable of moving anybody, so a
+				// pull that read a clean fifty units a second moved the player zero.
+				//
+				// Leaving it costs nothing where the game DOES agree, since
+				// PM_LadderMove ignores forwardmove entirely and drives by velocity.
 				cmd->buttons &= ~( IN_FORWARD | IN_BACK | IN_MOVELEFT | IN_MOVERIGHT );
 
 				// A REAL PULL, not a twitch. Hand tracking is never perfectly still,

@@ -413,6 +413,9 @@ typedef unsigned int GLbitfield_t;
 #define GL_NEAREST_T                0x2600
 #define GL_DEPTH_BUFFER_BIT_T       0x00000100
 #define GL_RGBA8_T                  0x8058
+#define GL_DEPTH_COMPONENT16_T      0x81A5
+#define GL_DEPTH_COMPONENT32F_T     0x8CAC
+#define GL_DEPTH24_STENCIL8_T       0x88F0
 
 static struct
 {
@@ -5941,10 +5944,65 @@ static qboolean VR_CreateSwapchain( int eye )
 		XrSwapchainCreateInfo dci = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
 		uint32_t dn = 0, k;
 
+		// PICK A DEPTH FORMAT THE RUNTIME WILL ACTUALLY TAKE.
+		//
+		// Hardcoding DEPTH_COMPONENT24 was simply refused. That a runtime
+		// advertises the depth extension says nothing about which formats it
+		// accepts, and the accepted set differs between them - so ask, and
+		// choose from what comes back rather than assuming.
+		//
+		// Depth-only formats are preferred over packed depth-stencil purely so
+		// the FBO attachment below stays a plain GL_DEPTH_ATTACHMENT; a packed
+		// format properly wants GL_DEPTH_STENCIL_ATTACHMENT and is only taken
+		// when nothing simpler is on offer.
+		{
+			static const int64_t want[] = {
+				GL_DEPTH_COMPONENT32F_T,
+				GL_DEPTH_COMPONENT24_EXT,
+				GL_DEPTH_COMPONENT16_T,
+				GL_DEPTH24_STENCIL8_T,
+			};
+			int64_t *fmts = NULL;
+			uint32_t nf = 0, fi, wi;
+			int64_t chosen = 0;
+
+			if( XR_SUCCEEDED( xrEnumerateSwapchainFormats( vr.session, 0, &nf, NULL )) && nf )
+			{
+				fmts = Mem_Calloc( host.mempool, sizeof( int64_t ) * nf );
+
+				if( XR_FAILED( xrEnumerateSwapchainFormats( vr.session, nf, &nf, fmts )))
+					nf = 0;
+			}
+
+			for( wi = 0; wi < (uint32_t)( sizeof( want ) / sizeof( want[0] )) && !chosen; wi++ )
+			{
+				for( fi = 0; fi < nf; fi++ )
+				{
+					if( fmts[fi] == want[wi] )
+					{
+						chosen = want[wi];
+						break;
+					}
+				}
+			}
+
+			if( fmts ) Mem_Free( fmts );
+
+			if( !chosen )
+			{
+				Con_Printf( "VR: eye %d - runtime offers no usable depth format\n", eye );
+				vr.have_depth_ext = false;
+			}
+			else
+				dci.format = chosen;
+		}
+
+		if( !vr.have_depth_ext )
+			goto no_depth;
+
 		dci.arraySize   = 1;
 		dci.mipCount    = 1;
 		dci.faceCount   = 1;
-		dci.format      = GL_DEPTH_COMPONENT24_EXT;
 		dci.width       = sc->width;
 		dci.height      = sc->height;
 		dci.sampleCount = 1;
@@ -5979,6 +6037,8 @@ static qboolean VR_CreateSwapchain( int eye )
 			sc->depth_handle = 0;
 			Con_Printf( "VR: eye %d depth swapchain unavailable, colour only\n", eye );
 		}
+no_depth:
+		;
 	}
 
 	// Private depth, ONLY when the runtime is not taking it. With a depth
