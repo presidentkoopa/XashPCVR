@@ -3714,8 +3714,12 @@ qboolean VR_OnLadder( void )
 		// stand just outside it rather than inside.
 		for( j = 0; j < 3; j++ )
 		{
-			mins[j] -= 24.0f;
-			maxs[j] += 24.0f;
+			// 16, not 24. PM_Ladder expands the brush by the player hull and
+			// then demands the origin be inside it, so a wider margin here just
+			// creates a band where the gesture engages and the game refuses to
+			// move anybody.
+			mins[j] -= 16.0f;
+			maxs[j] += 16.0f;
 		}
 
 		// AND FURTHER STILL ABOVE THE TOP.

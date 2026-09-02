@@ -438,8 +438,15 @@ SV_InitClientMove
 
 ===============
 */
+// Server-side ladder tracing. Separate from vr_diag because the question it
+// answers - whether pm_shared agreed to run its ladder code - is invisible
+// from the client and needed only while ladder work is in flight.
+static CVAR_DEFINE_AUTO( vr_diag_ladder, "0", 0, "log whether pm_shared ran its ladder code" );
+
 void SV_InitClientMove( void )
 {
+	Cvar_RegisterVariable( &vr_diag_ladder );
+
 	Pmove_Init ();
 
 	svgame.pmove->server = true;
@@ -1137,6 +1144,27 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 				svgame.pmove->angles[YAW] = ( atan2( vr_ladder_dir[1], vr_ladder_dir[0] )
 					* 180.0f / M_PI_F );
 				vr_aimed = true;
+
+				// AND NOTHING BUT THE PULL GETS TO USE THOSE ANGLES.
+				//
+				// The substitution above points movement at the rungs, which is right
+				// for the climb and wrong for everything else that reads angles. If
+				// the game does not agree we are on a ladder - and PM_Ladder is much
+				// stricter than VR_OnLadder, so often it does not - then PM_LadderMove
+				// never runs and these angles are simply steering ordinary walking.
+				//
+				// Any stray forwardmove then drives the player straight at the ladder
+				// no matter which way they are facing: a lean, a breath of room-scale
+				// drift, a thumb resting on the stick. Observed as sliding sideways on
+				// grabbing a ladder while never gaining a single unit of height.
+				//
+				// Zeroing them here confines the substitution to the ladder path.
+				// PM_LadderMove ignores forwardmove anyway and drives by velocity, so
+				// where the game DOES agree this costs nothing - and where it does not,
+				// the borrowed angles now have nothing to move. Only while actually
+				// pulling, so letting go instantly hands walking back.
+				svgame.pmove->cmd.forwardmove = 0.0f;
+				svgame.pmove->cmd.sidemove = 0.0f;
 			}
 		}
 	}
@@ -1150,6 +1178,17 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 	if( vr_aimed )
 		VectorCopy( vr_saved_angles, svgame.pmove->angles );
+
+	// Did the GAME think we were on a ladder? PM_LadderMove is the only
+	// thing that sets MOVETYPE_FLY here, so this answers the one question
+	// that separates "the pull is wrong" from "the pull went nowhere" -
+	// and that question has cost several rounds of guessing to answer.
+	if( vr_climbing && vr_diag_ladder.value != 0.0f )
+		Con_Printf( "LADDERSV climb=%.1f pm_ran=%d onground=%d z=%.1f\n",
+			VR_GetLadderClimb(),
+			svgame.pmove->movetype == MOVETYPE_FLY ? 1 : 0,
+			((int)clent->v.flags & FL_ONGROUND) ? 1 : 0,
+			clent->v.origin[2] );
 #endif
 
 	// copy results back to client
