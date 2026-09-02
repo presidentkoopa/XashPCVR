@@ -643,6 +643,7 @@ static struct
 	int           sh_phase;         // 0 highlight, 1 press, 2 release
 	qboolean      ladder_gripping;  // a hand is actually holding a rung
 	vec3_t        ladder_center;    // middle of the rungs we are on
+	vec3_t        ladder_size;      // its extents, to find which way it faces
 	qboolean      ladder_have_dir;  // ladder_center is good this frame
 	float         ladder_climb;     // last computed climb, units/sec
 	char          sh_restore_name[32]; // weapon to jump straight back to
@@ -3736,6 +3737,7 @@ qboolean VR_OnLadder( void )
 			VectorAdd( pe->model->mins, pe->model->maxs, vr.ladder_center );
 			VectorScale( vr.ladder_center, 0.5f, vr.ladder_center );
 			VectorAdd( vr.ladder_center, pe->origin, vr.ladder_center );
+			VectorSubtract( pe->model->maxs, pe->model->mins, vr.ladder_size );
 			vr.ladder_have_dir = true;
 			return true;
 		}
@@ -3795,6 +3797,28 @@ qboolean VR_GetLadderDir( vec3_t out )
 
 	VectorSubtract( vr.ladder_center, cl.simorg, d );
 	d[2] = 0.0f;
+
+	// SQUARE ON TO THE FACE, not at the middle of the rungs.
+	//
+	// pm_shared splits the intended velocity against the ladder face and
+	// keeps both halves: the part going INTO the face becomes the climb, and
+	// the part running ALONG it survives as real sideways movement -
+	//
+	//     VectorSubtract( velocity, cross, lateral );
+	//     VectorMA( lateral, -normal, tmp, pmove->velocity );
+	//
+	// Pointing at the centre therefore slid the player sideways by exactly
+	// how far off-centre they were standing when they took hold. Grab a
+	// ladder a little to its right and you drift left, every time.
+	//
+	// A ladder brush is a thin axis-aligned box, so the face is normal to
+	// whichever horizontal axis it is thinnest on. Dropping the other axis
+	// leaves a purely perpendicular approach - no lateral term at all, and
+	// the climb comes out vertical wherever along the rungs you grabbed.
+	if( vr.ladder_size[0] < vr.ladder_size[1] )
+		d[1] = 0.0f;
+	else
+		d[0] = 0.0f;
 
 	if( VectorNormalizeLength( d ) == 0.0f )
 		return false;
