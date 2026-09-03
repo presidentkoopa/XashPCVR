@@ -103,6 +103,7 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 // states a fact about the player and nothing more.
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
+static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
@@ -5516,6 +5517,20 @@ static void VR_UpdateAction( void )
 		// Worked. The next shot is available.
 		vr.act_needs = false;
 		vr.act_armed = false;
+
+		// SAY SO OUT LOUD.
+		//
+		// The mod plays its own cocking sound as part of the automatic
+		// sequence we just stood down, so a pump worked by hand made no
+		// noise at all - the one action the player performs deliberately
+		// was the only one they could not hear.
+		//
+		// It also does the work of an animation the weapon may not have.
+		// A bolt or charging handle that no model shows can still be felt
+		// and heard, which is the difference between performing an action
+		// and miming one.
+		if( vr_action_sound.string[0] )
+			S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
 		VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
 		VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
 	}
@@ -6147,6 +6162,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
