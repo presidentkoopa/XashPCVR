@@ -609,6 +609,8 @@ static struct
 	XrCompositionLayerProjectionView proj_views[VR_MAX_EYES];
 	XrCompositionLayerDepthInfoKHR   depth_info[VR_MAX_EYES];
 	qboolean      have_depth_ext;  // runtime accepts a depth layer
+	float         applied_ss;      // render scale the swapchains were built at
+	int           applied_msaa;    // and the sample count, to notice a change
 	vr_swapchain_t swapchains[VR_MAX_EYES];
 
 	XrFrameState  frame_state;
@@ -5928,6 +5930,39 @@ qboolean VR_Init( void )
 VR_CreateSwapchain
 ================
 */
+/*
+================
+VR_DestroySwapchain
+
+Release one eye's render targets. Split out of session teardown because the
+swapchains are also rebuilt mid-session when the image quality settings
+change, and that path needs to let go of the old ones first.
+================
+*/
+static void VR_DestroySwapchain( int eye )
+{
+	vr_swapchain_t *sc = &vr.swapchains[eye];
+
+	if( sc->fbos && vrgl.loaded )
+		vrgl.DeleteFramebuffers( sc->image_count, sc->fbos );
+	if( sc->depth_rb && vrgl.loaded )
+		vrgl.DeleteRenderbuffers( 1, &sc->depth_rb );
+	if( sc->msaa_fbo && vrgl.loaded )
+		vrgl.DeleteFramebuffers( 1, &sc->msaa_fbo );
+	if( sc->msaa_color && vrgl.loaded )
+		vrgl.DeleteRenderbuffers( 1, &sc->msaa_color );
+	if( sc->msaa_depth && vrgl.loaded )
+		vrgl.DeleteRenderbuffers( 1, &sc->msaa_depth );
+	if( sc->depth_handle )
+		xrDestroySwapchain( sc->depth_handle );
+	if( sc->depth_images ) Mem_Free( sc->depth_images );
+	if( sc->handle )
+		xrDestroySwapchain( sc->handle );
+	if( sc->images ) Mem_Free( sc->images );
+	if( sc->fbos )   Mem_Free( sc->fbos );
+	memset( sc, 0, sizeof( *sc ));
+}
+
 static qboolean VR_CreateSwapchain( int eye )
 {
 	vr_swapchain_t *sc = &vr.swapchains[eye];
@@ -5954,6 +5989,8 @@ static qboolean VR_CreateSwapchain( int eye )
 
 		sc->width  = (uint32_t)( vr.view_configs[eye].recommendedImageRectWidth  * ss + 0.5f );
 		sc->height = (uint32_t)( vr.view_configs[eye].recommendedImageRectHeight * ss + 0.5f );
+
+		vr.applied_ss = ss;
 	}
 
 	ci.arraySize   = 1;
@@ -6112,6 +6149,8 @@ no_depth:
 	if( sc->samples != 2 && sc->samples != 4 && sc->samples != 8 )
 		sc->samples = 0;
 
+	vr.applied_msaa = sc->samples;
+
 	if( sc->samples && !vrgl.RenderbufferStorageMultisample )
 	{
 		Con_Printf( "VR: no glRenderbufferStorageMultisample, MSAA off\n" );
@@ -6198,28 +6237,7 @@ static void VR_DestroySession( void )
 	int i;
 
 	for( i = 0; i < VR_MAX_EYES; i++ )
-	{
-		vr_swapchain_t *sc = &vr.swapchains[i];
-
-		if( sc->fbos && vrgl.loaded )
-			vrgl.DeleteFramebuffers( sc->image_count, sc->fbos );
-		if( sc->depth_rb && vrgl.loaded )
-			vrgl.DeleteRenderbuffers( 1, &sc->depth_rb );
-		if( sc->msaa_fbo && vrgl.loaded )
-			vrgl.DeleteFramebuffers( 1, &sc->msaa_fbo );
-		if( sc->msaa_color && vrgl.loaded )
-			vrgl.DeleteRenderbuffers( 1, &sc->msaa_color );
-		if( sc->msaa_depth && vrgl.loaded )
-			vrgl.DeleteRenderbuffers( 1, &sc->msaa_depth );
-		if( sc->depth_handle )
-			xrDestroySwapchain( sc->depth_handle );
-		if( sc->depth_images ) Mem_Free( sc->depth_images );
-		if( sc->handle )
-			xrDestroySwapchain( sc->handle );
-		if( sc->images ) Mem_Free( sc->images );
-		if( sc->fbos )   Mem_Free( sc->fbos );
-		memset( sc, 0, sizeof( *sc ));
-	}
+		VR_DestroySwapchain( i );
 
 	for( i = 0; i < 2; i++ )
 	{
@@ -7084,6 +7102,65 @@ static void VR_PollEvents( void )
 VR_BeginFrame
 ================
 */
+/*
+================
+VR_CheckQuality
+
+Rebuild the eye targets when the image quality settings change.
+
+They are read when a swapchain is built, which happens once as the headset
+session comes up - and that is BEFORE the config is executed, so a supersample
+set in config.cfg or vrbinds.cfg was read as its compiled default and the
+setting appeared to do nothing at all. Rebuilding on change fixes that no
+matter when the value lands, and makes both settings adjustable in place
+rather than only across a restart.
+
+Called before the frame is waited on, which is the only point where no image
+is acquired and the targets can safely be let go of.
+================
+*/
+static void VR_CheckQuality( void )
+{
+	float ss = vr_supersample.value;
+	int msaa = (int)vr_msaa.value;
+	int i;
+
+	// Clamped the same way VR_CreateSwapchain clamps them, or an
+	// out-of-range value would never compare equal and rebuild every frame.
+	if( ss < 0.5f ) ss = 0.5f;
+	if( ss > 2.0f ) ss = 2.0f;
+	if( msaa != 2 && msaa != 4 && msaa != 8 ) msaa = 0;
+
+	if( ss == vr.applied_ss && msaa == vr.applied_msaa )
+		return;
+
+	Con_Printf( "VR: image quality changed, rebuilding eye targets\n" );
+
+	for( i = 0; i < vr.eye_count; i++ )
+	{
+		VR_DestroySwapchain( i );
+
+		if( !VR_CreateSwapchain( i ))
+		{
+			// A driver can refuse a size or sample count that looked fine.
+			// Leaving half-built targets would black the headset out, so put
+			// the settings back and rebuild what is known to have worked.
+			int j;
+
+			Con_Printf( S_ERROR "VR: %.2fx / %dx MSAA refused, reverting\n", ss, msaa );
+			Cvar_SetValue( "vr_supersample", vr.applied_ss );
+			Cvar_SetValue( "vr_msaa", (float)vr.applied_msaa );
+
+			for( j = 0; j <= i; j++ )
+			{
+				VR_DestroySwapchain( j );
+				VR_CreateSwapchain( j );
+			}
+			return;
+		}
+	}
+}
+
 qboolean VR_BeginFrame( void )
 {
 	XrFrameWaitInfo wi = { XR_TYPE_FRAME_WAIT_INFO };
@@ -7119,6 +7196,8 @@ qboolean VR_BeginFrame( void )
 
 	if( !vr.running )
 		return false;
+
+	VR_CheckQuality();
 
 	memset( &vr.frame_state, 0, sizeof( vr.frame_state ));
 	vr.frame_state.type = XR_TYPE_FRAME_STATE;
