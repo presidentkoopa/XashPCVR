@@ -89,6 +89,19 @@ static CVAR_DEFINE_AUTO( vr_reload_back, "2", FCVAR_ARCHIVE, "pouch offset behin
 static CVAR_DEFINE_AUTO( vr_reload_radius, "11", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port, "13", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset forward of the grip, units" );
+// PUBLISHED TO THE SERVER, PER PLAYER.
+//
+// FCVAR_USERINFO puts this in the client's userinfo, where a game DLL can
+// read it with pfnInfoKeyValue for THAT player specifically - the same
+// channel "name" and "model" already travel on. Per player is the whole
+// point: a global cvar would change reloading for everyone on the server,
+// so a flatscreen player joining a VR host would inherit a reload they have
+// no way to perform.
+//
+// A DLL that has never heard of it simply never asks, and behaves exactly as
+// it does today. That is what keeps the mod catalogue untouched: the engine
+// states a fact about the player and nothing more.
+static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
@@ -5528,6 +5541,18 @@ nothing about it reaches the protocol.
 */
 static void VR_UpdateReload( void )
 {
+	// Tell the server what this player is doing, when it changes.
+	//
+	// Only on a change, because setting a userinfo cvar sends an update to
+	// the server - every frame would be a steady trickle of them for a fact
+	// that alters about once a session.
+	{
+		qboolean want = ( VR_IsActive() && vr_reload.value != 0.0f );
+
+		if( want != ( vr_handload.value != 0.0f ))
+			Cvar_SetValue( "vr_handload", want ? 1.0f : 0.0f );
+	}
+
 	static qboolean grip_prev = false;
 	vec3_t hand, hang, wpn, wang, fwd, port, d;
 	qboolean grip;
@@ -6094,6 +6119,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_radius );
 	Cvar_RegisterVariable( &vr_reload_port );
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
+	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
