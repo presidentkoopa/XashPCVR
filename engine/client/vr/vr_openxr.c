@@ -3722,14 +3722,24 @@ qboolean VR_OnLadder( void )
 			maxs[j] += 16.0f;
 		}
 
-		// AND FURTHER STILL ABOVE THE TOP.
+		// AND STOPS DEAD AT THE TOP OF THE RUNGS.
 		//
-		// Straight out of HLVR, which extends its ladders upward by 36 units
-		// for exactly this reason. The brush stops at the lip, so the moment
-		// you climb high enough to get over it the engine decides you are no
-		// longer on a ladder - and the climb dies at precisely the point you
-		// needed it. Reaching past the top IS the last pull.
-		maxs[2] += 36.0f;
+		// This once reached 36 units higher, copying HLVR, so a last pull
+		// could carry the player over the lip. That belonged to a cresting
+		// scheme that no longer exists, and it actively breaks the dismount
+		// that replaced it.
+		//
+		// Getting off a ladder is ordinary walking, and the whole ladder
+		// system exists to suppress ordinary walking: the climb clears the
+		// movement buttons, and hands-only strips any stick input heading
+		// into the rungs. Staying "on the ladder" above the lip therefore
+		// left the player hanging there with the climb still steering by
+		// gaze - sliding them sideways at the exact moment they were trying
+		// to step onto the platform.
+		//
+		// Ending here makes every part of it go inert at once, from one
+		// test, and hands the player back to the movement the game has
+		// always used to step off a ladder.
 
 		if( p[0] >= mins[0] && p[0] <= maxs[0] &&
 		    p[1] >= mins[1] && p[1] <= maxs[1] &&
@@ -3790,30 +3800,6 @@ qboolean VR_LadderHandsOnly( void )
 {
 	return ( VR_IsActive() && vr_ladder.value != 0.0f
 		&& vr_ladder_hands_only.value != 0.0f ) ? true : false;
-}
-
-/*
-================
-VR_GetLadderTop
-
-How high the rungs go, in world Z.
-
-The top of a ladder is where climbing stops being the thing you want and
-stepping off starts, and the two need opposite handling: the climb suppresses
-ordinary movement so a borrowed aim cannot steer it, while the dismount is
-ordinary movement and nothing else. Without somewhere to draw that line the
-player rises to the lip and hangs there with no way onto the platform.
-================
-*/
-qboolean VR_GetLadderTop( float *out_z )
-{
-	if( !VR_IsActive() || !vr.ladder_have_dir )
-		return false;
-
-	if( out_z )
-		*out_z = vr.ladder_center[2] + ( vr.ladder_size[2] * 0.5f );
-
-	return true;
 }
 
 qboolean VR_GetLadderDir( vec3_t out )
@@ -7669,7 +7655,6 @@ qboolean VR_LadderHands( void ) { return false; }
 float    VR_GetLadderClimb( void ) { return 0.0f; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
 qboolean VR_GetLadderDir( vec3_t out ) { return false; }
-qboolean VR_GetLadderTop( float *out_z ) { return false; }
 qboolean VR_LadderHandsOnly( void ) { return false; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }
