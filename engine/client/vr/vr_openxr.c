@@ -5283,13 +5283,22 @@ Shared by both shoulder gestures so they cannot drift apart - the same reason
 the fire ray is computed once and cached.
 ================
 */
-static qboolean VR_HandInBodySpot( int hand_id, float side, float back,
-	float lift, float radius )
+/*
+================
+VR_BodySpotDist
+
+How far `hand` is from a hotspot hung off the head, or -1 if it cannot be
+worked out. The distance rather than a yes/no, because when a gesture will
+not fire the only useful question is whether the hand was nearly there or
+nowhere near, and a boolean cannot answer it.
+================
+*/
+static float VR_BodySpotDist( int hand_id, float side, float back, float lift )
 {
 	vec3_t hand, hang, head, hang_w, fwd, right, up, spot, d;
 
 	if( !VR_GetHandWorld( hand_id, hand, hang ))
-		return false;
+		return -1.0f;
 
 	// The REAL tracked head, in world space - not a reconstruction.
 	//
@@ -5304,7 +5313,7 @@ static qboolean VR_HandInBodySpot( int hand_id, float side, float back,
 	// VR_GetListener already returns the head through the same transform the
 	// hands use, so both are in one frame by construction.
 	if( !VR_GetListener( head, hang_w ))
-		return false;
+		return -1.0f;
 
 	AngleVectors( hang_w, fwd, right, up );
 
@@ -5314,7 +5323,15 @@ static qboolean VR_HandInBodySpot( int hand_id, float side, float back,
 	spot[2] += lift;
 
 	VectorSubtract( hand, spot, d );
-	return ( VectorLength( d ) < Q_max( 1.0f, radius ));
+	return VectorLength( d );
+}
+
+static qboolean VR_HandInBodySpot( int hand_id, float side, float back,
+	float lift, float radius )
+{
+	float dist = VR_BodySpotDist( hand_id, side, back, lift );
+
+	return ( dist >= 0.0f && dist < Q_max( 1.0f, radius )) ? true : false;
 }
 
 // The shoulder gestures, in the terms they were written in.
@@ -5414,6 +5431,28 @@ static void VR_UpdateReload( void )
 		}
 
 		vr.rl_holding = false;
+	}
+
+	// Every stage, every frame it is live. Which half of the gesture is
+	// failing - reaching the pouch or reaching the gun - is invisible from
+	// inside the headset and guessable from outside only by luck.
+	if( vr_diag.value != 0.0f && ( grip || vr.rl_holding || vr.rl_insert ))
+	{
+		float pouch = VR_BodySpotDist( VR_OffHand(), side, vr_reload_back.value,
+			-vr_reload_down.value );
+		float pdist = -1.0f;
+
+		if( VR_GetWeaponAim( wpn, wang ))
+		{
+			AngleVectors( wang, fwd, NULL, NULL );
+			VectorMA( wpn, vr_reload_port_fwd.value, fwd, port );
+			VectorSubtract( hand, port, d );
+			pdist = VectorLength( d );
+		}
+
+		VR_DiagPrintf( "RELOAD grip=%d hold=%d insert=%d pouch=%.1f/%.0f port=%.1f/%.0f clip=%d\n",
+			grip ? 1 : 0, vr.rl_holding ? 1 : 0, vr.rl_insert ? 1 : 0,
+			pouch, vr_reload_radius.value, pdist, vr_reload_port.value, vr.rl_clip );
 	}
 
 	grip_prev = grip;
