@@ -3792,6 +3792,30 @@ qboolean VR_LadderHandsOnly( void )
 		&& vr_ladder_hands_only.value != 0.0f ) ? true : false;
 }
 
+/*
+================
+VR_GetLadderTop
+
+How high the rungs go, in world Z.
+
+The top of a ladder is where climbing stops being the thing you want and
+stepping off starts, and the two need opposite handling: the climb suppresses
+ordinary movement so a borrowed aim cannot steer it, while the dismount is
+ordinary movement and nothing else. Without somewhere to draw that line the
+player rises to the lip and hangs there with no way onto the platform.
+================
+*/
+qboolean VR_GetLadderTop( float *out_z )
+{
+	if( !VR_IsActive() || !vr.ladder_have_dir )
+		return false;
+
+	if( out_z )
+		*out_z = vr.ladder_center[2] + ( vr.ladder_size[2] * 0.5f );
+
+	return true;
+}
+
 qboolean VR_GetLadderDir( vec3_t out )
 {
 	vec3_t d;
@@ -7645,6 +7669,7 @@ qboolean VR_LadderHands( void ) { return false; }
 float    VR_GetLadderClimb( void ) { return 0.0f; }
 float    VR_GetLadderMove( void ) { return 0.0f; }
 qboolean VR_GetLadderDir( vec3_t out ) { return false; }
+qboolean VR_GetLadderTop( float *out_z ) { return false; }
 qboolean VR_LadderHandsOnly( void ) { return false; }
 void     VR_GetRoomScaleMove( float view_yaw, float *forward, float *side ) { if( forward ) *forward = 0.0f; if( side ) *side = 0.0f; }
 qboolean VR_GetTouchContact( void ) { return false; }

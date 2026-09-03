@@ -1081,8 +1081,31 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	if( NET_IsLocalAddress( cl->netchan.remote_address ))
 	{
 		float climb = VR_GetLadderClimb();
+		float ladder_top = 0.0f;
+		qboolean at_top = false;
 
-		if( climb != 0.0f )
+		// AT THE TOP, STOP HELPING.
+		//
+		// Everything below exists to make the climb work and to stop the
+		// borrowed aim leaking into ordinary movement - which means it zeroes
+		// forwardmove and points the player at the rungs. Both are right on
+		// the way up and exactly wrong once the rungs run out, because
+		// stepping onto the platform IS horizontal movement, aimed away from
+		// the ladder rather than into it.
+		//
+		// The player climbed cleanly to the lip and then hung there, unable to
+		// get off, and eventually fell the whole way back down.
+		//
+		// So once they are level with the top of the brush, hand everything
+		// back: real angles, real forwardmove, no speed floor. Nothing magic
+		// happens at the top - the player simply walks off it, in whatever
+		// direction the platform actually is, which no amount of guessing here
+		// could have worked out for them.
+		if( VR_GetLadderTop( &ladder_top )
+			&& clent->v.origin[2] >= ladder_top - 8.0f )
+			at_top = true;
+
+		if( climb != 0.0f && !at_top )
 		{
 			float speed = fabs( climb );
 
