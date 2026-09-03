@@ -1091,6 +1091,29 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			if( speed < 16.0f ) speed = 16.0f;
 			if( speed > 200.0f ) speed = 200.0f;
 
+			// BREAKING CONTACT WITH THE FLOOR.
+			//
+			// pm_shared lets go of the ground for exactly one reason:
+			//
+			//     if( pmove->velocity[2] > 180 )  // Shooting up really fast.
+			//         pmove->onground = -1;       // Definitely not on ground.
+			//
+			// A hand pull is nowhere near that - fifty to a hundred and thirty
+			// units a second - so PM_CatagorizePosition puts the player back on
+			// the floor every single frame and the climb never starts. Airborne
+			// it works perfectly, rung after rung, which is precisely why a small
+			// jump first always made it work and standing still never did.
+			//
+			// So clear the threshold while stood on the floor, and only there.
+			// It lasts a frame or two, it is the engine's own rule for what
+			// counts as leaving the ground rather than a number invented here,
+			// and the moment the player is off it the pull is one to one again.
+			if( climb > 0.0f && ( (int)clent->v.flags & FL_ONGROUND ))
+			{
+				if( speed < 190.0f )
+					speed = 190.0f;
+			}
+
 			svgame.pmove->maxspeed = speed;
 			vr_climbing = true;
 
