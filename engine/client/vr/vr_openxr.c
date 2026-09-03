@@ -5499,7 +5499,19 @@ static void VR_UpdateAction( void )
 	VectorSubtract( hand, wpn, d );
 	proj = DotProduct( d, fwd );
 
-	if( grip && !grip_prev
+	// TAKE HOLD, not take hold ANEW.
+	//
+	// This wanted a fresh grip press, which a shotgun is never going to
+	// get: you brace it two-handed to aim, so the off hand is ALREADY
+	// closed when the shot goes off. The rising edge could then never
+	// arrive, the action could never be worked, and the weapon stopped
+	// firing for good - sixteen hundred frames of needing a pump with a
+	// hand sat on it the whole time.
+	//
+	// Arming from the hand simply BEING there measures travel from
+	// wherever it rests, so a brace that never moves does nothing and a
+	// deliberate pull works the action.
+	if( grip && !vr.act_armed
 		&& VectorLength( d ) < Q_max( 1.0f, vr_reload_port.value ) * 2.0f )
 	{
 		// Took hold of the fore-end.
@@ -5536,10 +5548,10 @@ static void VR_UpdateAction( void )
 	}
 
 	if( vr_diag.value != 0.0f )
-		VR_DiagPrintf( "ACTION needs=%d armed=%d travel=%.1f/%.0f clip=%d\n",
+		VR_DiagPrintf( "ACTION needs=%d armed=%d travel=%.1f/%.0f hand=%.1f clip=%d\n",
 			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0,
 			vr.act_armed ? ( vr.act_ref - proj ) : 0.0f,
-			vr_pump_travel.value, vr.rl_clip );
+			vr_pump_travel.value, VectorLength( d ), vr.rl_clip );
 
 	grip_prev = grip;
 }

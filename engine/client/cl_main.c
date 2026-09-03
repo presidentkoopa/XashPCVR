@@ -1096,8 +1096,10 @@ static void CL_CreateCmd( void )
 			// Nothing to fire with while both hands are on a ladder.
 			if( !VR_SelectOpen() && !VR_LadderHands( ))
 			{
+				// Both barrels need the action worked too - more so, having spent
+				// two rounds rather than one.
 				if( VR_GetButton( VR_BTN_ATTACK2 ))
-					cmd->buttons |= IN_ATTACK2;
+					{ if( !VR_ActionBlocked( )) cmd->buttons |= IN_ATTACK2; }
 				// A pump gun will not fire again until its action has been worked.
 				// Held off here rather than swallowed later, so the mod never sees a
 				// trigger pull it would answer with a click on a live chamber.
