@@ -1075,7 +1075,7 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	// call, put back after.
 	float vr_saved_maxspeed = svgame.pmove->maxspeed;
 	qboolean vr_climbing = false;
-	vec3_t vr_saved_angles, vr_ladder_dir;
+	vec3_t vr_saved_angles, vr_saved_view, vr_ladder_dir;
 	qboolean vr_aimed = false;
 
 	if( NET_IsLocalAddress( cl->netchan.remote_address ))
@@ -1139,10 +1139,37 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			// supposed to be. Restored immediately after, so nothing else sees it.
 			if( VR_GetLadderDir( vr_ladder_dir ))
 			{
+				// cmd.viewangles, NOT angles.
+				//
+				// PM_PlayerMove opens by rebuilding pmove->angles from the command:
+				//
+				//     VectorCopy( pmove->cmd.viewangles, v_angle );
+				//     pmove->angles[PITCH] = v_angle[PITCH];
+				//     pmove->angles[YAW]   = v_angle[YAW];
+				//
+				// so writing pmove->angles here was writing into a field the game
+				// discards on entry, every frame. PM_LadderMove went on steering by
+				// the gaze exactly as if nothing had been substituted at all - which
+				// is what the velocity said: a large component along the ladder's
+				// WIDE axis, reconstructing to the player's own view yaw.
+				//
+				// The command is a copy made by SV_SetupPMove, so editing it reaches
+				// the movement without touching the usercmd the rest of the frame
+				// sees. Restored below regardless.
+				//
+				// Pitch is flattened along with yaw. PM_LadderMove keeps whatever part
+				// of the aim runs ALONG the ladder face, and a pitched aim puts that
+				// part vertical - so looking down while pulling would drag the climb
+				// down with it. Level, the only thing left is the climb itself.
 				VectorCopy( svgame.pmove->angles, vr_saved_angles );
+				VectorCopy( svgame.pmove->cmd.viewangles, vr_saved_view );
+
 				VectorClear( svgame.pmove->angles );
-				svgame.pmove->angles[YAW] = ( atan2( vr_ladder_dir[1], vr_ladder_dir[0] )
-					* 180.0f / M_PI_F );
+				VectorClear( svgame.pmove->cmd.viewangles );
+
+				svgame.pmove->cmd.viewangles[YAW] =
+					( atan2( vr_ladder_dir[1], vr_ladder_dir[0] ) * 180.0f / M_PI_F );
+				svgame.pmove->angles[YAW] = svgame.pmove->cmd.viewangles[YAW];
 				vr_aimed = true;
 
 				// AND NOTHING BUT THE PULL GETS TO USE THOSE ANGLES.
@@ -1176,19 +1203,31 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 	if( vr_climbing )
 		svgame.pmove->maxspeed = vr_saved_maxspeed;
 
+	if( vr_climbing && vr_diag_ladder.value != 0.0f )
+	{
+		// The velocity is the whole answer. PM_LadderMove splits the aim
+		// against the ladder face: the part going in becomes vertical, the
+		// part along it stays horizontal. So a velocity with no Z says the
+		// aim was parallel to the face, and one with no X/Y says it was
+		// square on. Nothing else distinguishes those two cases from here.
+		Con_Printf( "LADDERSV climb=%.1f pm_ran=%d ong=%d z=%.1f vel=(%.1f %.1f %.1f) yaw=%.1f\n",
+			VR_GetLadderClimb(),
+			svgame.pmove->movetype == MOVETYPE_FLY ? 1 : 0,
+			((int)clent->v.flags & FL_ONGROUND) ? 1 : 0,
+			clent->v.origin[2],
+			clent->v.velocity[0], clent->v.velocity[1], clent->v.velocity[2],
+			vr_aimed ? svgame.pmove->cmd.viewangles[YAW] : -999.0f );
+	}
 	if( vr_aimed )
+	{
 		VectorCopy( vr_saved_angles, svgame.pmove->angles );
+		VectorCopy( vr_saved_view, svgame.pmove->cmd.viewangles );
+	}
 
 	// Did the GAME think we were on a ladder? PM_LadderMove is the only
 	// thing that sets MOVETYPE_FLY here, so this answers the one question
 	// that separates "the pull is wrong" from "the pull went nowhere" -
 	// and that question has cost several rounds of guessing to answer.
-	if( vr_climbing && vr_diag_ladder.value != 0.0f )
-		Con_Printf( "LADDERSV climb=%.1f pm_ran=%d onground=%d z=%.1f\n",
-			VR_GetLadderClimb(),
-			svgame.pmove->movetype == MOVETYPE_FLY ? 1 : 0,
-			((int)clent->v.flags & FL_ONGROUND) ? 1 : 0,
-			clent->v.origin[2] );
 #endif
 
 	// copy results back to client

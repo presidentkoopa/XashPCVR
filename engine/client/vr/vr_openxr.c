@@ -3949,8 +3949,15 @@ float VR_GetLadderMove( void )
 	vr.ladder_climb = move;
 
 	if( vr_diag.value != 0.0f && ( held || move != 0.0f ))
-		VR_DiagPrintf( "LADDER held=%d move=%.1f onladder=%d\n",
-			held ? 1 : 0, move, VR_OnLadder() ? 1 : 0 );
+		{
+			vec3_t ld;
+			qboolean have = VR_GetLadderDir( ld );
+
+			VR_DiagPrintf( "LADDER held=%d move=%.1f onladder=%d size=(%.0f %.0f %.0f) dir=%s(%.2f %.2f)\n",
+				held ? 1 : 0, move, VR_OnLadder() ? 1 : 0,
+				vr.ladder_size[0], vr.ladder_size[1], vr.ladder_size[2],
+				have ? "ok" : "--", have ? ld[0] : 0.0f, have ? ld[1] : 0.0f );
+		}
 
 	return move;
 }
