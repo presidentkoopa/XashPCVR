@@ -1120,7 +1120,10 @@ static void CL_CreateCmd( void )
 		// or out of arm's length.
 		if( VR_GetTouchContact( ))
 			cmd->buttons |= IN_USE;
-		if( VR_GetButton( VR_BTN_RELOAD ))  cmd->buttons |= IN_RELOAD;
+		// Physical reloading owns this bit when it is on - see VR_GetReloadCmd,
+		// which also keeps the held-button fallback so no weapon can ever end
+		// up unreloadable.
+		if( VR_GetReloadCmd( ))  cmd->buttons |= IN_RELOAD;
 
 		// Swing-to-hit for melee. Injected as IN_ATTACK - the same button
 		// the mod already handles - so no game-DLL knowledge is required.

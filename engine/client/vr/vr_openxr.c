@@ -82,6 +82,14 @@ static CVAR_DEFINE_AUTO( vr_deathload, "1", FCVAR_ARCHIVE, "pull the trigger whi
 static CVAR_DEFINE_AUTO( vr_autosave, "120", FCVAR_ARCHIVE, "seconds between automatic quicksaves; 0 = off" );
 static CVAR_DEFINE_AUTO( vr_shoulder_light, "1", FCVAR_ARCHIVE, "reach beside your head with the off hand to toggle the flashlight" );
 static CVAR_DEFINE_AUTO( vr_shoulder_melee, "1", FCVAR_ARCHIVE, "reach beside your head to swap to the melee weapon and back" );
+static CVAR_DEFINE_AUTO( vr_reload, "1", FCVAR_ARCHIVE, "load the gun by hand instead of pressing reload" );
+static CVAR_DEFINE_AUTO( vr_reload_side, "11", FCVAR_ARCHIVE, "ammo pouch offset out to the off-hand side, units" );
+static CVAR_DEFINE_AUTO( vr_reload_down, "26", FCVAR_ARCHIVE, "how far below the head the pouch sits, units" );
+static CVAR_DEFINE_AUTO( vr_reload_back, "2", FCVAR_ARCHIVE, "pouch offset behind the head, units" );
+static CVAR_DEFINE_AUTO( vr_reload_radius, "11", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
+static CVAR_DEFINE_AUTO( vr_reload_port, "13", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
+static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset forward of the grip, units" );
+static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_back, "5", FCVAR_ARCHIVE, "hotspot offset behind the head, units" );
@@ -638,6 +646,13 @@ static struct
 	qboolean      sh_inside;        // dominant hand is in the shoulder hotspot
 	qboolean      sh_light_inside;  // off hand is in the flashlight hotspot
 	qboolean      sh_swapped;       // we swapped to melee from the hotspot
+
+	// Physical reloading. One round in the hand at a time, which covers a
+	// magazine (one insert finishes it) and a shell tube (repeat) with the
+	// same two moves, so neither needs to know which it is.
+	qboolean      rl_holding;       // a round is in the off hand
+	qboolean      rl_insert;        // an insert completed THIS frame
+	int           rl_clip;          // last clip count seen from CurWeapon
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -3458,6 +3473,15 @@ void VR_ObserveUserMessage( const char *name, int size, const void *buf )
 
 		if( id >= 0 && id < VR_MAX_WEAPON_IDS )
 			vr_wlist.cur_id = id;
+
+		// The clip count, which the mod sends here and nothing else exposes.
+		// A reload that raises it by exactly one is a tube being fed a shell;
+		// one that jumps it to full is a magazine. Recorded now because that
+		// distinction is the only thing separating the two reload styles, and
+		// reading it from the running game beats keeping a list of weapons.
+		if( size >= 3 )
+			vr.rl_clip = (signed char)p[2];
+
 		return;
 	}
 
@@ -5259,7 +5283,8 @@ Shared by both shoulder gestures so they cannot drift apart - the same reason
 the fire ray is computed once and cached.
 ================
 */
-static qboolean VR_HandInHeadSpot( int hand_id, float side )
+static qboolean VR_HandInBodySpot( int hand_id, float side, float back,
+	float lift, float radius )
 {
 	vec3_t hand, hang, head, hang_w, fwd, right, up, spot, d;
 
@@ -5285,11 +5310,161 @@ static qboolean VR_HandInHeadSpot( int hand_id, float side )
 
 	VectorCopy( head, spot );
 	VectorMA( spot, side, right, spot );
-	VectorMA( spot, -vr_shoulder_back.value, fwd, spot );
-	spot[2] += vr_shoulder_up.value;
+	VectorMA( spot, -back, fwd, spot );
+	spot[2] += lift;
 
 	VectorSubtract( hand, spot, d );
-	return ( VectorLength( d ) < Q_max( 1.0f, vr_shoulder_radius.value ));
+	return ( VectorLength( d ) < Q_max( 1.0f, radius ));
+}
+
+// The shoulder gestures, in the terms they were written in.
+static qboolean VR_HandInHeadSpot( int hand_id, float side )
+{
+	return VR_HandInBodySpot( hand_id, side, vr_shoulder_back.value,
+		vr_shoulder_up.value, vr_shoulder_radius.value );
+}
+
+/*
+================
+VR_UpdateReload
+
+Load the gun by hand: reach to the pouch at your off-side hip, close your
+hand on a round, bring it to the weapon and let go.
+
+One round at a time, which is deliberately the same two moves for every
+weapon. A magazine finishes in one trip and a shell tube takes as many as it
+takes, but that difference belongs entirely to the mod: each completed insert
+raises IN_RELOAD exactly once, and the mod's own Reload() decides whether that
+fills the gun or adds a single shell. So this never has to know which kind of
+weapon it is holding, and no weapon needs listing anywhere.
+
+That is also why the reload stays entirely the mod's: its animation, its
+timing, its ammo accounting, unmodified. All that changes is WHEN the button
+is pressed - which the VR layer already owned.
+
+Client-local, so a VR player simply reloads later than a flatscreen one and
+nothing about it reaches the protocol.
+================
+*/
+static void VR_UpdateReload( void )
+{
+	static qboolean grip_prev = false;
+	vec3_t hand, hang, wpn, wang, fwd, port, d;
+	qboolean grip;
+	float side;
+
+	vr.rl_insert = false;
+
+	// The off-hand grip means something else in all of these: a rung to hold,
+	// a menu to steer, and nothing at all with empty hands.
+	if( !VR_IsActive() || vr_reload.value == 0.0f
+		|| VR_LadderHands() || VR_SelectOpen() || cl.local.viewmodel == 0 )
+	{
+		vr.rl_holding = false;
+		grip_prev = false;
+		return;
+	}
+
+	if( !VR_GetHandWorld( VR_OffHand(), hand, hang ))
+		return;
+
+	grip = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+	side = ( VR_OffHand() == 0 ) ? -vr_reload_side.value : vr_reload_side.value;
+
+	if( !vr.rl_holding )
+	{
+		// Closing the hand ON the pouch, not merely having it closed nearby -
+		// an edge, or walking past with a fist would keep loading rounds.
+		if( grip && !grip_prev
+			&& VR_HandInBodySpot( VR_OffHand(), side, vr_reload_back.value,
+				-vr_reload_down.value, vr_reload_radius.value ))
+		{
+			vr.rl_holding = true;
+			VR_Haptic( VR_OffHand(), 0.05f, 0.0f, 0.7f );
+		}
+	}
+	else if( !grip )
+	{
+		qboolean at_port = false;
+
+		// The port sits a little ahead of where the gun is held, which is
+		// close enough for a breech, a magwell or a loading gate without
+		// needing to know which one this weapon has.
+		if( VR_GetWeaponAim( wpn, wang ))
+		{
+			AngleVectors( wang, fwd, NULL, NULL );
+			VectorMA( wpn, vr_reload_port_fwd.value, fwd, port );
+			VectorSubtract( hand, port, d );
+			at_port = ( VectorLength( d ) < Q_max( 1.0f, vr_reload_port.value ));
+		}
+
+		if( at_port )
+		{
+			// Both hands, because a round going in is felt by the hand holding
+			// the gun as much as the one loading it.
+			vr.rl_insert = true;
+			VR_Haptic( VR_OffHand(), 0.07f, 0.0f, 1.0f );
+			VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.6f );
+		}
+		else
+		{
+			// Dropped it. A softer buzz, so a fumble is felt rather than
+			// silently mistaken for a round that went in.
+			VR_Haptic( VR_OffHand(), 0.03f, 0.0f, 0.3f );
+		}
+
+		vr.rl_holding = false;
+	}
+
+	grip_prev = grip;
+}
+
+/*
+================
+VR_GetReloadCmd
+
+Whether IN_RELOAD should be raised this frame.
+
+One place decides, because there are three ways to arrive at a reload and
+they must not fight: a completed physical insert, the ordinary button when
+physical reloading is off, and holding that button down as a way out.
+
+That last one matters more than it looks. If the gesture cannot be completed
+on some weapon - a model whose grip sits somewhere unexpected, a hotspot that
+does not fit the player - the alternative is somebody who cannot reload at
+all, which is a far worse failure than a clumsy reload. A held button always
+works, on every weapon, in every mod.
+================
+*/
+qboolean VR_GetReloadCmd( void )
+{
+	static double held_since = 0.0;
+	qboolean button;
+
+	if( !VR_IsActive( ))
+		return false;
+
+	button = VR_GetButton( VR_BTN_RELOAD ) ? true : false;
+
+	if( vr_reload.value == 0.0f )
+	{
+		held_since = 0.0;
+		return button;
+	}
+
+	if( vr.rl_insert )
+		return true;
+
+	if( !button )
+	{
+		held_since = 0.0;
+		return false;
+	}
+
+	if( held_since == 0.0 )
+		held_since = host.realtime;
+
+	return ( host.realtime - held_since >= (double)Q_max( 0.1f, vr_reload_hold.value ));
 }
 
 /*
@@ -5710,6 +5885,14 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_autosave );
 	Cvar_RegisterVariable( &vr_shoulder_light );
 	Cvar_RegisterVariable( &vr_shoulder_melee );
+	Cvar_RegisterVariable( &vr_reload );
+	Cvar_RegisterVariable( &vr_reload_side );
+	Cvar_RegisterVariable( &vr_reload_down );
+	Cvar_RegisterVariable( &vr_reload_back );
+	Cvar_RegisterVariable( &vr_reload_radius );
+	Cvar_RegisterVariable( &vr_reload_port );
+	Cvar_RegisterVariable( &vr_reload_port_fwd );
+	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
 	Cvar_RegisterVariable( &vr_shoulder_side );
 	Cvar_RegisterVariable( &vr_shoulder_back );
@@ -7257,6 +7440,7 @@ qboolean VR_BeginFrame( void )
 	// path - the main menu never reaches CL_CreateCmd at all.
 	VR_UpdateDeath();
 	VR_UpdateShoulderMelee();
+	VR_UpdateReload();
 	VR_UpdateMenu2D();
 
 	VR_DiagSample();
@@ -7751,6 +7935,7 @@ qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang ) { return false; }
 void     VR_DrawOverlays( void ) { }
 void     VR_Haptic( int hand, float duration, float frequency, float amplitude ) { }
 qboolean VR_GetMeleeAttack( void ) { return false; }
+qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }

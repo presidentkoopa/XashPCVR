@@ -312,6 +312,7 @@ void     VR_Haptic( int hand, float duration, float frequency, float amplitude )
 // True on the frame a melee swing should count as an attack. Only fires
 // while a melee weapon is equipped.
 qboolean VR_GetMeleeAttack( void );
+qboolean VR_GetReloadCmd( void );
 
 // Off-hand flashlight source. Returns false to use the stock head mount.
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd );
