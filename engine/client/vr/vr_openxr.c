@@ -89,6 +89,8 @@ static CVAR_DEFINE_AUTO( vr_reload_back, "2", FCVAR_ARCHIVE, "pouch offset behin
 static CVAR_DEFINE_AUTO( vr_reload_radius, "11", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port, "13", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset forward of the grip, units" );
+static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
+static CVAR_DEFINE_AUTO( vr_pump_travel, "5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
@@ -653,6 +655,14 @@ static struct
 	qboolean      rl_holding;       // a round is in the off hand
 	qboolean      rl_insert;        // an insert completed THIS frame
 	int           rl_clip;          // last clip count seen from CurWeapon
+
+	// Working the action. Separate from reloading because it gates FIRING,
+	// and a pump gun needs it after every shot rather than only when empty.
+	qboolean      act_needs;        // the action is spent and must be worked
+	qboolean      act_armed;        // a hand has taken hold of it
+	float         act_ref;          // where along the weapon it took hold
+	int           act_clip;         // clip last frame, to notice a shot
+	int           act_id;           // and which weapon it belonged to
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -1863,7 +1873,18 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang )
 	// weapon would grab onto the off hand any time it drifted near, with no
 	// way to just rest a hand there. Holding the grip is the deliberate
 	// "I am supporting the weapon" signal; releasing drops back to one hand.
+	// NOT WHILE THAT HAND IS FULL.
+	//
+	// Bracing and loading are the same input in the same place: off-hand
+	// grip, held, beside the weapon. Carrying a round to the gun therefore
+	// looked exactly like taking hold of it to steady it, and the aim would
+	// snap to a supporting grip that was really a hand full of ammunition -
+	// worst on the two-handed weapons, which are the ones worth bracing.
+	//
+	// Working the action is deliberately NOT excluded: a hand on the pump is
+	// a hand on the weapon, and bracing through it is correct.
 	if( VR_IsActive() && vr_twohand.value && VR_GetButton( VR_BTN_OFFGRIP ) &&
+	    !vr.rl_holding &&
 	    VR_GetHandWorld( VR_OffHand(), off_org, off_ang ))
 	{
 		VectorSubtract( off_org, dom_org, delta );
@@ -2075,7 +2096,7 @@ which already carries the metadata:
   numattachments  - ranged weapons carry a muzzle attachment for their flash;
                     melee weapons generally carry none
   sequence labels - authored by whoever built the weapon: "fire", "shoot",
-                    "reload", "throw", "pinpull", "holster"
+                    "reload", "throw", "pinpull", "holster", "pump"
 
 None of that is Half-Life specific, so a mod's custom weapons classify
 themselves with no per-mod table and no rebuild.
@@ -2094,6 +2115,7 @@ typedef struct
 	                            // not needed (and must not override it)
 	qboolean       throwable;   // has throw/pin style sequences
 	qboolean       has_muzzle;  // at least one attachment
+	qboolean       pump;        // has a pump/bolt/lever action to work
 } vr_wprofile_t;
 
 static vr_wprofile_t vr_wprof;
@@ -2152,6 +2174,15 @@ static const vr_wprofile_t *VR_GetWeaponProfile( void )
 
 	vr_wprof.valid      = true;
 	vr_wprof.has_muzzle = ( hdr->numattachments > 0 );
+
+	// A PUMP, BOLT OR LEVER has to be animated to exist, so the sequence
+	// list says whether this weapon has one. Half-Life's shotgun carries a
+	// "pump" sequence; a mod's own pump-action carries one for the same
+	// reason, and an autoloader carries none. No weapon needs naming.
+	vr_wprof.pump =
+		VR_SeqLabelContains( hdr, "pump" ) ||
+		VR_SeqLabelContains( hdr, "bolt" ) ||
+		VR_SeqLabelContains( hdr, "lever" );
 
 	// Thrown weapons are the clearest signal: you cannot animate throwing
 	// something without a sequence that says so.
@@ -5343,6 +5374,138 @@ static qboolean VR_HandInHeadSpot( int hand_id, float side )
 
 /*
 ================
+VR_UpdateAction
+
+Working the action: pump, bolt or lever.
+
+A pump gun that fires as fast as the trigger is pulled is the single most
+un-VR thing about holding one. The mod cycles it for you as an animation,
+because on a keyboard there is no hand free to do it - in a headset there is,
+and it is most of what makes the weapon feel like itself.
+
+So the shot is withheld until the action has been worked. Take hold of the
+weapon with the off hand and pull back.
+
+Two things keep this general. Whether a weapon HAS an action to work is read
+from its sequence labels, because a pump must be animated to exist. And a
+shot is noticed by the clip going down, which the mod reports in every
+CurWeapon message - so this never has to agree with our own button
+bookkeeping about whether a trigger pull actually became a shot.
+
+Measured as displacement ALONG the weapon rather than a position in the
+world, so it reads the same however the gun is held, and cannot be satisfied
+by the weapon moving while the hand stays still.
+================
+*/
+static void VR_UpdateAction( void )
+{
+	static qboolean grip_prev = false;
+	const vr_wprofile_t *wp;
+	vec3_t hand, hang, wpn, wang, fwd, d;
+	qboolean grip;
+	float proj;
+
+	if( !VR_IsActive() || vr_pump.value == 0.0f )
+	{
+		vr.act_needs = false;
+		return;
+	}
+
+	wp = VR_GetWeaponProfile();
+
+	// Switching weapons resets everything: a clip count from the last gun
+	// says nothing about this one, and comparing them would read as a shot.
+	if( vr_wlist.cur_id != vr.act_id )
+	{
+		vr.act_id = vr_wlist.cur_id;
+		vr.act_clip = vr.rl_clip;
+		vr.act_needs = false;
+		vr.act_armed = false;
+		return;
+	}
+
+	if( !wp || !wp->valid || !wp->pump )
+	{
+		vr.act_needs = false;
+		vr.act_clip = vr.rl_clip;
+		return;
+	}
+
+	// A ROUND LEFT THE GUN, so the action is spent.
+	//
+	// Read from the clip rather than from having sent IN_ATTACK, because a
+	// trigger pull is not a shot: it can land during the refire delay, on an
+	// empty chamber, or while the mod has the weapon busy. The clip going
+	// down is the mod telling us a shell was actually spent.
+	if( vr.rl_clip < vr.act_clip )
+		vr.act_needs = true;
+
+	vr.act_clip = vr.rl_clip;
+
+	if( !vr.act_needs )
+	{
+		vr.act_armed = false;
+		grip_prev = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+		return;
+	}
+
+	if( !VR_GetHandWorld( VR_OffHand(), hand, hang )
+		|| !VR_GetWeaponAim( wpn, wang ))
+		return;
+
+	grip = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+
+	AngleVectors( wang, fwd, NULL, NULL );
+	VectorSubtract( hand, wpn, d );
+	proj = DotProduct( d, fwd );
+
+	if( grip && !grip_prev
+		&& VectorLength( d ) < Q_max( 1.0f, vr_reload_port.value ) * 2.0f )
+	{
+		// Took hold of the fore-end.
+		vr.act_ref = proj;
+		vr.act_armed = true;
+		VR_Haptic( VR_OffHand(), 0.03f, 0.0f, 0.4f );
+	}
+	else if( !grip )
+	{
+		vr.act_armed = false;
+	}
+	else if( vr.act_armed
+		&& ( vr.act_ref - proj ) >= Q_max( 1.0f, vr_pump_travel.value ))
+	{
+		// Worked. The next shot is available.
+		vr.act_needs = false;
+		vr.act_armed = false;
+		VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
+		VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
+	}
+
+	if( vr_diag.value != 0.0f )
+		VR_DiagPrintf( "ACTION needs=%d armed=%d travel=%.1f/%.0f clip=%d\n",
+			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0,
+			vr.act_armed ? ( vr.act_ref - proj ) : 0.0f,
+			vr_pump_travel.value, vr.rl_clip );
+
+	grip_prev = grip;
+}
+
+/*
+================
+VR_ActionBlocked
+
+True while the weapon is waiting for its action to be worked. The trigger is
+held off rather than the shot being swallowed later, so an empty click never
+happens and the mod never sees a pull it would have to explain.
+================
+*/
+qboolean VR_ActionBlocked( void )
+{
+	return ( VR_IsActive() && vr.act_needs ) ? true : false;
+}
+
+/*
+================
 VR_UpdateReload
 
 Load the gun by hand: reach to the pouch at your off-side hip, close your
@@ -5931,6 +6094,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_radius );
 	Cvar_RegisterVariable( &vr_reload_port );
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
+	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
 	Cvar_RegisterVariable( &vr_shoulder_side );
@@ -7480,6 +7645,7 @@ qboolean VR_BeginFrame( void )
 	VR_UpdateDeath();
 	VR_UpdateShoulderMelee();
 	VR_UpdateReload();
+	VR_UpdateAction();
 	VR_UpdateMenu2D();
 
 	VR_DiagSample();
@@ -7975,6 +8141,7 @@ void     VR_DrawOverlays( void ) { }
 void     VR_Haptic( int hand, float duration, float frequency, float amplitude ) { }
 qboolean VR_GetMeleeAttack( void ) { return false; }
 qboolean VR_GetReloadCmd( void ) { return false; }
+qboolean VR_ActionBlocked( void ) { return false; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }

@@ -313,6 +313,7 @@ void     VR_Haptic( int hand, float duration, float frequency, float amplitude )
 // while a melee weapon is equipped.
 qboolean VR_GetMeleeAttack( void );
 qboolean VR_GetReloadCmd( void );
+qboolean VR_ActionBlocked( void );
 
 // Off-hand flashlight source. Returns false to use the stock head mount.
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd );

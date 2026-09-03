@@ -1098,7 +1098,10 @@ static void CL_CreateCmd( void )
 			{
 				if( VR_GetButton( VR_BTN_ATTACK2 ))
 					cmd->buttons |= IN_ATTACK2;
-				else
+				// A pump gun will not fire again until its action has been worked.
+				// Held off here rather than swallowed later, so the mod never sees a
+				// trigger pull it would answer with a click on a live chamber.
+				else if( !VR_ActionBlocked( ))
 					cmd->buttons |= IN_ATTACK;
 			}
 		}
