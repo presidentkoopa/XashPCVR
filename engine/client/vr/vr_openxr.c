@@ -2129,6 +2129,7 @@ typedef struct
 	qboolean       throwable;   // has throw/pin style sequences
 	qboolean       has_muzzle;  // at least one attachment
 	qboolean       pump;        // has a pump/bolt/lever action to work
+	qboolean       slide;       // its action locks back on empty and must be released
 } vr_wprofile_t;
 
 static vr_wprofile_t vr_wprof;
@@ -2196,6 +2197,23 @@ static const vr_wprofile_t *VR_GetWeaponProfile( void )
 		VR_SeqLabelContains( hdr, "pump" ) ||
 		VR_SeqLabelContains( hdr, "bolt" ) ||
 		VR_SeqLabelContains( hdr, "lever" );
+
+	// A SLIDE THAT LOCKS BACK announces itself by needing two reloads.
+	//
+	// A weapon whose action stays open on an empty magazine has to animate
+	// that reload differently from a topped-up one, so the model carries a
+	// second reload sequence naming the distinction - Half-Life's pistol has
+	// "reload" for the empty case and "reload_noshot" for the other. A
+	// weapon with one reload animation has nothing to release, and asking
+	// the player to work an action the gun never shows is miming.
+	//
+	// Deliberately keyed on a RELOAD variant rather than the word "empty"
+	// alone, which also appears on firing-on-empty animations that say
+	// nothing about the action.
+	vr_wprof.slide =
+		VR_SeqLabelContains( hdr, "reload_noshot" ) ||
+		VR_SeqLabelContains( hdr, "reload_not" ) ||
+		VR_SeqLabelContains( hdr, "reload_empty" );
 
 	// Thrown weapons are the clearest signal: you cannot animate throwing
 	// something without a sequence that says so.
@@ -5437,20 +5455,28 @@ static void VR_UpdateAction( void )
 		return;
 	}
 
-	if( !wp || !wp->valid || !wp->pump )
+	if( !wp || !wp->valid || ( !wp->pump && !wp->slide ))
 	{
 		vr.act_needs = false;
 		vr.act_clip = vr.rl_clip;
 		return;
 	}
 
-	// A ROUND LEFT THE GUN, so the action is spent.
+	// WHAT LEAVES THE ACTION SPENT depends on the weapon.
 	//
-	// Read from the clip rather than from having sent IN_ATTACK, because a
-	// trigger pull is not a shot: it can land during the refire delay, on an
-	// empty chamber, or while the mod has the weapon busy. The clip going
-	// down is the mod telling us a shell was actually spent.
-	if( vr.rl_clip < vr.act_clip )
+	// A pump gun needs working after every shot, so a round leaving the tube
+	// is the trigger. A weapon whose slide locks back needs it only after
+	// loading from empty, so the trigger is the clip coming back up from
+	// nothing - which is also exactly when the mod plays its empty-reload
+	// animation, so the two agree without being told about each other.
+	//
+	// Both read the clip rather than our own record of sending IN_ATTACK,
+	// because a trigger pull is not a shot: it can land during the refire
+	// delay, on an empty chamber, or while the mod has the weapon busy.
+	if( wp->pump && vr.rl_clip < vr.act_clip )
+		vr.act_needs = true;
+
+	if( wp->slide && vr.act_clip == 0 && vr.rl_clip > 0 )
 		vr.act_needs = true;
 
 	vr.act_clip = vr.rl_clip;
