@@ -892,15 +892,24 @@ StudioSetupBones
 ====================
 R_StudioFindAction
 
-Locate the sequence that works this weapon's action, and the single bone it
-moves. Cached per studio header, since it never changes for a model.
+Find the moving part of the weapon the player works by hand, and the sequence
+that shows it moving. Cached per studio header.
 
-The sequence is found by name, because a pump has to be animated to exist. The
-BONE is found by evaluating that sequence at its first and last frame and
-taking whichever bone differs most between them - no name list, no assumption
-about rigging. Half-Life's shotgun answers "Bone01", a custom bone parented to
-the weapon hand that owns the fore-end and nothing else; another mod's weapon
-answers with whatever its own author called it.
+Two things have to be true of that part, and neither is its name. It carries a
+real share of the mesh - a pump or a bolt is an object, not a fingertip - and
+it moves during firing or cycling. Scoring motion multiplied by geometry finds
+it without a list: one shotgun answers "Bone01", another answers "Charger".
+
+The SEQUENCE is whichever one moves that part furthest, and that matters more
+than it sounds. Half-Life's shotgun animates its pump in a sequence called
+"pump", so looking there was enough. The HD replacement does not - its pump
+sequence moves only fingers, and the fore-end travels in "shoot" instead, as
+part of the firing animation. Searching by sequence name found nothing to
+drive and the weapon cycled itself regardless.
+
+Taking the pose from the firing animation also cancels that automatic cycling
+for free: the same frames that would have pumped the gun by themselves are the
+ones now indexed by the hand.
 ====================
 */
 static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone, qboolean *out_cycle )
@@ -908,9 +917,13 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	static studiohdr_t *cached_hdr = NULL;
 	static int cached_seq = -1, cached_bone = -1;
 	static qboolean cached_cycle = false;
+	static int vcount[MAXSTUDIOBONES];
+	static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
+	static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
 	mstudioseqdesc_t *pseqdesc;
 	mstudioanim_t *panim;
-	int i, j;
+	float best = 0.0f;
+	int i, j, s;
 
 	if( cached_hdr == m_pStudioHeader )
 	{
@@ -922,74 +935,56 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 
 	cached_hdr = m_pStudioHeader;
 	cached_seq = cached_bone = -1;
+	cached_cycle = false;
 
-	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
+	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0 )
+		return false;
 
-	for( i = 0; i < m_pStudioHeader->numseq; i++ )
+	// How much of the mesh each bone carries.
 	{
-		if( Q_stristr( pseqdesc[i].label, "pump" ) || Q_stristr( pseqdesc[i].label, "bolt" )
-			|| Q_stristr( pseqdesc[i].label, "lever" ))
+		mstudiobodyparts_t *pbp = (mstudiobodyparts_t *)((byte *)m_pStudioHeader
+			+ m_pStudioHeader->bodypartindex);
+		int bp, mi, vi;
+
+		memset( vcount, 0, sizeof( vcount ));
+
+		for( bp = 0; bp < m_pStudioHeader->numbodyparts; bp++ )
 		{
-			cached_seq = i;
-			break;
-		}
-	}
+			mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
+				+ pbp[bp].modelindex);
 
-	if( cached_seq >= 0 && pseqdesc[cached_seq].numframes > 1 )
-	{
-		static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
-		static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
-		float best = 0.0f;
-		static int vcount[MAXSTUDIOBONES];
-
-		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[cached_seq] );
-
-		R_StudioCalcRotations( e, apos, aq, &pseqdesc[cached_seq], panim, 0.0f );
-		// Against the MIDDLE frame, not the last.
-		//
-		// A pump sequence may be a full cycle - closed, open, closed - in
-		// which case its first and last frames are identical and comparing
-		// them finds no moving bone at all. The midpoint is where such a
-		// sequence is furthest from home, and for a one-way sequence it is
-		// still plainly different from the start.
-		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[cached_seq], panim,
-			(float)( pseqdesc[cached_seq].numframes - 1 ) * 0.5f );
-
-		// COUNT WHAT EACH BONE ACTUALLY OWNS.
-		//
-		// Picking the bone that moves most finds a finger, because fingers
-		// swing further during a pump animation than the pump does. On a
-		// detailed model that is a single vertex being rotated while the
-		// mechanism sits still - which is exactly what was happening.
-		//
-		// The part that works the action carries a real share of the mesh, so
-		// weigh motion by geometry and the hand drops out on its own. No name
-		// list: this model calls it Charger and another will call it
-		// something else.
-		{
-			int bp, mi, vi;
-			mstudiobodyparts_t *pbp = (mstudiobodyparts_t *)((byte *)m_pStudioHeader
-				+ m_pStudioHeader->bodypartindex);
-
-			memset( vcount, 0, sizeof( vcount ));
-
-			for( bp = 0; bp < m_pStudioHeader->numbodyparts; bp++ )
+			for( mi = 0; mi < pbp[bp].nummodels; mi++ )
 			{
-				mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
-					+ pbp[bp].modelindex);
+				byte *pvb = ((byte *)m_pStudioHeader + pmod[mi].vertinfoindex);
 
-				for( mi = 0; mi < pbp[bp].nummodels; mi++ )
+				for( vi = 0; vi < pmod[mi].numverts; vi++ )
 				{
-					byte *pvertbone = ((byte *)m_pStudioHeader + pmod[mi].vertinfoindex);
-
-					for( vi = 0; vi < pmod[mi].numverts; vi++ )
-					{
-						if( pvertbone[vi] < MAXSTUDIOBONES )
-							vcount[pvertbone[vi]]++;
-					}
+					if( pvb[vi] < MAXSTUDIOBONES )
+						vcount[pvb[vi]]++;
 				}
 			}
 		}
+	}
+
+	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
+
+	// Every sequence that could plausibly show the action working. Firing
+	// counts, because a self-cycling weapon does its cycling there.
+	for( s = 0; s < m_pStudioHeader->numseq; s++ )
+	{
+		if( !Q_stristr( pseqdesc[s].label, "pump" ) && !Q_stristr( pseqdesc[s].label, "bolt" )
+			&& !Q_stristr( pseqdesc[s].label, "lever" ) && !Q_stristr( pseqdesc[s].label, "shoot" )
+			&& !Q_stristr( pseqdesc[s].label, "fire" ))
+			continue;
+
+		if( pseqdesc[s].numframes <= 1 )
+			continue;
+
+		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[s] );
+
+		R_StudioCalcRotations( e, apos, aq, &pseqdesc[s], panim, 0.0f );
+		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[s], panim,
+			(float)( pseqdesc[s].numframes - 1 ) * 0.5f );
 
 		for( i = 0; i < m_pStudioHeader->numbones; i++ )
 		{
@@ -1005,28 +1000,32 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 			{
 				best = d;
 				cached_bone = i;
+				cached_seq = s;
 			}
 		}
+	}
 
-		// A sequence that moves nothing is not an action.
-		if( best < 0.0001f )
-			cached_bone = -1;
+	if( cached_bone >= 0 && best > 0.0001f )
+	{
+		// Does it come back? A cycle is driven out and back by the hand; a
+		// one-way sequence runs straight through.
+		float d = 0.0f;
 
-		// Does it come back? Evaluate the end and see whether that bone has
-		// returned to where it started. A cycle has to be driven out and
-		// back by the hand; a one-way sequence is driven straight through.
-		if( cached_bone >= 0 )
-		{
-			float d = 0.0f;
+		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel,
+			&pseqdesc[cached_seq] );
 
-			R_StudioCalcRotations( e, bpos, bq, &pseqdesc[cached_seq], panim,
-				(float)( pseqdesc[cached_seq].numframes - 1 ));
+		R_StudioCalcRotations( e, apos, aq, &pseqdesc[cached_seq], panim, 0.0f );
+		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[cached_seq], panim,
+			(float)( pseqdesc[cached_seq].numframes - 1 ));
 
-			for( j = 0; j < 4; j++ )
-				d += fabs( aq[cached_bone][j] - bq[cached_bone][j] );
+		for( j = 0; j < 4; j++ )
+			d += fabs( aq[cached_bone][j] - bq[cached_bone][j] );
 
-			cached_cycle = ( d < best * 0.25f );
-		}
+		cached_cycle = ( d * (float)vcount[cached_bone] < best * 0.25f );
+	}
+	else
+	{
+		cached_bone = cached_seq = -1;
 	}
 
 	*out_seq = cached_seq;
@@ -1034,6 +1033,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	*out_cycle = cached_cycle;
 	return ( cached_seq >= 0 && cached_bone >= 0 );
 }
+
 
 static void R_StudioSetupBones( cl_entity_t *e )
 {
