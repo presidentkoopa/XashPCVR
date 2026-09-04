@@ -103,6 +103,8 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 // states a fact about the player and nothing more.
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
+static CVAR_DEFINE_AUTO( vr_reload_model_mag, "models/w_9mmclip.mdl", FCVAR_ARCHIVE, "what a carried magazine looks like" );
+static CVAR_DEFINE_AUTO( vr_slide_sound, "weapons/reload3.wav", FCVAR_ARCHIVE, "sound for working a slide rather than a pump" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
 static CVAR_DEFINE_AUTO( vr_pump_giveup, "1.5", FCVAR_ARCHIVE, "seconds of holding the trigger that releases a stuck action; 0 never gives up" );
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
@@ -2930,19 +2932,38 @@ absent model simply skips - a missing prop must never cost the gesture.
 void VR_DrawHeldRound( void )
 {
 	static model_t *mdl = NULL;
+	static char loaded[64] = { 0 };
 	static int last_servercount = -1;
 	vec3_t org, ang;
 
-	if( !VR_IsActive() || !vr.rl_holding || !vr_reload_model.string[0] )
+	const vr_wprofile_t *wp = VR_GetWeaponProfile();
+	const char *want;
+
+	if( !VR_IsActive() || !vr.rl_holding )
+		return;
+
+	// A SHELL FOR A TUBE, A MAGAZINE FOR EVERYTHING ELSE.
+	//
+	// One global model meant carrying a shotgun shell to a pistol. Which
+	// kind of round a weapon takes is already known - a tube-fed weapon is
+	// the one with an action to work between shots - so the right object
+	// follows from that without naming any weapon.
+	want = ( wp && wp->valid && wp->pump )
+		? vr_reload_model.string : vr_reload_model_mag.string;
+
+	if( !want[0] )
 		return;
 
 	// Reloaded per level for the same reason the hand models are: model_t
 	// slots are recycled, so a pointer kept across a level change can end up
 	// naming something else entirely.
-	if( cl.servercount != last_servercount )
+	// Reload when the model wanted changes, not only per level - the round
+	// carried depends on which weapon is in hand.
+	if( cl.servercount != last_servercount || !mdl || Q_strcmp( want, loaded ))
 	{
 		last_servercount = cl.servercount;
-		mdl = Mod_ForName( vr_reload_model.string, false, false );
+		Q_strncpy( loaded, want, sizeof( loaded ));
+		mdl = Mod_ForName( want, false, false );
 	}
 
 	if( !mdl )
@@ -5854,8 +5875,14 @@ static void VR_UpdateAction( void )
 		{
 			vr.act_sounded = true;
 
-			if( vr_action_sound.string[0] )
-				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
+			// A pump is cocked, a slide is racked, and they do not sound alike.
+			{
+				const char *snd = ( wp && wp->pump )
+					? vr_action_sound.string : vr_slide_sound.string;
+
+				if( snd[0] )
+					S_StartLocalSound( snd, VOL_NORM, false );
+			}
 		}
 
 		if( pull >= 1.0f )
@@ -6625,6 +6652,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_reload_model_mag );
+	Cvar_RegisterVariable( &vr_slide_sound );
 	Cvar_RegisterVariable( &vr_reload_model );
 	Cvar_RegisterVariable( &vr_pump_giveup );
 	Cvar_RegisterVariable( &vr_pump_recoil );
