@@ -5554,8 +5554,8 @@ static void VR_UpdateAction( void )
 	}
 
 	if( vr_diag.value != 0.0f )
-		VR_DiagPrintf( "ACTION needs=%d armed=%d travel=%.1f/%.0f hand=%.1f clip=%d\n",
-			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0,
+		VR_DiagPrintf( "ACTION needs=%d armed=%d grip=%d travel=%.1f/%.0f hand=%.1f clip=%d\n",
+			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0, grip ? 1 : 0,
 			vr.act_armed ? ( vr.act_ref - proj ) : 0.0f,
 			vr_pump_travel.value, VectorLength( d ), vr.rl_clip );
 
