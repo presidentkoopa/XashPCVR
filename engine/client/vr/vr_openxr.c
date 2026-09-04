@@ -5556,6 +5556,17 @@ by the weapon moving while the hand stays still.
 */
 static void VR_UpdateAction( void )
 {
+	// PUBLISHED BEFORE ANY EXIT.
+	//
+	// This sat at the bottom of the function, past five separate returns, so
+	// it was written only on frames where the action was actively being
+	// worked and never on any other - leaving the renderer reading a stale
+	// value on every frame in between.
+	//
+	// The state it reports persists across frames, so publishing it first is
+	// correct no matter which exit this frame takes.
+	refState.actionProgress = ( VR_IsActive() && vr.act_needs ) ? vr.act_pull : -1.0f;
+
 	static qboolean grip_prev = false;
 	const vr_wprofile_t *wp;
 	vec3_t hand, hang, wpn, wang, fwd, d;
@@ -5783,8 +5794,6 @@ static void VR_UpdateAction( void )
 	// at zero, because that is what holds the pump shut through the firing
 	// animation - which rotates the same bone and would otherwise cycle the
 	// weapon on the mod's schedule no matter what the player did.
-	refState.actionProgress = vr.act_needs ? vr.act_pull : -1.0f;
-
 	grip_prev = grip;
 }
 

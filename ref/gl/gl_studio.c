@@ -137,6 +137,7 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // The token list is a cvar rather than a hardcoded table because mod authors
 // name their textures whatever they like, and this has to work on content we
 // have never seen. Substring match, ';' separated, case insensitive.
+CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
 CVAR_DEFINE_AUTO( r_vr_arm_textures, "glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
 static cvar_t			*cl_righthand = NULL;
@@ -1130,6 +1131,20 @@ static void R_StudioSetupBones( cl_entity_t *e )
 	// Evaluated out of the weapon's own action sequence, so the bone travels
 	// exactly as far as its author animated it and no distance is invented
 	// here. Progress is the hand; the pose is the model's.
+	{
+		// One line a second, so a dead override can be told from a dead input.
+		static double next = 0.0;
+		if( r_vr_action_debug.value != 0.0f && gEngfuncs.pfnTime() > next )
+		{
+			int ds = -1, db = -1; qboolean dc = false;
+			qboolean found = R_StudioFindAction( e, &ds, &db, &dc );
+			next = gEngfuncs.pfnTime() + 1.0;
+			gEngfuncs.Con_Printf( "ACTIONGL progress=%.2f found=%d seq=%d bone=%d cycle=%d model=%s\n",
+				gpGlobals->actionProgress, found ? 1 : 0, ds, db, dc ? 1 : 0,
+				RI.currentmodel ? RI.currentmodel->name : "?" );
+		}
+	}
+
 	if( gpGlobals->actionProgress >= 0.0f )
 	{
 		int aseq, abone;
