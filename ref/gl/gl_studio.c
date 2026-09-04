@@ -138,7 +138,9 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // name their textures whatever they like, and this has to work on content we
 // have never seen. Substring match, ';' separated, case insensitive.
 CVAR_DEFINE_AUTO( r_vr_hide_bone, "shell", FCVAR_ARCHIVE, "collapse this bone so its geometry vanishes; the model shell during reloads" );
-CVAR_DEFINE_AUTO( r_vr_action_bone, "", FCVAR_ARCHIVE, "name the bone the hand works; empty = find it automatically" );
+CVAR_DEFINE_AUTO( r_vr_action_bone,
+	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 3;v_9mmar=clip;v_crossbow=Slide",
+	FCVAR_ARCHIVE, "per model: model=bone, semicolon separated - the part the hand works" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
 CVAR_DEFINE_AUTO( r_vr_arm_textures, "glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
@@ -914,12 +916,36 @@ for free: the same frames that would have pumped the gun by themselves are the
 ones now indexed by the hand.
 ====================
 */
+/*
+====================
+R_StudioFindAction
+
+Find the part of this weapon the player works by hand, and the sequence that
+shows it moving. Cached per studio header.
+
+The part is NAMED, per model, in r_vr_action_bone as "model=bone" entries
+separated by semicolons. Measuring for it does not work: on one shotgun the
+hand out-swings the fore-end during firing, and scoring by motion picked a
+fingertip however it was weighted.
+
+Nor can the name be guessed. Half-Life's pistol calls its slide "Hands mesh 3"
+and its shotgun calls the pump "Charger" - both are real moving parts with
+names that say nothing, and judging a bone by its name is what hid the slide
+for hours. So the mapping is data, set per model, where it can be looked at.
+
+The SEQUENCE is then measured, because with the bone already known there is
+exactly one to test and nothing can out-swing it. That matters: this pistol
+moves its slide only in shoot_empty and reload, and the shotgun moves its pump
+only in shoot - never in the sequence actually called "pump".
+====================
+*/
 static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone, qboolean *out_cycle )
 {
 	static studiohdr_t *cached_hdr = NULL;
 	static int cached_seq = -1, cached_bone = -1;
-	static qboolean cached_cycle = false;
+	static qboolean cached_cycle = true;
 	mstudioseqdesc_t *pseqdesc;
+	char want[64];
 	int i, s;
 
 	if( cached_hdr == m_pStudioHeader )
@@ -933,31 +959,63 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	cached_hdr = m_pStudioHeader;
 	cached_seq = cached_bone = -1;
 	cached_cycle = true;
+	want[0] = 0;
 
 	*out_seq = -1;
 	*out_bone = -1;
 	*out_cycle = true;
 
-	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0 || !r_vr_action_bone.string[0] )
+	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0
+		|| !r_vr_action_bone.string[0] || !RI.currentmodel )
 		return false;
 
-	// NAMED, because measuring could not find it.
-	//
-	// Scoring bones by how far they move - even weighted by the share of mesh
-	// they carry, even sampled across the whole sequence - picked a hand every
-	// time on this model, because during the firing animation the hand really
-	// does swing further than the fore-end it is holding. That is a limit of
-	// the measurement, not a bug in it.
-	//
-	// So the bone is named in a cvar: one setting per model, visible to
-	// whoever set it, rather than a table of weapon names buried in here.
+	// Which entry is for this model. "model=bone", semicolon separated, and
+	// the model side matches anywhere in the path so "v_shotgun" is enough.
+	{
+		const char *p = r_vr_action_bone.string;
+
+		while( *p )
+		{
+			char key[64];
+			int k = 0;
+
+			while( *p && *p != '=' && *p != ';' && k < 63 )
+				key[k++] = *p++;
+			key[k] = 0;
+
+			if( *p == '=' )
+			{
+				int v = 0;
+
+				p++;
+
+				while( *p && *p != ';' && v < 63 )
+					want[v++] = *p++;
+				want[v] = 0;
+
+				if( key[0] && Q_stristr( RI.currentmodel->name, key ))
+					break;
+
+				want[0] = 0;
+			}
+
+			while( *p && *p != ';' )
+				p++;
+			if( *p == ';' )
+				p++;
+		}
+	}
+
+	if( !want[0] )
+		return false;
+
 	{
 		mstudiobone_t *pbones = (mstudiobone_t *)((byte *)m_pStudioHeader
 			+ m_pStudioHeader->boneindex);
 
 		for( i = 0; i < m_pStudioHeader->numbones; i++ )
 		{
-			if( !Q_stricmp( pbones[i].name, r_vr_action_bone.string ))
+			if( !Q_stricmp( pbones[i].name, want ))
 			{
 				cached_bone = i;
 				break;
@@ -968,17 +1026,11 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	if( cached_bone < 0 )
 		return false;
 
-	// ITS STROKE IS WHICHEVER SEQUENCE ACTUALLY MOVES IT.
-	//
-	// Choosing by name picked this model's pump sequence, which moves only
-	// finger bones - so the fore-end was posed from an animation in which it
-	// is completely static, and sat still however far the hand travelled.
-	//
-	// With the bone already named there is exactly one to test, so measuring
-	// is cheap and cannot be misled by a hand out-swinging it: sample each
-	// candidate and keep the one that moves THIS bone furthest.
 	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
 
+	// Whichever sequence moves THIS bone furthest. Sampled across each one,
+	// because a part that goes out and comes back inside the animation reads
+	// as motionless if only its midpoint is checked.
 	{
 		static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
 		static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
@@ -1004,6 +1056,10 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 				for( c = 0; c < 4; c++ )
 					d += fabs( aq[cached_bone][c] - bq[cached_bone][c] );
 
+				// Slides translate rather than rotate, so position counts too.
+				for( c = 0; c < 3; c++ )
+					d += fabs( apos[cached_bone][c] - bpos[cached_bone][c] ) * 0.25f;
+
 				if( d > best )
 				{
 					best = d;
@@ -1013,16 +1069,9 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 		}
 	}
 
-	// A BONE FOUND IS NEVER A FAILURE.
-	//
-	// If no sequence measurably moves it, this used to give up - and giving
-	// up means no override at all, which hands the weapon back to the firing
-	// animation and lets it cycle itself. That is strictly worse than posing
-	// the bone from any sequence at all, which at least holds the mechanism
-	// still and stops it moving on its own.
-	//
-	// Motion when it can be had, stillness when it cannot, and never the
-	// weapon doing it by itself.
+	// A bone found is never a failure: posing it from any sequence at least
+	// holds the mechanism still, where giving up hands the weapon back to its
+	// animation to cycle itself.
 	if( cached_seq < 0 )
 	{
 		for( s = 0; s < m_pStudioHeader->numseq; s++ )
@@ -1040,6 +1089,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	*out_cycle = cached_cycle;
 	return ( cached_seq >= 0 );
 }
+
 
 
 
