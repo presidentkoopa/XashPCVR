@@ -3132,11 +3132,14 @@ static void R_StudioApplyHandAction( void )
 
 	if( r_vr_action_debug.value != 0.0f )
 	{
-		static double next = 0.0;
+		// Per MODEL, not per second. A one-a-second print samples whatever
+		// happens to be drawing and kept landing on the HEV suit, so the
+		// weapon - the only model this is about - was never reported.
+		static model_t *last = NULL;
 
-		if( gEngfuncs.pfnTime() > next )
+		if( RI.currentmodel != last )
 		{
-			next = gEngfuncs.pfnTime() + 1.0;
+			last = RI.currentmodel;
 			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f hdr=%d cvar=[%s] bones=%d b0=%s %s\n",
 				gpGlobals->actionProgress, m_pStudioHeader ? 1 : 0,
 				r_vr_action_bone.string,

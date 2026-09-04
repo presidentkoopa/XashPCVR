@@ -5811,7 +5811,10 @@ static void VR_UpdateAction( void )
 		// A real pump is heard from the moment it starts moving, so it plays
 		// once, complete, on the first part of the pull - and once per stroke,
 		// so a hand that wavers does not stutter it.
-		if( pull > 0.1f && !vr.act_sounded )
+		// Half the stroke, not a tenth of it. At a travel of a quarter unit a
+		// tenth is a fraction of a millimetre, which is hand tremor rather than
+		// motion - so it fired the moment the weapon was braced.
+		if( pull > 0.5f && !vr.act_sounded )
 		{
 			vr.act_sounded = true;
 
