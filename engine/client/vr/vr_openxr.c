@@ -111,6 +111,7 @@ static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapo
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.8", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
+static CVAR_DEFINE_AUTO( vr_shoulder_grab, "1", FCVAR_ARCHIVE, "shoulder hotspots need the grip closed, not just a hand passing through" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_back, "5", FCVAR_ARCHIVE, "hotspot offset behind the head, units" );
@@ -6132,7 +6133,17 @@ static void VR_UpdateShoulderMelee( void )
 	if( vr_shoulder_light.value != 0.0f )
 	{
 		float lside = ( VR_OffHand() == 0 ) ? -vr_shoulder_side.value : vr_shoulder_side.value;
-		qboolean lin = VR_HandInHeadSpot( VR_OffHand(), lside );
+		// REACHING IS NOT ASKING.
+		//
+		// Proximity alone fired these, so any hand that passed through the
+		// space beside the head triggered them - and reaching up to throw a
+		// grenade goes straight through it. Swapping to the crowbar mid-throw
+		// is not a thing anybody ever intended to do.
+		//
+		// Closing the hand is the difference between passing a place and
+		// taking something from it, which is what the gesture always meant.
+		qboolean lin = VR_HandInHeadSpot( VR_OffHand(), lside )
+			&& ( vr_shoulder_grab.value == 0.0f || VR_GetButton( VR_BTN_OFFGRIP ));
 
 		if( lin && !vr.sh_light_inside )
 		{
@@ -6215,7 +6226,11 @@ static void VR_UpdateShoulderMelee( void )
 
 	{
 		float mside = ( VR_DominantHand() == 0 ) ? -vr_shoulder_side.value : vr_shoulder_side.value;
-		inside = VR_HandInHeadSpot( VR_DominantHand(), mside );
+		// Same again: the weapon hand has to close on the spot, not merely
+		// arrive at it. The dominant grip is a modifier elsewhere, but nothing
+		// else claims it beside the head.
+		inside = VR_HandInHeadSpot( VR_DominantHand(), mside )
+			&& ( vr_shoulder_grab.value == 0.0f || VR_GetButton( VR_BTN_ATTACK2 ));
 	}
 
 	// Edge only: entering swaps, and the hand must leave before it can swap
@@ -6513,6 +6528,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
+	Cvar_RegisterVariable( &vr_shoulder_grab );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
 	Cvar_RegisterVariable( &vr_shoulder_side );
 	Cvar_RegisterVariable( &vr_shoulder_back );
