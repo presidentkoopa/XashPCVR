@@ -87,7 +87,7 @@ static CVAR_DEFINE_AUTO( vr_reload_side, "11", FCVAR_ARCHIVE, "ammo pouch offset
 static CVAR_DEFINE_AUTO( vr_reload_down, "20", FCVAR_ARCHIVE, "how far below the head the pouch sits, units" );
 static CVAR_DEFINE_AUTO( vr_reload_back, "2", FCVAR_ARCHIVE, "pouch offset behind the head, units" );
 static CVAR_DEFINE_AUTO( vr_reload_radius, "20", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
-static CVAR_DEFINE_AUTO( vr_reload_port, "28", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
+static CVAR_DEFINE_AUTO( vr_reload_port, "12", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset forward of the grip, units" );
 // PUBLISHED TO THE SERVER, PER PLAYER.
 //
@@ -5993,7 +5993,16 @@ static void VR_UpdateReload( void )
 		// The port sits a little ahead of where the gun is held, which is
 		// close enough for a breech, a magwell or a loading gate without
 		// needing to know which one this weapon has.
-		if( VR_GetWeaponAim( wpn, wang ))
+		// THE PORT IS BY THE TRIGGER, NOT THE MUZZLE.
+		//
+		// This measured from VR_GetWeaponAim, which returns the muzzle - so the
+		// loading port sat out at the end of the barrel and the hand never came
+		// within reach of it. Five hundred shells were carried to the weapon and
+		// silently dropped, the closest approach being twenty-two units.
+		//
+		// On this weapon the gate is just ahead of the trigger, and the trigger
+		// is where the firing hand is holding it. So measure from there.
+		if( VR_GetHandWorld( VR_DominantHand(), wpn, wang ))
 		{
 			AngleVectors( wang, fwd, NULL, NULL );
 			VectorMA( wpn, vr_reload_port_fwd.value, fwd, port );
