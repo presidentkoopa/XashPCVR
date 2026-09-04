@@ -923,7 +923,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	mstudioseqdesc_t *pseqdesc;
 	mstudioanim_t *panim;
 	float best = 0.0f;
-	int i, j, s;
+	int i, j, s, k;
 
 	if( cached_hdr == m_pStudioHeader )
 	{
@@ -982,25 +982,36 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 
 		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[s] );
 
+		// SAMPLED ACROSS THE SEQUENCE, not at one point in it.
+		//
+		// Comparing the first frame with the middle one misses anything that
+		// goes out and comes back inside the animation - which is exactly what
+		// a pump does during a thirty-one frame firing sequence. At the
+		// midpoint the fore-end is shut again and its delta reads as nothing,
+		// so the score went to a hand that merely drifted.
 		R_StudioCalcRotations( e, apos, aq, &pseqdesc[s], panim, 0.0f );
-		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[s], panim,
-			(float)( pseqdesc[s].numframes - 1 ) * 0.5f );
 
-		for( i = 0; i < m_pStudioHeader->numbones; i++ )
+		for( k = 1; k <= 8; k++ )
 		{
-			float d = 0.0f;
+			R_StudioCalcRotations( e, bpos, bq, &pseqdesc[s], panim,
+				(float)( pseqdesc[s].numframes - 1 ) * ( (float)k / 8.0f ));
 
-			for( j = 0; j < 4; j++ )
-				d += fabs( aq[i][j] - bq[i][j] );
-
-			// Motion alone is a finger. Motion carrying mesh is the mechanism.
-			d *= (float)vcount[i];
-
-			if( d > best )
+			for( i = 0; i < m_pStudioHeader->numbones; i++ )
 			{
-				best = d;
-				cached_bone = i;
-				cached_seq = s;
+				float d = 0.0f;
+
+				for( j = 0; j < 4; j++ )
+					d += fabs( aq[i][j] - bq[i][j] );
+
+				// Motion alone is a finger. Motion carrying mesh is the mechanism.
+				d *= (float)vcount[i];
+
+				if( d > best )
+				{
+					best = d;
+					cached_bone = i;
+					cached_seq = s;
+				}
 			}
 		}
 	}
