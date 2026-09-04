@@ -5666,10 +5666,10 @@ static void VR_UpdateAction( void )
 	}
 
 	if( vr_diag.value != 0.0f )
-		VR_DiagPrintf( "ACTION needs=%d armed=%d grip=%d travel=%.1f/%.0f hand=%.1f clip=%d\n",
+		VR_DiagPrintf( "ACTION needs=%d armed=%d grip=%d travel=%.1f/%.0f pull=%.2f hand=%.1f clip=%d\n",
 			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0, grip ? 1 : 0,
 			vr.act_armed ? ( vr.act_ref - proj ) : 0.0f,
-			vr_pump_travel.value, VectorLength( d ), vr.rl_clip );
+			vr_pump_travel.value, vr.act_pull, VectorLength( d ), vr.rl_clip );
 
 	grip_prev = grip;
 }
@@ -5735,10 +5735,21 @@ void VR_HoldViewModel( void )
 	// waiting to be worked.
 	if( held < 0.0 )
 	{
+		// THE SAME FRAME EVERY TIME.
+		//
+		// This used to hold wherever the animation had reached when the
+		// shot was noticed - and it is noticed when the clip drop arrives
+		// in a CurWeapon message, whose latency varies. So every shot
+		// stopped the weapon somewhere slightly different and the timing
+		// came out right only by luck.
+		//
+		// Naming the frame outright makes it identical shot to shot, and
+		// makes vr_pump_recoil mean what it says: where in the firing
+		// animation the weapon waits.
 		if( elapsed < (double)Q_max( 0.0f, vr_pump_recoil.value ))
 			return;
 
-		held = elapsed;
+		held = (double)Q_max( 0.0f, vr_pump_recoil.value );
 	}
 
 	// SCRUBBED BY THE HAND, not merely stopped.
