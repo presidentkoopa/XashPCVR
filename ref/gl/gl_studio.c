@@ -1012,6 +1012,28 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 		}
 	}
 
+	// A BONE FOUND IS NEVER A FAILURE.
+	//
+	// If no sequence measurably moves it, this used to give up - and giving
+	// up means no override at all, which hands the weapon back to the firing
+	// animation and lets it cycle itself. That is strictly worse than posing
+	// the bone from any sequence at all, which at least holds the mechanism
+	// still and stops it moving on its own.
+	//
+	// Motion when it can be had, stillness when it cannot, and never the
+	// weapon doing it by itself.
+	if( cached_seq < 0 )
+	{
+		for( s = 0; s < m_pStudioHeader->numseq; s++ )
+		{
+			if( pseqdesc[s].numframes > 1 )
+			{
+				cached_seq = s;
+				break;
+			}
+		}
+	}
+
 	*out_seq = cached_seq;
 	*out_bone = cached_bone;
 	*out_cycle = cached_cycle;
