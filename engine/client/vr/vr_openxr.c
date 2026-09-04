@@ -687,6 +687,7 @@ static struct
 	qboolean      act_worked;       // the action was worked THIS frame
 	float         act_pull;         // 0..1, how far back the action is being held
 	qboolean      act_back;         // it has been drawn fully back, awaiting the return
+	qboolean      act_sounded;      // this stroke has already announced itself
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -5757,15 +5758,13 @@ static void VR_UpdateAction( void )
 			vr.act_needs = false;
 			vr.act_worked = true;
 
-			if( vr_action_sound.string[0] )
-				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
-
 			VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
 			VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
 		}
 
 		vr.act_armed = false;
 		vr.act_pull = 0.0f;
+		vr.act_sounded = false;
 		vr.act_back = false;
 	}
 	else if( vr.act_armed )
@@ -5803,6 +5802,23 @@ static void VR_UpdateAction( void )
 
 		vr.act_pull = pull;
 
+		// THE WHOLE SOUND, AS THE MOTION BEGINS.
+		//
+		// It used to play when the stroke finished, which is the mod's timing:
+		// the noise arrives after the hand has already done the work and reads
+		// as lag. Splitting it in two only moved half the problem.
+		//
+		// A real pump is heard from the moment it starts moving, so it plays
+		// once, complete, on the first part of the pull - and once per stroke,
+		// so a hand that wavers does not stutter it.
+		if( pull > 0.1f && !vr.act_sounded )
+		{
+			vr.act_sounded = true;
+
+			if( vr_action_sound.string[0] )
+				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
+		}
+
 		if( pull >= 1.0f )
 			vr.act_back = true;
 
@@ -5818,26 +5834,17 @@ static void VR_UpdateAction( void )
 			vr.act_needs = false;
 			vr.act_back = false;
 			vr.act_pull = 0.0f;
+			vr.act_sounded = false;
+		vr.act_sounded = false;
 			vr.act_worked = true;
 			vr.act_armed = false;
-
-			if( vr_action_sound.string[0] )
-				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
 
 			VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
 			VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
 		}
 		else if( pull >= 1.0f && !vr.act_back )
 		{
-			// THE FIRST HALF OF THE NOISE, where it actually happens.
-			//
-			// A pump is two sounds, not one: the action hitting its stop, and the
-			// breech closing again. Playing them together at the end of the stroke
-			// puts both after the motion is over, which is the mod's timing rather
-			// than the hand's and reads as lag.
-			if( vr_action_sound.string[0] )
-				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
-
+			// Reaching the stop is felt, so the hand knows to push forward.
 			VR_Haptic( VR_OffHand(), 0.05f, 0.0f, 0.8f );
 		}
 	}

@@ -3137,8 +3137,12 @@ static void R_StudioApplyHandAction( void )
 		if( gEngfuncs.pfnTime() > next )
 		{
 			next = gEngfuncs.pfnTime() + 1.0;
-			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f hdr=%d %s\n",
+			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f hdr=%d cvar=[%s] bones=%d b0=%s %s\n",
 				gpGlobals->actionProgress, m_pStudioHeader ? 1 : 0,
+				r_vr_action_bone.string,
+				m_pStudioHeader ? m_pStudioHeader->numbones : -1,
+				m_pStudioHeader ? ((mstudiobone_t *)((byte *)m_pStudioHeader
+					+ m_pStudioHeader->boneindex))[0].name : "-",
 				RI.currentmodel ? RI.currentmodel->name : "?" );
 		}
 	}
