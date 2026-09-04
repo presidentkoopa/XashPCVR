@@ -1,0 +1,275 @@
+diff --git a/cl_dll/hl/hl_weapons.cpp b/cl_dll/hl/hl_weapons.cpp
+index 4f119f0..d9fe2fe 100644
+--- a/cl_dll/hl/hl_weapons.cpp
++++ b/cl_dll/hl/hl_weapons.cpp
+@@ -484,6 +484,21 @@ UTIL_TraceLine
+ Don't actually trace, but act like the trace didn't hit anything.
+ =====================
+ */
++// Is the local player loading their weapons by hand?
++//
++// The server answers this from the player's userinfo. Prediction only ever
++// runs for the LOCAL player, whose answer is simply the cvar that populates
++// that userinfo in the first place - so the two agree by construction.
++//
++// It has to exist here at all because GoldSrc compiles the weapon code twice,
++// once for the server and once for client-side prediction. A guard present in
++// one and absent in the other is a weapon that behaves differently depending
++// on who is asking, which is the classic source of prediction glitches.
++BOOL UTIL_PlayerHandLoads( CBaseEntity *pPlayer )
++{
++	return ( gEngfuncs.pfnGetCvarFloat( "vr_handload" ) != 0.0f ) ? TRUE : FALSE;
++}
++
+ void UTIL_TraceLine( const Vector &vecStart, const Vector &vecEnd, IGNORE_MONSTERS igmon, edict_t *pentIgnore, TraceResult *ptr )
+ {
+ 	memset( ptr, 0, sizeof(*ptr) );
+diff --git a/dlls/player.cpp b/dlls/player.cpp
+index a31504f..2f8617e 100644
+--- a/dlls/player.cpp
++++ b/dlls/player.cpp
+@@ -3531,6 +3531,18 @@ void CBasePlayer::ImpulseCommands()
+ 			FlashlightTurnOn();
+ 		}
+ 		break;
++	// The VR engine says this player just worked their weapon's action.
++	// Unhandled by design on anything without one, and on any build that
++	// never receives it.
++	case 210:
++		if( m_pActiveItem )
++		{
++			CBasePlayerWeapon *pWeapon = (CBasePlayerWeapon *)m_pActiveItem->GetWeaponPtr();
++
++			if( pWeapon )
++				pWeapon->ActionWorked();
++		}
++		break;
+ 	case 201:
+ 		// paint decal
+ 		if( gpGlobals->time < m_flNextDecalTime )
+diff --git a/dlls/shotgun.cpp b/dlls/shotgun.cpp
+index 7b263a2..7ec7a85 100644
+--- a/dlls/shotgun.cpp
++++ b/dlls/shotgun.cpp
+@@ -258,6 +258,8 @@ void CShotgun::SecondaryAttack( void )
+ 
+ void CShotgun::Reload( void )
+ {
++	BOOL fHandLoad = UTIL_PlayerHandLoads( m_pPlayer );
++
+ 	if( m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] <= 0 || m_iClip == SHOTGUN_MAX_CLIP )
+ 		return;
+ 
+@@ -278,7 +280,10 @@ void CShotgun::Reload( void )
+ 	}
+ 	else if( m_fInSpecialReload == 1 )
+ 	{
+-		if( m_flTimeWeaponIdle > UTIL_WeaponTimeBase() )
++		// The wait exists to PACE the automatic reload. Somebody feeding
++		// shells by hand is already doing the pacing, so making them wait on
++		// top of their own motion only swallows shells they inserted.
++		if( !fHandLoad && m_flTimeWeaponIdle > UTIL_WeaponTimeBase() )
+ 			return;
+ 		// was waiting for gun to move to side
+ 		m_fInSpecialReload = 2;
+@@ -292,19 +297,59 @@ void CShotgun::Reload( void )
+ 
+ 		m_flNextReload = UTIL_WeaponTimeBase() + 0.5f;
+ 		m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + 0.5f;
++
++		// ONE MOTION, ONE SHELL.
++		//
++		// A shell normally takes two passes through here, the second
++		// arriving from WeaponIdle - which is the very thing hand loading
++		// turns off. Without this the player inserts a shell and watches
++		// nothing happen.
++		// ONLY WHEN THE PLAYER ACTUALLY FED IT ONE.
++		//
++		// Reload() is not reached only from the loading gesture. PrimaryAttack
++		// calls it directly on an empty chamber, so a trigger pull on a dry
++		// gun was quietly taking a shell out of the reserve and chambering it -
++		// the player pumps, fires, and never loaded anything.
++		//
++		// The VR engine raises IN_RELOAD for exactly one frame per completed
++		// insert, and nothing else here does, so that bit is what separates a
++		// shell the player put in from one the weapon helped itself to.
++		if( fHandLoad && ( m_pPlayer->pev->button & IN_RELOAD ))
++		{
++			m_iClip += 1;
++			m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] -= 1;
++			m_fInSpecialReload = 1;
++		}
+ 	}
+ 	else
+ 	{
+-		// Add them to the clip
+-		m_iClip += 1;
+-		m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] -= 1;
+-		m_fInSpecialReload = 1;
++		// THE OTHER PLACE A SHELL GETS ADDED.
++		//
++		// PrimaryAttack calls Reload() on an empty chamber, and repeated calls
++		// walk this state machine round - start, ready, add - so a dry gun fed
++		// itself from the reserve without the player inserting anything. Pump,
++		// fire, pump, fire, all on ammunition nobody loaded.
++		//
++		// Guarding the earlier branch was not enough; both roads reach here.
++		if( !UTIL_PlayerHandLoads( m_pPlayer ) || ( m_pPlayer->pev->button & IN_RELOAD ))
++		{
++			// Add them to the clip
++			m_iClip += 1;
++			m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] -= 1;
++			m_fInSpecialReload = 1;
++		}
+ 	}
+ }
+ 
+ void CShotgun::ItemPostFrame( void )
+ {
+-	if( m_flPumpTime && m_flPumpTime < gpGlobals->time )
++	// The AUTOMATIC cocking sound, which fires half a second after a shot on
++	// the mod's own timer. A player working the action by hand makes that
++	// noise when they actually work it, so hearing it arrive on a schedule
++	// of its own tells them the gun cycled without them.
++	if( m_flPumpTime && m_flPumpTime < gpGlobals->time
++		&& !UTIL_PlayerHandLoads( m_pPlayer ))
++
+ 	{
+ 		// play pumping sound
+ 		EMIT_SOUND_DYN( ENT( m_pPlayer->pev ), CHAN_ITEM, "weapons/scock1.wav", 1, ATTN_NORM, 0, 95 + RANDOM_LONG( 0, 0x1f ) );
+@@ -314,6 +359,22 @@ void CShotgun::ItemPostFrame( void )
+ 	CBasePlayerWeapon::ItemPostFrame();
+ }
+ 
++void CShotgun::ActionWorked( void )
++{
++	// The player worked the action.
++	//
++	// No animation is sent: the engine poses the action bone from the hand
++	// directly, so the motion the player made IS the motion the weapon makes.
++	//
++	// Nothing is ejected either. Working a loaded action really would throw
++	// the chambered round away, but a stroke short enough to be comfortable
++	// is also short enough to happen by accident while carrying the gun, and
++	// losing ammunition you never chose to lose is not a mechanic anyone
++	// wants to live with.
++	m_flPumpTime = 0;
++}
++
++
+ void CShotgun::WeaponIdle( void )
+ {
+ 	ResetEmptySound();
+@@ -322,7 +383,8 @@ void CShotgun::WeaponIdle( void )
+ 
+ 	if( m_flTimeWeaponIdle <  UTIL_WeaponTimeBase() )
+ 	{
+-		if( m_iClip == 0 && m_fInSpecialReload == 0 && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] )
++		// The other way an empty gun starts loading itself. Same objection.
++		if( m_iClip == 0 && m_fInSpecialReload == 0 && !UTIL_PlayerHandLoads( m_pPlayer ) && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] )
+ 		{
+ 			Reload();
+ 		}
+@@ -330,7 +392,14 @@ void CShotgun::WeaponIdle( void )
+ 		{
+ 			if( m_iClip != SHOTGUN_MAX_CLIP && m_pPlayer->m_rgAmmo[m_iPrimaryAmmoType] )
+ 			{
+-				Reload();
++				// THE PLAYER FEEDS IT, or the gun feeds itself - never both.
++				//
++				// This is the loop that fills the whole tube from one press, which
++				// is right at a keyboard and wrong in a headset where there is a
++				// hand free to do it. Standing it down is the entire difference
++				// between starting a reload and performing one.
++				if( !UTIL_PlayerHandLoads( m_pPlayer ))
++					Reload();
+ 			}
+ 			else
+ 			{
+diff --git a/dlls/util.cpp b/dlls/util.cpp
+index 27c7ffe..83d3d0e 100644
+--- a/dlls/util.cpp
++++ b/dlls/util.cpp
+@@ -580,6 +580,19 @@ CBaseEntity *UTIL_PlayerByIndex( int playerIndex )
+ 	return pPlayer;
+ }
+ 
++BOOL UTIL_PlayerHandLoads( CBaseEntity *pPlayer )
++{
++	const char *pszValue;
++
++	if( !pPlayer || !pPlayer->edict() )
++		return FALSE;
++
++	pszValue = g_engfuncs.pfnInfoKeyValue(
++		g_engfuncs.pfnGetInfoKeyBuffer( pPlayer->edict() ), "vr_handload" );
++
++	return ( pszValue && pszValue[0] == '1' ) ? TRUE : FALSE;
++}
++
+ void UTIL_MakeVectors( const Vector &vecAngles )
+ {
+ 	MAKE_VECTORS( vecAngles );
+diff --git a/dlls/util.h b/dlls/util.h
+index 0aa6480..aa3b086 100644
+--- a/dlls/util.h
++++ b/dlls/util.h
+@@ -249,6 +249,17 @@ extern void			UTIL_MakeVectors		(const Vector &vecAngles);
+ extern int			UTIL_MonstersInSphere( CBaseEntity **pList, int listMax, const Vector &center, float radius );
+ extern int			UTIL_EntitiesInBox( CBaseEntity **pList, int listMax, const Vector &mins, const Vector &maxs, int flagMask );
+ 
++// Is this player loading their weapons by hand, one round at a time?
++//
++// Set by the VR engine in the player's userinfo, so it is PER PLAYER: a
++// headset player and a flatscreen player on the same server get their own
++// answers, and a dedicated server with nobody in VR never sees it set.
++//
++// Absent - which is every non-VR client and every ordinary engine - reads as
++// FALSE, so weapons behave exactly as they always have unless somebody is
++// actually standing there feeding them.
++BOOL UTIL_PlayerHandLoads( CBaseEntity *pPlayer );
++
+ inline void UTIL_MakeVectorsPrivate( const Vector &vecAngles, float *p_vForward, float *p_vRight, float *p_vUp )
+ {
+ 	g_engfuncs.pfnAngleVectors( vecAngles, p_vForward, p_vRight, p_vUp );
+diff --git a/dlls/weapons.cpp b/dlls/weapons.cpp
+index 3ff1a15..6038b7e 100644
+--- a/dlls/weapons.cpp
++++ b/dlls/weapons.cpp
+@@ -677,7 +677,11 @@ void CBasePlayerWeapon::ItemPostFrame( void )
+ 		else
+ 		{
+ 			// weapon is useable. Reload if empty and weapon has waited as long as it has to after firing
+-			if( m_iClip == 0 && !(iFlags() & ITEM_FLAG_NOAUTORELOAD ) && m_flNextPrimaryAttack < ( UseDecrement() ? 0.0f : gpGlobals->time ) )
++			// NOT FOR SOMEBODY LOADING BY HAND. Running dry starts a reload here all
++			// by itself, which is a kindness at a keyboard and a theft in a headset:
++			// the first round goes in before the player has reached for it, and the
++			// gesture they then make is answered by a weapon already under way.
++			if( m_iClip == 0 && !(iFlags() & ITEM_FLAG_NOAUTORELOAD ) && !UTIL_PlayerHandLoads( m_pPlayer ) && m_flNextPrimaryAttack < ( UseDecrement() ? 0.0f : gpGlobals->time ) )
+ 			{
+ 				Reload();
+ 				return;
+diff --git a/dlls/weapons.h b/dlls/weapons.h
+index aea4a62..907cd19 100644
+--- a/dlls/weapons.h
++++ b/dlls/weapons.h
+@@ -318,6 +318,11 @@ public:
+ 	virtual void SecondaryAttack( void ) { return; }			// do "+ATTACK2"
+ 	virtual void Reload( void ) { return; }						// do "+RELOAD"
+ 	virtual void WeaponIdle( void ) { return; }					// called when no buttons pressed
++	// The player worked this weapon's action by hand - pumped it, ran the bolt,
++	// released the slide. Sent by the VR engine as an impulse when the gesture
++	// completes, so the weapon can animate the motion the player just made
++	// rather than one on its own schedule. Weapons with no action ignore it.
++	virtual void ActionWorked( void ) { return; }
+ 	virtual int UpdateClientData( CBasePlayer *pPlayer );		// sends hud info to client dll, if things have changed
+ 	virtual void RetireWeapon( void );
+ 	virtual BOOL ShouldWeaponIdle( void ) {return FALSE; };
+@@ -636,6 +641,7 @@ public:
+ 	BOOL Deploy( );
+ 	void Reload( void );
+ 	void WeaponIdle( void );
++	void ActionWorked( void );
+ 	void ItemPostFrame( void );
+ 	int m_fInReload;
+ 	float m_flNextReload;
