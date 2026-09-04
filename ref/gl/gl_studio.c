@@ -2796,8 +2796,16 @@ R_StudioSetupRenderer
 
 ===============
 */
+static void R_StudioApplyHandAction( void );
+
 static void R_StudioSetupRenderer( int rendermode )
 {
+	// The client DLL calls this through IEngineStudio.SetupRenderer right
+	// before it draws, with the weapon bones already in the engine buffer.
+	// Half-Life supplies its own studio renderer, so this is the only place
+	// the engine sees the viewmodel at all.
+	R_StudioApplyHandAction();
+
 	studiohdr_t	*phdr = m_pStudioHeader;
 
 	if( rendermode > kRenderTransAdd ) rendermode = 0;
@@ -3097,6 +3105,19 @@ static void R_StudioApplyHandAction( void )
 	qboolean acycle = false;
 	float p;
 
+	if( r_vr_action_debug.value != 0.0f )
+	{
+		static double next = 0.0;
+
+		if( gEngfuncs.pfnTime() > next )
+		{
+			next = gEngfuncs.pfnTime() + 1.0;
+			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f hdr=%d %s\n",
+				gpGlobals->actionProgress, m_pStudioHeader ? 1 : 0,
+				RI.currentmodel ? RI.currentmodel->name : "?" );
+		}
+	}
+
 	if( !m_pStudioHeader || gpGlobals->actionProgress < 0.0f )
 		return;
 
@@ -3145,8 +3166,6 @@ static void R_StudioApplyHandAction( void )
 
 static void R_StudioRenderModel( void )
 {
-	R_StudioApplyHandAction();
-
 	R_StudioSetChromeOrigin();
 	R_StudioSetForceFaceFlags( 0 );
 
