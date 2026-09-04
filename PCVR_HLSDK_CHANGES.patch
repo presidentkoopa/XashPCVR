@@ -257,10 +257,10 @@ index 0aa6480..aa3b086 100644
  {
  	g_engfuncs.pfnAngleVectors( vecAngles, p_vForward, p_vRight, p_vUp );
 diff --git a/dlls/weapons.cpp b/dlls/weapons.cpp
-index 3ff1a15..0e0b7d1 100644
+index 3ff1a15..2bf286b 100644
 --- a/dlls/weapons.cpp
 +++ b/dlls/weapons.cpp
-@@ -613,6 +613,25 @@ BOOL CanAttack( float attack_time, float curtime, BOOL isPredicted )
+@@ -613,6 +613,53 @@ BOOL CanAttack( float attack_time, float curtime, BOOL isPredicted )
  	}
  }
  
@@ -281,12 +281,40 @@ index 3ff1a15..0e0b7d1 100644
 +	m_iClip = ( m_iClip > 0 ) ? 1 : 0;
 +	m_pPlayer->TabulateAmmo();
 +
++	// AND IT LANDS ON THE FLOOR WHERE YOU DROPPED IT.
++	//
++	// A magazine that vanishes is a button press; one lying at your feet is a
++	// thing you did. EjectBrass already tosses a model with physics and a
++	// bounce, which is exactly the behaviour wanted, so it is reused.
++	//
++	// Only when the server already knows the model - the ammo pickups
++	// precache these - since asking for an unprecached one mid-game drops
++	// clients.
++	if( MagazineModel())
++	{
++		int idx = MODEL_INDEX( MagazineModel());
++
++		if( idx > 0 )
++		{
++			Vector vecVel;
++
++			UTIL_MakeVectors( m_pPlayer->pev->v_angle );
++
++			// Down and a little forward, the way one falls out of a weapon
++			// rather than being thrown.
++			vecVel = gpGlobals->v_forward * 12.0f + Vector( 0.0f, 0.0f, -30.0f );
++
++			EjectBrass( m_pPlayer->GetGunPosition() - gpGlobals->v_up * 6.0f,
++				vecVel, m_pPlayer->pev->v_angle.y, idx, TE_BOUNCE_SHELL );
++		}
++	}
++
 +}
 +
  void CBasePlayerWeapon::ItemPostFrame( void )
  {
  	if( ( m_fInReload ) && ( m_pPlayer->m_flNextAttack <= UTIL_WeaponTimeBase() ) )
-@@ -677,7 +696,11 @@ void CBasePlayerWeapon::ItemPostFrame( void )
+@@ -677,7 +724,11 @@ void CBasePlayerWeapon::ItemPostFrame( void )
  		else
  		{
  			// weapon is useable. Reload if empty and weapon has waited as long as it has to after firing
@@ -300,10 +328,10 @@ index 3ff1a15..0e0b7d1 100644
  				Reload();
  				return;
 diff --git a/dlls/weapons.h b/dlls/weapons.h
-index aea4a62..d187cf3 100644
+index aea4a62..317cfee 100644
 --- a/dlls/weapons.h
 +++ b/dlls/weapons.h
-@@ -318,6 +318,23 @@ public:
+@@ -318,6 +318,26 @@ public:
  	virtual void SecondaryAttack( void ) { return; }			// do "+ATTACK2"
  	virtual void Reload( void ) { return; }						// do "+RELOAD"
  	virtual void WeaponIdle( void ) { return; }					// called when no buttons pressed
@@ -324,10 +352,29 @@ index aea4a62..d187cf3 100644
 +	// A deliberate press, so the cost is chosen rather than inflicted - and a
 +	// toggle belongs in the launcher settings when that exists.
 +	virtual void DropMagazine( void );
++	// The world model for this weapon magazine, so a dropped one can be seen
++	// on the floor. NULL for anything that has no magazine to drop.
++	virtual const char *MagazineModel( void ) { return NULL; }
  	virtual int UpdateClientData( CBasePlayer *pPlayer );		// sends hud info to client dll, if things have changed
  	virtual void RetireWeapon( void );
  	virtual BOOL ShouldWeaponIdle( void ) {return FALSE; };
-@@ -636,6 +653,9 @@ public:
+@@ -468,6 +488,7 @@ public:
+ 	void SecondaryAttack( void );
+ 	void GlockFire( float flSpread, float flCycleTime, BOOL fUseAutoAim );
+ 	BOOL Deploy( void );
++	const char *MagazineModel( void ) { return "models/w_9mmclip.mdl"; }
+ 	void Reload( void );
+ 	void WeaponIdle( void );
+ 
+@@ -564,6 +585,7 @@ public:
+ 	void SecondaryAttack( void );
+ 	int SecondaryAmmoIndex( void );
+ 	BOOL Deploy( void );
++	const char *MagazineModel( void ) { return "models/w_9mmarclip.mdl"; }
+ 	void Reload( void );
+ 	void WeaponIdle( void );
+ 	float m_flNextAnimTime;
+@@ -636,6 +658,9 @@ public:
  	BOOL Deploy( );
  	void Reload( void );
  	void WeaponIdle( void );
