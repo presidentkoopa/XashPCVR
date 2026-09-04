@@ -688,6 +688,7 @@ static struct
 	float         act_pull;         // 0..1, how far back the action is being held
 	qboolean      act_back;         // it has been drawn fully back, awaiting the return
 	qboolean      act_sounded;      // this stroke has already announced itself
+	double        act_settle;       // no stroke until the hand has left the gun
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -5706,6 +5707,34 @@ static void VR_UpdateAction( void )
 		vr.act_needs = true;
 
 	vr.act_clip = vr.rl_clip;
+
+	// A HAND WITH A SHELL IN IT IS NOT WORKING THE ACTION.
+	//
+	// Carrying a round to the gun ends with the hand at the weapon, gripping,
+	// which is indistinguishable from taking hold of the fore-end - so the
+	// journey in was being read as a pull. And releasing to insert leaves the
+	// hand right there, so the next stroke armed instantly on a hand that had
+	// not gone anywhere.
+	//
+	// Neither is something the player did. Stand down while a round is held,
+	// and settle briefly after one goes in.
+	if( vr.rl_holding )
+	{
+		vr.act_armed = false;
+		vr.act_pull = 0.0f;
+		vr.act_back = false;
+		vr.act_sounded = false;
+		vr.act_settle = host.realtime + 0.4;
+		return;
+	}
+
+	if( host.realtime < vr.act_settle )
+	{
+		vr.act_armed = false;
+		vr.act_pull = 0.0f;
+		vr.act_back = false;
+		return;
+	}
 
 	if( !vr.act_needs )
 	{
