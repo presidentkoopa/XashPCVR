@@ -1,8 +1,8 @@
 diff --git a/cl_dll/hl/hl_weapons.cpp b/cl_dll/hl/hl_weapons.cpp
-index 4f119f0..d9fe2fe 100644
+index 4f119f0..81b21a6 100644
 --- a/cl_dll/hl/hl_weapons.cpp
 +++ b/cl_dll/hl/hl_weapons.cpp
-@@ -484,6 +484,21 @@ UTIL_TraceLine
+@@ -484,6 +484,35 @@ UTIL_TraceLine
  Don't actually trace, but act like the trace didn't hit anything.
  =====================
  */
@@ -16,6 +16,20 @@ index 4f119f0..d9fe2fe 100644
 +// once for the server and once for client-side prediction. A guard present in
 +// one and absent in the other is a weapon that behaves differently depending
 +// on who is asking, which is the classic source of prediction glitches.
++// The magazine leaves the weapon, predicted the same way the server does it.
++//
++// GoldSrc compiles the weapon classes twice, so a body that exists only on
++// the server is a link error here and a prediction mismatch if it were left
++// hollow. The rounds are lost on both sides or neither.
++void CBasePlayerWeapon::DropMagazine( void )
++{
++	if( m_iClip <= 0 )
++		return;
++
++	// One stays in the chamber; the rest go with the magazine.
++	m_iClip = ( m_iClip > 0 ) ? 1 : 0;
++}
++
 +BOOL UTIL_PlayerHandLoads( CBaseEntity *pPlayer )
 +{
 +	return ( gEngfuncs.pfnGetCvarFloat( "vr_handload" ) != 0.0f ) ? TRUE : FALSE;
@@ -25,16 +39,26 @@ index 4f119f0..d9fe2fe 100644
  {
  	memset( ptr, 0, sizeof(*ptr) );
 diff --git a/dlls/player.cpp b/dlls/player.cpp
-index a31504f..2f8617e 100644
+index a31504f..954c975 100644
 --- a/dlls/player.cpp
 +++ b/dlls/player.cpp
-@@ -3531,6 +3531,18 @@ void CBasePlayer::ImpulseCommands()
+@@ -3531,6 +3531,28 @@ void CBasePlayer::ImpulseCommands()
  			FlashlightTurnOn();
  		}
  		break;
 +	// The VR engine says this player just worked their weapon's action.
 +	// Unhandled by design on anything without one, and on any build that
 +	// never receives it.
++	// The VR engine says the player pulled the magazine out.
++	case 211:
++		if( m_pActiveItem )
++		{
++			CBasePlayerWeapon *pWeapon = (CBasePlayerWeapon *)m_pActiveItem->GetWeaponPtr();
++
++			if( pWeapon )
++				pWeapon->DropMagazine();
++		}
++		break;
 +	case 210:
 +		if( m_pActiveItem )
 +		{
@@ -233,10 +257,36 @@ index 0aa6480..aa3b086 100644
  {
  	g_engfuncs.pfnAngleVectors( vecAngles, p_vForward, p_vRight, p_vUp );
 diff --git a/dlls/weapons.cpp b/dlls/weapons.cpp
-index 3ff1a15..6038b7e 100644
+index 3ff1a15..0e0b7d1 100644
 --- a/dlls/weapons.cpp
 +++ b/dlls/weapons.cpp
-@@ -677,7 +677,11 @@ void CBasePlayerWeapon::ItemPostFrame( void )
+@@ -613,6 +613,25 @@ BOOL CanAttack( float attack_time, float curtime, BOOL isPredicted )
+ 	}
+ }
+ 
++void CBasePlayerWeapon::DropMagazine( void )
++{
++	if( m_iClip <= 0 || !m_pPlayer )
++		return;
++
++	// A ROUND IN THE CHAMBER DOES NOT LEAVE WITH THE MAGAZINE.
++	//
++	// Dropping a mag with one up the spout leaves exactly that: one shot. The
++	// rest go on the floor with the magazine, which is what makes reloading
++	// early cost something.
++	//
++	// Firing that last round then empties the weapon, which locks the slide
++	// back and means the next magazine has to be racked before it will fire -
++	// and that already follows from the clip reaching zero.
++	m_iClip = ( m_iClip > 0 ) ? 1 : 0;
++	m_pPlayer->TabulateAmmo();
++
++}
++
+ void CBasePlayerWeapon::ItemPostFrame( void )
+ {
+ 	if( ( m_fInReload ) && ( m_pPlayer->m_flNextAttack <= UTIL_WeaponTimeBase() ) )
+@@ -677,7 +696,11 @@ void CBasePlayerWeapon::ItemPostFrame( void )
  		else
  		{
  			// weapon is useable. Reload if empty and weapon has waited as long as it has to after firing
@@ -250,10 +300,10 @@ index 3ff1a15..6038b7e 100644
  				Reload();
  				return;
 diff --git a/dlls/weapons.h b/dlls/weapons.h
-index aea4a62..907cd19 100644
+index aea4a62..d187cf3 100644
 --- a/dlls/weapons.h
 +++ b/dlls/weapons.h
-@@ -318,6 +318,11 @@ public:
+@@ -318,6 +318,23 @@ public:
  	virtual void SecondaryAttack( void ) { return; }			// do "+ATTACK2"
  	virtual void Reload( void ) { return; }						// do "+RELOAD"
  	virtual void WeaponIdle( void ) { return; }					// called when no buttons pressed
@@ -262,14 +312,28 @@ index aea4a62..907cd19 100644
 +	// completes, so the weapon can animate the motion the player just made
 +	// rather than one on its own schedule. Weapons with no action ignore it.
 +	virtual void ActionWorked( void ) { return; }
++	// The player pulled the magazine out. Sent by the VR engine when the
++	// reload control is used, because in a headset that control means drop the
++	// mag rather than perform the whole reload - the seating is done by hand.
++	//
++	// The rounds in it go on the floor with it. That is what dropping a part-
++	// used magazine costs, and it is the whole reason to think before
++	// reloading early rather than topping up out of habit between every
++	// contact.
++	//
++	// A deliberate press, so the cost is chosen rather than inflicted - and a
++	// toggle belongs in the launcher settings when that exists.
++	virtual void DropMagazine( void );
  	virtual int UpdateClientData( CBasePlayer *pPlayer );		// sends hud info to client dll, if things have changed
  	virtual void RetireWeapon( void );
  	virtual BOOL ShouldWeaponIdle( void ) {return FALSE; };
-@@ -636,6 +641,7 @@ public:
+@@ -636,6 +653,9 @@ public:
  	BOOL Deploy( );
  	void Reload( void );
  	void WeaponIdle( void );
 +	void ActionWorked( void );
++	// A tube has no magazine to drop.
++	void DropMagazine( void ) { }
  	void ItemPostFrame( void );
  	int m_fInReload;
  	float m_flNextReload;
