@@ -1130,6 +1130,15 @@ static void CL_CreateCmd( void )
 		// up unreloadable.
 		if( VR_GetReloadCmd( ))  cmd->buttons |= IN_RELOAD;
 
+		// Tell the mod its action was worked, so it can play the pump itself.
+		// Only when nothing else is using the impulse channel this frame.
+		{
+			int imp = VR_GetActionImpulse();
+
+			if( imp && !cmd->impulse )
+				cmd->impulse = imp;
+		}
+
 		// Swing-to-hit for melee. Injected as IN_ATTACK - the same button
 		// the mod already handles - so no game-DLL knowledge is required.
 		//

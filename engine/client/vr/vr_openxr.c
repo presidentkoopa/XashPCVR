@@ -103,9 +103,10 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 // states a fact about the player and nothing more.
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
+static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
-static CVAR_DEFINE_AUTO( vr_pump_travel, "5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
+static CVAR_DEFINE_AUTO( vr_pump_travel, "2.5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
@@ -678,6 +679,7 @@ static struct
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
 	int           act_id;           // and which weapon it belonged to
+	qboolean      act_worked;       // the action was worked THIS frame
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -852,6 +854,7 @@ static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
 // attachment[] as it draws, which is the ONLY exact source for where this
 // weapon's barrel actually points.
 static cl_entity_t vr_offhand_ent;
+static cl_entity_t vr_round_ent;		// the round being carried to the gun
 
 // VR_AlignModelToFireRay's integrator, at file scope so the periodic diagnostic
 // can report it. It winding to its clamp is what inverts the weapon, and that
@@ -2856,6 +2859,79 @@ makes R_StudioSetUpTransform negate matrix column 1 - so the off-hand gun reads
 as a left-handed weapon rather than a clone facing the wrong way.
 ================
 */
+/*
+================
+VR_DrawHeldRound
+
+Put something in the hand that is carrying a round.
+
+Reaching to your hip and closing an empty fist on nothing, then moving that
+nothing to the gun, is a gesture with no object in it - the haptics say a
+round was taken but the eyes never agree, and the hand looks the same whether
+it is carrying a shell or has already fumbled it.
+
+Half-Life ships a single shotgun shell as shotgunshell.mdl, which is the
+ejected casing and exactly the right object. A cvar rather than that path
+fixed, so a mod without it can point somewhere else or draw nothing, and an
+absent model simply skips - a missing prop must never cost the gesture.
+================
+*/
+void VR_DrawHeldRound( void )
+{
+	static model_t *mdl = NULL;
+	static int last_servercount = -1;
+	vec3_t org, ang;
+
+	if( !VR_IsActive() || !vr.rl_holding || !vr_reload_model.string[0] )
+		return;
+
+	// Reloaded per level for the same reason the hand models are: model_t
+	// slots are recycled, so a pointer kept across a level change can end up
+	// naming something else entirely.
+	if( cl.servercount != last_servercount )
+	{
+		last_servercount = cl.servercount;
+		mdl = Mod_ForName( vr_reload_model.string, false, false );
+	}
+
+	if( !mdl )
+		return;
+
+	if( !VR_GetHandWorld( VR_OffHand(), org, ang ))
+		return;
+
+	// Pre-negate pitch, as every studio model drawn from here must - see the
+	// long note in VR_DrawHands for why the engine negates it again later.
+	ang[PITCH] = -ang[PITCH];
+
+	if( vr_round_ent.model != mdl )
+	{
+		vr_round_ent.model = mdl;
+		vr_round_ent.curstate.sequence = 0;
+		vr_round_ent.curstate.frame = 0;
+		vr_round_ent.curstate.animtime = host.realtime;
+		vr_round_ent.curstate.framerate = 1.0f;
+		vr_round_ent.curstate.rendermode = kRenderNormal;
+		vr_round_ent.curstate.renderamt = 255;
+		vr_round_ent.curstate.scale = 1.0f;
+	}
+
+	// Same synthetic-index safety as the hands and the off-hand weapon: in
+	// bounds, recomputed per frame, and clear of the ones they take.
+	if( clgame.maxEntities <= 8 )
+		return;
+	vr_round_ent.index = clgame.maxEntities - 4;
+
+	VectorCopy( org, vr_round_ent.origin );
+	VectorCopy( org, vr_round_ent.curstate.origin );
+	VectorCopy( org, vr_round_ent.latched.prevorigin );
+	VectorCopy( ang, vr_round_ent.angles );
+	VectorCopy( ang, vr_round_ent.curstate.angles );
+	VectorCopy( ang, vr_round_ent.latched.prevangles );
+
+	CL_AddVisibleEntity( &vr_round_ent, ET_NORMAL );
+}
+
 void VR_DrawOffhandWeapon( void )
 {
 
@@ -5444,6 +5520,8 @@ static void VR_UpdateAction( void )
 		return;
 	}
 
+	vr.act_worked = false;
+
 	wp = VR_GetWeaponProfile();
 
 	// Switching weapons resets everything: a clip count from the last gun
@@ -5535,6 +5613,7 @@ static void VR_UpdateAction( void )
 		// Worked. The next shot is available.
 		vr.act_needs = false;
 		vr.act_armed = false;
+		vr.act_worked = true;
 
 		// SAY SO OUT LOUD.
 		//
@@ -5560,6 +5639,26 @@ static void VR_UpdateAction( void )
 			vr_pump_travel.value, VectorLength( d ), vr.rl_clip );
 
 	grip_prev = grip;
+}
+
+/*
+================
+VR_GetActionImpulse
+
+The impulse that tells the mod its action was worked by hand, or 0.
+
+An impulse because it is an EVENT, and userinfo carries state. The mod plays
+the pump animation itself on receiving it, which is the only way the weapon
+visibly cycles when the player cycles it rather than on the mod's own
+schedule - a sound from the engine cannot move the model.
+
+An unhandled impulse falls through harmlessly, so mods that know nothing
+about this are unaffected. 210 is clear of everything Half-Life uses.
+================
+*/
+int VR_GetActionImpulse( void )
+{
+	return ( VR_IsActive() && vr.act_worked ) ? 210 : 0;
 }
 
 /*
@@ -6180,6 +6279,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_reload_model );
 	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
@@ -8222,6 +8322,7 @@ qboolean VR_AimFromWeapon( void ) { return false; }
 qboolean VR_DualWieldActive( void ) { return false; }
 qboolean VR_GetOffhandFire( vec3_t out_org, vec3_t out_dir ) { return false; }
 void     VR_DrawOffhandWeapon( void ) { }
+void     VR_DrawHeldRound( void ) { }
 qboolean VR_GetAimAngles( vec3_t out_ang ) { return false; }
 qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang ) { return false; }
 void     VR_DrawOverlays( void ) { }
@@ -8229,6 +8330,7 @@ void     VR_Haptic( int hand, float duration, float frequency, float amplitude )
 qboolean VR_GetMeleeAttack( void ) { return false; }
 qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_ActionBlocked( void ) { return false; }
+int      VR_GetActionImpulse( void ) { return 0; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }

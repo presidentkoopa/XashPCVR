@@ -640,6 +640,7 @@ void V_RenderView( void )
 			// Second gun, while dual wielding. Drawn after the hands so the
 			// off hand shows a weapon rather than an empty fist.
 			VR_DrawOffhandWeapon();
+			VR_DrawHeldRound();
 		}
 
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )

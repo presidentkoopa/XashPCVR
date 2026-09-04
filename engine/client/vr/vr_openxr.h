@@ -314,6 +314,8 @@ void     VR_Haptic( int hand, float duration, float frequency, float amplitude )
 qboolean VR_GetMeleeAttack( void );
 qboolean VR_GetReloadCmd( void );
 qboolean VR_ActionBlocked( void );
+int      VR_GetActionImpulse( void );
+void     VR_DrawHeldRound( void );
 
 // Off-hand flashlight source. Returns false to use the stock head mount.
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd );
