@@ -684,6 +684,7 @@ static struct
 	int           act_id;           // and which weapon it belonged to
 	qboolean      act_worked;       // the action was worked THIS frame
 	float         act_pull;         // 0..1, how far back the action is being held
+	qboolean      act_back;         // it has been drawn fully back, awaiting the return
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -5528,6 +5529,22 @@ static void VR_UpdateAction( void )
 
 	wp = VR_GetWeaponProfile();
 
+	// What the weapon was CLASSIFIED as, once per change. Every exit below is
+	// silent, so a weapon that never gates its fire looks identical to one
+	// whose gesture is failing - and they are opposite problems.
+	if( vr_diag.value != 0.0f )
+	{
+		static const model_t *last = NULL;
+
+		if( clgame.viewent.model != last )
+		{
+			last = clgame.viewent.model;
+			VR_DiagPrintf( "PROFILE %s valid=%d pump=%d slide=%d clip=%d\n",
+				last ? last->name : "(none)", wp ? wp->valid : 0,
+				( wp && wp->pump ) ? 1 : 0, ( wp && wp->slide ) ? 1 : 0, vr.rl_clip );
+		}
+	}
+
 	// Switching weapons resets everything: a clip count from the last gun
 	// says nothing about this one, and comparing them would read as a shot.
 	if( vr_wlist.cur_id != vr.act_id )
@@ -5621,16 +5638,20 @@ static void VR_UpdateAction( void )
 	{
 		vr.act_armed = false;
 		vr.act_pull = 0.0f;
+		vr.act_back = false;
 	}
 	else if( vr.act_armed )
 	{
-		// HOW FAR BACK, not merely whether it got there.
+		// OUT AND BACK, both of them the hand's doing.
 		//
-		// The action is a thing the hand is holding, so it should move with
-		// the hand rather than snapping when a threshold is crossed. Pull
-		// halfway and it sits halfway; ease off and it comes back. What the
-		// player is doing to the weapon is visible the whole time instead of
-		// only at the instant it counts.
+		// A pump is a stroke, not a distance reached. Pulling back opens the
+		// action and pushing forward closes it, and the round is only chambered
+		// when it has been closed again - so the cycle completes on the RETURN,
+		// not the moment the hand gets far enough away.
+		//
+		// Nothing plays on its own at any point. The animation is wherever the
+		// hand has put it, forwards or backwards, for as long as the hand is on
+		// the weapon.
 		float travel = Q_max( 0.1f, vr_pump_travel.value );
 		float pull = ( vr.act_ref - proj ) / travel;
 
@@ -5638,38 +5659,40 @@ static void VR_UpdateAction( void )
 		if( pull > 1.0f ) pull = 1.0f;
 
 		vr.act_pull = pull;
-	}
 
-	if( vr.act_armed && vr.act_pull >= 1.0f )
-	{
-		// Worked. The next shot is available.
-		vr.act_needs = false;
-		vr.act_armed = false;
-		vr.act_pull = 0.0f;
-		vr.act_worked = true;
+		if( pull >= 1.0f )
+			vr.act_back = true;
 
-		// SAY SO OUT LOUD.
-		//
-		// The mod plays its own cocking sound as part of the automatic
-		// sequence we just stood down, so a pump worked by hand made no
-		// noise at all - the one action the player performs deliberately
-		// was the only one they could not hear.
-		//
-		// It also does the work of an animation the weapon may not have.
-		// A bolt or charging handle that no model shows can still be felt
-		// and heard, which is the difference between performing an action
-		// and miming one.
-		if( vr_action_sound.string[0] )
-			S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
-		VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
-		VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
+		// Closed again. A little short of all the way, because a hand does not
+		// return to the exact unit it started from and demanding that leaves the
+		// action hanging open with nothing the player can do about it.
+		if( vr.act_back && pull <= 0.15f )
+		{
+			vr.act_needs = false;
+			vr.act_back = false;
+			vr.act_pull = 0.0f;
+			vr.act_worked = true;
+			vr.act_armed = false;
+
+			if( vr_action_sound.string[0] )
+				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
+
+			VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
+			VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
+		}
+		else if( pull >= 1.0f && !vr.act_back )
+		{
+			// Reaching the stop is felt, so the player knows to push forward.
+			VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.6f );
+		}
 	}
 
 	if( vr_diag.value != 0.0f )
-		VR_DiagPrintf( "ACTION needs=%d armed=%d grip=%d travel=%.1f/%.0f pull=%.2f hand=%.1f clip=%d\n",
+		VR_DiagPrintf( "ACTION needs=%d armed=%d grip=%d travel=%.1f/%.0f pull=%.2f back=%d hand=%.1f clip=%d\n",
 			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0, grip ? 1 : 0,
 			vr.act_armed ? ( vr.act_ref - proj ) : 0.0f,
-			vr_pump_travel.value, vr.act_pull, VectorLength( d ), vr.rl_clip );
+			vr_pump_travel.value, vr.act_pull, vr.act_back ? 1 : 0,
+			VectorLength( d ), vr.rl_clip );
 
 	grip_prev = grip;
 }
@@ -5763,8 +5786,21 @@ void VR_HoldViewModel( void )
 	// It lands on the same frames the sequence would have played anyway -
 	// nothing is invented, it is only being read at the hand's pace
 	// instead of the clock's.
-	cl.local.weaponstarttime = cl.time
-		- ( held + (double)( vr.act_pull * Q_max( 0.0f, vr_pump_scrub.value )));
+	// THE FRAME IS THE HAND'S POSITION, the whole way through.
+	//
+	// Out along the first half of the stroke and back along the second, so
+	// the fore-end goes back as the hand goes back and returns as it returns.
+	// Nothing here plays: the animation is only ever read at wherever the
+	// hand has put it, which is the difference between working a mechanism
+	// and setting one off.
+	{
+		float progress = vr.act_back
+			? ( 0.5f + ( 1.0f - vr.act_pull ) * 0.5f )
+			: ( vr.act_pull * 0.5f );
+
+		cl.local.weaponstarttime = cl.time
+			- ( held + (double)( progress * Q_max( 0.0f, vr_pump_scrub.value )));
+	}
 }
 
 /*
