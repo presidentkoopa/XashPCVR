@@ -940,6 +940,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 		static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
 		static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
 		float best = 0.0f;
+		static int vcount[MAXSTUDIOBONES];
 
 		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[cached_seq] );
 
@@ -954,12 +955,51 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[cached_seq], panim,
 			(float)( pseqdesc[cached_seq].numframes - 1 ) * 0.5f );
 
+		// COUNT WHAT EACH BONE ACTUALLY OWNS.
+		//
+		// Picking the bone that moves most finds a finger, because fingers
+		// swing further during a pump animation than the pump does. On a
+		// detailed model that is a single vertex being rotated while the
+		// mechanism sits still - which is exactly what was happening.
+		//
+		// The part that works the action carries a real share of the mesh, so
+		// weigh motion by geometry and the hand drops out on its own. No name
+		// list: this model calls it Charger and another will call it
+		// something else.
+		{
+			int bp, mi, vi;
+			mstudiobodyparts_t *pbp = (mstudiobodyparts_t *)((byte *)m_pStudioHeader
+				+ m_pStudioHeader->bodypartindex);
+
+			memset( vcount, 0, sizeof( vcount ));
+
+			for( bp = 0; bp < m_pStudioHeader->numbodyparts; bp++ )
+			{
+				mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
+					+ pbp[bp].modelindex);
+
+				for( mi = 0; mi < pbp[bp].nummodels; mi++ )
+				{
+					byte *pvertbone = ((byte *)m_pStudioHeader + pmod[mi].vertinfoindex);
+
+					for( vi = 0; vi < pmod[mi].numverts; vi++ )
+					{
+						if( pvertbone[vi] < MAXSTUDIOBONES )
+							vcount[pvertbone[vi]]++;
+					}
+				}
+			}
+		}
+
 		for( i = 0; i < m_pStudioHeader->numbones; i++ )
 		{
 			float d = 0.0f;
 
 			for( j = 0; j < 4; j++ )
 				d += fabs( aq[i][j] - bq[i][j] );
+
+			// Motion alone is a finger. Motion carrying mesh is the mechanism.
+			d *= (float)vcount[i];
 
 			if( d > best )
 			{
