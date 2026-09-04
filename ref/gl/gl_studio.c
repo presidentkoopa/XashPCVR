@@ -137,6 +137,7 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // The token list is a cvar rather than a hardcoded table because mod authors
 // name their textures whatever they like, and this has to work on content we
 // have never seen. Substring match, ';' separated, case insensitive.
+CVAR_DEFINE_AUTO( r_vr_action_bone, "", FCVAR_ARCHIVE, "name the bone the hand works; empty = find it automatically" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
 CVAR_DEFINE_AUTO( r_vr_arm_textures, "glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
@@ -968,6 +969,28 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 
 	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
 
+	// NAMED OUTRIGHT, when the automatic search will not do.
+	//
+	// Finding the moving part by measurement works on a model that animates
+	// it plainly and fails on one where a hand bone swings further than the
+	// mechanism it is holding. That is a real limit rather than a bug worth
+	// chasing further, and a name is the honest way past it: one setting per
+	// model, visible to whoever set it, not a table buried in here.
+	if( r_vr_action_bone.string[0] )
+	{
+		mstudiobone_t *pb = (mstudiobone_t *)((byte *)m_pStudioHeader
+			+ m_pStudioHeader->boneindex);
+
+		for( i = 0; i < m_pStudioHeader->numbones; i++ )
+		{
+			if( !Q_stricmp( pb[i].name, r_vr_action_bone.string ))
+			{
+				cached_bone = i;
+				break;
+			}
+		}
+	}
+
 	// Every sequence that could plausibly show the action working. Firing
 	// counts, because a self-cycling weapon does its cycling there.
 	for( s = 0; s < m_pStudioHeader->numseq; s++ )
@@ -1006,10 +1029,13 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 				// Motion alone is a finger. Motion carrying mesh is the mechanism.
 				d *= (float)vcount[i];
 
+				if( r_vr_action_bone.string[0] && i != cached_bone )
+					continue;
+
 				if( d > best )
 				{
 					best = d;
-					cached_bone = i;
+					if( !r_vr_action_bone.string[0] ) cached_bone = i;
 					cached_seq = s;
 				}
 			}

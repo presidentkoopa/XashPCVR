@@ -739,6 +739,7 @@ extern convar_t r_studio_sort_textures;
 extern convar_t r_studio_drawelements;
 extern convar_t r_studio_builtin_renderer;
 extern convar_t r_vr_hide_arms;
+extern convar_t	r_vr_action_bone;		// PCVR: name the bone the hand works
 extern convar_t	r_vr_action_debug;		// PCVR: hide arms welded into weapon viewmodels
 extern convar_t r_vr_arm_textures;	// PCVR: ';' separated arm texture fragments
 extern convar_t r_shadows;
