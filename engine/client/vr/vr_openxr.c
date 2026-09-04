@@ -103,6 +103,7 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 // states a fact about the player and nothing more.
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
+static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
@@ -5512,7 +5513,12 @@ static void VR_UpdateAction( void )
 	// wherever it rests, so a brace that never moves does nothing and a
 	// deliberate pull works the action.
 	if( grip && !vr.act_armed
-		&& VectorLength( d ) < Q_max( 1.0f, vr_reload_port.value ) * 2.0f )
+		// Its OWN reach, not the loading port doubled. The fore-end you pump
+		// sits well forward of the gate you feed shells into, and borrowing
+		// that number put the arming radius at 26 units while a braced hand
+		// rests around 30 - so the action could not be worked from the very
+		// position the weapon is held in.
+		&& VectorLength( d ) < Q_max( 1.0f, vr_pump_reach.value ))
 	{
 		// Took hold of the fore-end.
 		vr.act_ref = proj;
@@ -6174,6 +6180,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
