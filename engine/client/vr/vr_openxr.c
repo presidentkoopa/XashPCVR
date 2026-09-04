@@ -5829,8 +5829,16 @@ static void VR_UpdateAction( void )
 		}
 		else if( pull >= 1.0f && !vr.act_back )
 		{
-			// Reaching the stop is felt, so the player knows to push forward.
-			VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.6f );
+			// THE FIRST HALF OF THE NOISE, where it actually happens.
+			//
+			// A pump is two sounds, not one: the action hitting its stop, and the
+			// breech closing again. Playing them together at the end of the stroke
+			// puts both after the motion is over, which is the mod's timing rather
+			// than the hand's and reads as lag.
+			if( vr_action_sound.string[0] )
+				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
+
+			VR_Haptic( VR_OffHand(), 0.05f, 0.0f, 0.8f );
 		}
 	}
 

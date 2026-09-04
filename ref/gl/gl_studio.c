@@ -967,29 +967,47 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	if( cached_bone < 0 )
 		return false;
 
-	// Its stroke, chosen by sequence name for the same reason. Prefer a
-	// dedicated pump; fall back to the firing animation, which is where a
-	// self-cycling weapon keeps its stroke - and posing from there is also
-	// what stops the weapon cycling itself.
+	// ITS STROKE IS WHICHEVER SEQUENCE ACTUALLY MOVES IT.
+	//
+	// Choosing by name picked this model's pump sequence, which moves only
+	// finger bones - so the fore-end was posed from an animation in which it
+	// is completely static, and sat still however far the hand travelled.
+	//
+	// With the bone already named there is exactly one to test, so measuring
+	// is cheap and cannot be misled by a hand out-swinging it: sample each
+	// candidate and keep the one that moves THIS bone furthest.
 	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
 
-	for( s = 0; s < m_pStudioHeader->numseq; s++ )
 	{
-		if( pseqdesc[s].numframes > 1 && Q_stristr( pseqdesc[s].label, "pump" ))
-		{
-			cached_seq = s;
-			break;
-		}
-	}
+		static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
+		static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
+		mstudioanim_t *panim;
+		float best = 0.0f;
+		int k, c;
 
-	if( cached_seq < 0 )
-	{
 		for( s = 0; s < m_pStudioHeader->numseq; s++ )
 		{
-			if( pseqdesc[s].numframes > 1 && Q_stristr( pseqdesc[s].label, "shoot" ))
+			if( pseqdesc[s].numframes <= 1 )
+				continue;
+
+			panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[s] );
+			R_StudioCalcRotations( e, apos, aq, &pseqdesc[s], panim, 0.0f );
+
+			for( k = 1; k <= 8; k++ )
 			{
-				cached_seq = s;
-				break;
+				float d = 0.0f;
+
+				R_StudioCalcRotations( e, bpos, bq, &pseqdesc[s], panim,
+					(float)( pseqdesc[s].numframes - 1 ) * ( (float)k / 8.0f ));
+
+				for( c = 0; c < 4; c++ )
+					d += fabs( aq[cached_bone][c] - bq[cached_bone][c] );
+
+				if( d > best )
+				{
+					best = d;
+					cached_seq = s;
+				}
 			}
 		}
 	}
