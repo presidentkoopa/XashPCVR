@@ -1115,67 +1115,6 @@ static void R_StudioSetupBones( cl_entity_t *e )
 		}
 	}
 
-	// THE PLAYER'S HAND ON THE ACTION.
-	//
-	// Where the VR layer says an action is being worked, the bone that works
-	// it is taken out of whatever sequence is playing and posed from the
-	// hand instead. Everything else animates normally, so the weapon fires,
-	// reloads and idles exactly as it always did - only the pump answers to
-	// the player.
-	//
-	// This also settles the firing animation cycling the action on its own:
-	// Half-Life's shoot sequence rotates the same bone, and overriding it
-	// simply holds the pump shut through the shot rather than freezing the
-	// whole viewmodel to hide it.
-	//
-	// Evaluated out of the weapon's own action sequence, so the bone travels
-	// exactly as far as its author animated it and no distance is invented
-	// here. Progress is the hand; the pose is the model's.
-	{
-		// One line a second, so a dead override can be told from a dead input.
-		static double next = 0.0;
-		if( r_vr_action_debug.value != 0.0f && gEngfuncs.pfnTime() > next )
-		{
-			int ds = -1, db = -1; qboolean dc = false;
-			qboolean found = R_StudioFindAction( e, &ds, &db, &dc );
-			next = gEngfuncs.pfnTime() + 1.0;
-			gEngfuncs.Con_Printf( "ACTIONGL progress=%.2f found=%d seq=%d bone=%d cycle=%d model=%s\n",
-				gpGlobals->actionProgress, found ? 1 : 0, ds, db, dc ? 1 : 0,
-				RI.currentmodel ? RI.currentmodel->name : "?" );
-		}
-	}
-
-	if( gpGlobals->actionProgress >= 0.0f )
-	{
-		int aseq, abone;
-		qboolean acycle = false;
-
-		if( R_StudioFindAction( e, &aseq, &abone, &acycle ))
-		{
-			static vec3_t rpos[MAXSTUDIOBONES];
-			static vec4_t rq[MAXSTUDIOBONES];
-			mstudioseqdesc_t *rsd = (mstudioseqdesc_t *)((byte *)m_pStudioHeader
-				+ m_pStudioHeader->seqindex) + aseq;
-			mstudioanim_t *ranim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader,
-				RI.currentmodel, rsd );
-			float p = gpGlobals->actionProgress;
-
-			if( p > 1.0f ) p = 1.0f;
-
-			// A cycling sequence spends its first half opening and its second
-			// closing, so the hand drives it out to the midpoint and back. A
-			// one-way sequence is simply the hand, straight through.
-			if( acycle )
-				p *= 0.5f;
-
-			R_StudioCalcRotations( e, rpos, rq, rsd, ranim,
-				p * (float)( rsd->numframes - 1 ));
-
-			Vector4Copy( rq[abone], q[abone] );
-			VectorCopy( rpos[abone], pos[abone] );
-		}
-	}
-
 	for( int i = 0; i < m_pStudioHeader->numbones; i++ )
 	{
 		matrix3x4 bonematrix;
@@ -3128,8 +3067,86 @@ StudioRenderModel
 
 ====================
 */
+/*
+====================
+R_StudioApplyHandAction
+
+Pose the action bone from the player's hand, after the bones are built.
+
+This lives here rather than in R_StudioSetupBones because the viewmodel never
+reaches that function: Half-Life's client DLL carries its own
+CStudioModelRenderer and sets up the weapon's bones itself. It writes them
+into the ENGINE's buffer though - the one pfnStudioGetBoneTransform hands out -
+and then calls back here to draw. So this is the first point where the weapon's
+bones exist and the engine can still reach them, whichever renderer built them.
+
+Only the action bone is touched, and only its final transform. That is safe
+because the bone a pump lives on is a leaf - Half-Life's "Bone01" owns the
+fore-end and parents nothing - so no other bone inherits the change.
+====================
+*/
+static void R_StudioApplyHandAction( void )
+{
+	static vec3_t rpos[MAXSTUDIOBONES];
+	static vec4_t rq[MAXSTUDIOBONES];
+	mstudiobone_t *pbones;
+	mstudioseqdesc_t *rsd;
+	mstudioanim_t *ranim;
+	matrix3x4 bonematrix;
+	int aseq, abone, parent;
+	qboolean acycle = false;
+	float p;
+
+	if( !m_pStudioHeader || gpGlobals->actionProgress < 0.0f )
+		return;
+
+	if( !R_StudioFindAction( RI.currententity, &aseq, &abone, &acycle ))
+		return;
+
+	pbones = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex);
+	parent = pbones[abone].parent;
+
+	rsd = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex) + aseq;
+	ranim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, rsd );
+
+	p = gpGlobals->actionProgress;
+	if( p > 1.0f ) p = 1.0f;
+
+	// A cycling sequence opens over its first half and closes over its
+	// second, so the hand drives it out to the midpoint and back.
+	if( acycle )
+		p *= 0.5f;
+
+	R_StudioCalcRotations( RI.currententity, rpos, rq, rsd, ranim,
+		p * (float)( rsd->numframes - 1 ));
+
+	Matrix3x4_FromOriginQuat( bonematrix, rq[abone], rpos[abone] );
+
+	if( parent >= 0 )
+		Matrix3x4_ConcatTransforms( g_studio.bonestransform[abone],
+			g_studio.bonestransform[parent], bonematrix );
+	else
+		Matrix3x4_ConcatTransforms( g_studio.bonestransform[abone],
+			g_studio.rotationmatrix, bonematrix );
+
+	if( r_vr_action_debug.value != 0.0f )
+	{
+		static double next = 0.0;
+
+		if( gEngfuncs.pfnTime() > next )
+		{
+			next = gEngfuncs.pfnTime() + 1.0;
+			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f seq=%d bone=%d parent=%d cycle=%d %s\n",
+				gpGlobals->actionProgress, aseq, abone, parent, acycle ? 1 : 0,
+				RI.currentmodel ? RI.currentmodel->name : "?" );
+		}
+	}
+}
+
 static void R_StudioRenderModel( void )
 {
+	R_StudioApplyHandAction();
+
 	R_StudioSetChromeOrigin();
 	R_StudioSetForceFaceFlags( 0 );
 

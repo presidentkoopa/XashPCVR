@@ -109,7 +109,7 @@ static CVAR_DEFINE_AUTO( vr_pump_giveup, "1.5", FCVAR_ARCHIVE, "seconds of holdi
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
-static CVAR_DEFINE_AUTO( vr_pump_travel, "0.8", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
+static CVAR_DEFINE_AUTO( vr_pump_travel, "0.27", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_grab, "1", FCVAR_ARCHIVE, "shoulder hotspots need the grip closed, not just a hand passing through" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
