@@ -3669,7 +3669,17 @@ void VR_ObserveUserMessage( const char *name, int size, const void *buf )
 		// distinction is the only thing separating the two reload styles, and
 		// reading it from the running game beats keeping a list of weapons.
 		if( size >= 3 )
-			vr.rl_clip = (signed char)p[2];
+		{
+			int newclip = (signed char)p[2];
+
+			// Every change, with the weapon it belongs to. Whether the gate arms
+			// on the first shot depends entirely on what this stream looks like
+			// before that shot, and that has been guessed at twice.
+			if( vr_diag.value != 0.0f && newclip != vr.rl_clip )
+				VR_DiagPrintf( "CURWEAPON id=%d clip=%d state=%d\n", id, newclip, p[0] );
+
+			vr.rl_clip = newclip;
+		}
 
 		return;
 	}
