@@ -104,7 +104,6 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
-static CVAR_DEFINE_AUTO( vr_pump_ejects, "0", FCVAR_ARCHIVE, "working a loaded action throws the chambered round away, as it would" );
 static CVAR_DEFINE_AUTO( vr_pump_giveup, "1.5", FCVAR_ARCHIVE, "seconds of holding the trigger that releases a stuck action; 0 never gives up" );
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
@@ -5700,51 +5699,7 @@ static void VR_UpdateAction( void )
 
 	vr.act_clip = vr.rl_clip;
 
-	// A GRATUITOUS PUMP still counts, when it is allowed to.
-	//
-	// Working a loaded action throws the chambered round on the floor, and
-	// a player who does that to a real pump gun gets the same result. The
-	// mod decides what it costs; this only reports that it happened.
-	//
-	// Off by default, and not timidity. The pull is two and a half units,
-	// which a bracing hand covers just by walking, so leaving it on quietly
-	// empties the weapon of somebody who never asked for it. Losing rounds
-	// you did not choose to lose is a worse failure than not having this.
-	// AN ACTION THAT WILL NOT WORK MUST NOT TRAP THE PLAYER.
-	//
-	// This gate is client-side, so it applies to every mod - including one
-	// whose weapon merely happens to carry a sequence labelled pump on a
-	// rig this gesture cannot complete. There the player would be unable to
-	// fire at all, on a weapon nobody here has ever seen, with no way out.
-	//
-	// Holding the trigger down is somebody saying they are trying to shoot
-	// and nothing is happening. Believe them: release the action and let
-	// the weapon behave as the mod intended. A realism feature is never
-	// worth a player who cannot defend themselves.
-	if( vr.act_needs && vr_pump_giveup.value > 0.0f )
-	{
-		static double trying_since = 0.0;
-
-		if( VR_GetButton( VR_BTN_ATTACK ))
-		{
-			if( trying_since == 0.0 )
-				trying_since = host.realtime;
-
-			if( host.realtime - trying_since >= (double)vr_pump_giveup.value )
-			{
-				vr.act_needs = false;
-				vr.act_armed = false;
-				vr.act_back = false;
-				vr.act_pull = 0.0f;
-				trying_since = 0.0;
-				VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.4f );
-			}
-		}
-		else
-			trying_since = 0.0;
-	}
-
-	if( !vr.act_needs && vr_pump_ejects.value == 0.0f )
+	if( !vr.act_needs )
 	{
 		vr.act_armed = false;
 		grip_prev = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
@@ -6574,7 +6529,6 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
 	Cvar_RegisterVariable( &vr_reload_model );
-	Cvar_RegisterVariable( &vr_pump_ejects );
 	Cvar_RegisterVariable( &vr_pump_giveup );
 	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
