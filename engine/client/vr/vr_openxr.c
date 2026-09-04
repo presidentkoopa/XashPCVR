@@ -87,7 +87,7 @@ static CVAR_DEFINE_AUTO( vr_reload_side, "11", FCVAR_ARCHIVE, "ammo pouch offset
 static CVAR_DEFINE_AUTO( vr_reload_down, "20", FCVAR_ARCHIVE, "how far below the head the pouch sits, units" );
 static CVAR_DEFINE_AUTO( vr_reload_back, "2", FCVAR_ARCHIVE, "pouch offset behind the head, units" );
 static CVAR_DEFINE_AUTO( vr_reload_radius, "20", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
-static CVAR_DEFINE_AUTO( vr_reload_port, "13", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
+static CVAR_DEFINE_AUTO( vr_reload_port, "28", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset forward of the grip, units" );
 // PUBLISHED TO THE SERVER, PER PLAYER.
 //
@@ -5695,7 +5695,14 @@ static void VR_UpdateAction( void )
 	else if( wp->pump && vr.rl_clip < vr.act_clip )
 		vr.act_needs = true;
 
-	if( wp->slide && vr.act_have_clip && vr.act_clip == 0 && vr.rl_clip > 0 )
+	// A ROUND INTO AN EMPTY GUN IS NOT A ROUND IN THE CHAMBER.
+	//
+	// Loading the first shell into an empty weapon leaves the action open on
+	// anything that has one - a pump gun as much as a slide - so it has to be
+	// worked before that shell can be fired. Only from empty: topping up a
+	// partly loaded gun leaves a live round already chambered.
+	if(( wp->slide || wp->pump ) && vr.act_have_clip
+		&& vr.act_clip == 0 && vr.rl_clip > 0 )
 		vr.act_needs = true;
 
 	vr.act_clip = vr.rl_clip;
