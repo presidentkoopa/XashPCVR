@@ -137,6 +137,7 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // The token list is a cvar rather than a hardcoded table because mod authors
 // name their textures whatever they like, and this has to work on content we
 // have never seen. Substring match, ';' separated, case insensitive.
+CVAR_DEFINE_AUTO( r_vr_hide_bone, "shell", FCVAR_ARCHIVE, "collapse this bone so its geometry vanishes; the model shell during reloads" );
 CVAR_DEFINE_AUTO( r_vr_action_bone, "", FCVAR_ARCHIVE, "name the bone the hand works; empty = find it automatically" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
@@ -2852,6 +2853,28 @@ static void R_StudioSetupRenderer( int rendermode )
 	// Half-Life supplies its own studio renderer, so this is the only place
 	// the engine sees the viewmodel at all.
 	R_StudioApplyHandAction();
+
+	// THE MODEL BRINGS ITS OWN SHELL and the player is already holding one.
+	//
+	// Reload animations carry a shell bolted to the loading hand, which in VR
+	// is a second shell rising out of the weapon while the real one sits in
+	// the player's fingers. Collapsing the bone it hangs on takes its
+	// geometry to a point, which is invisible.
+	if( r_vr_hide_bone.string[0] && m_pStudioHeader && RI.currententity == tr.viewent )
+	{
+		mstudiobone_t *pb = (mstudiobone_t *)((byte *)m_pStudioHeader
+			+ m_pStudioHeader->boneindex);
+		int hb;
+
+		for( hb = 0; hb < m_pStudioHeader->numbones; hb++ )
+		{
+			if( Q_stricmp( pb[hb].name, r_vr_hide_bone.string ))
+				continue;
+
+			memset( g_studio.bonestransform[hb], 0, sizeof( matrix3x4 ));
+			break;
+		}
+	}
 
 	studiohdr_t	*phdr = m_pStudioHeader;
 
