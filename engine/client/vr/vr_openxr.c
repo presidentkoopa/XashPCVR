@@ -104,10 +104,12 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
+static CVAR_DEFINE_AUTO( vr_pump_scrub, "0.45", FCVAR_ARCHIVE, "seconds of animation a full pull of the action covers" );
+static CVAR_DEFINE_AUTO( vr_pump_ejects, "0", FCVAR_ARCHIVE, "working a loaded action throws the chambered round away, as it would" );
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before it holds for the pump" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
-static CVAR_DEFINE_AUTO( vr_pump_travel, "2.5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
+static CVAR_DEFINE_AUTO( vr_pump_travel, "0.8", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_shoulder_side, "7", FCVAR_ARCHIVE, "hotspot offset out to the dominant side, units" );
@@ -681,6 +683,7 @@ static struct
 	int           act_clip;         // clip last frame, to notice a shot
 	int           act_id;           // and which weapon it belonged to
 	qboolean      act_worked;       // the action was worked THIS frame
+	float         act_pull;         // 0..1, how far back the action is being held
 	int           sh_restore_id;    // viewmodel index to walk back to
 	int           sh_restore_tries; // attempts left before giving up
 	int           sh_seen_id;       // viewmodel index when the last invnext went out
@@ -5562,7 +5565,17 @@ static void VR_UpdateAction( void )
 
 	vr.act_clip = vr.rl_clip;
 
-	if( !vr.act_needs )
+	// A GRATUITOUS PUMP still counts, when it is allowed to.
+	//
+	// Working a loaded action throws the chambered round on the floor, and
+	// a player who does that to a real pump gun gets the same result. The
+	// mod decides what it costs; this only reports that it happened.
+	//
+	// Off by default, and not timidity. The pull is two and a half units,
+	// which a bracing hand covers just by walking, so leaving it on quietly
+	// empties the weapon of somebody who never asked for it. Losing rounds
+	// you did not choose to lose is a worse failure than not having this.
+	if( !vr.act_needs && vr_pump_ejects.value == 0.0f )
 	{
 		vr.act_armed = false;
 		grip_prev = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
@@ -5607,13 +5620,32 @@ static void VR_UpdateAction( void )
 	else if( !grip )
 	{
 		vr.act_armed = false;
+		vr.act_pull = 0.0f;
 	}
-	else if( vr.act_armed
-		&& ( vr.act_ref - proj ) >= Q_max( 1.0f, vr_pump_travel.value ))
+	else if( vr.act_armed )
+	{
+		// HOW FAR BACK, not merely whether it got there.
+		//
+		// The action is a thing the hand is holding, so it should move with
+		// the hand rather than snapping when a threshold is crossed. Pull
+		// halfway and it sits halfway; ease off and it comes back. What the
+		// player is doing to the weapon is visible the whole time instead of
+		// only at the instant it counts.
+		float travel = Q_max( 0.1f, vr_pump_travel.value );
+		float pull = ( vr.act_ref - proj ) / travel;
+
+		if( pull < 0.0f ) pull = 0.0f;
+		if( pull > 1.0f ) pull = 1.0f;
+
+		vr.act_pull = pull;
+	}
+
+	if( vr.act_armed && vr.act_pull >= 1.0f )
 	{
 		// Worked. The next shot is available.
 		vr.act_needs = false;
 		vr.act_armed = false;
+		vr.act_pull = 0.0f;
 		vr.act_worked = true;
 
 		// SAY SO OUT LOUD.
@@ -5709,7 +5741,19 @@ void VR_HoldViewModel( void )
 		held = elapsed;
 	}
 
-	cl.local.weaponstarttime = cl.time - held;
+	// SCRUBBED BY THE HAND, not merely stopped.
+	//
+	// Holding the elapsed time still freezes the weapon; offsetting it by
+	// how far the action is pulled runs the same animation forwards and
+	// backwards under the hand. The fore-end goes back when the hand goes
+	// back and returns when it does, so the player is manipulating the
+	// mechanism rather than triggering it.
+	//
+	// It lands on the same frames the sequence would have played anyway -
+	// nothing is invented, it is only being read at the hand's pace
+	// instead of the clock's.
+	cl.local.weaponstarttime = cl.time
+		- ( held + (double)( vr.act_pull * Q_max( 0.0f, vr_pump_scrub.value )));
 }
 
 /*
@@ -6331,6 +6375,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
 	Cvar_RegisterVariable( &vr_reload_model );
+	Cvar_RegisterVariable( &vr_pump_scrub );
+	Cvar_RegisterVariable( &vr_pump_ejects );
 	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
