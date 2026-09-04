@@ -5772,6 +5772,19 @@ static void VR_UpdateAction( void )
 			vr_pump_travel.value, vr.act_pull, vr.act_back ? 1 : 0,
 			VectorLength( d ), vr.rl_clip );
 
+	// HAND THE POSITION TO THE RENDERER.
+	//
+	// It drives the pump bone straight out of the weapon's own action
+	// sequence at this progress, so the mechanism sits wherever the hand has
+	// put it rather than playing at the hand's pace. -1 hands the bone back
+	// to whatever animation is running.
+	//
+	// Published while the action is UNWORKED as well as while it is moving,
+	// at zero, because that is what holds the pump shut through the firing
+	// animation - which rotates the same bone and would otherwise cycle the
+	// weapon on the mod's schedule no matter what the player did.
+	refState.actionProgress = vr.act_needs ? vr.act_pull : -1.0f;
+
 	grip_prev = grip;
 }
 
@@ -5795,78 +5808,6 @@ int VR_GetActionImpulse( void )
 	return ( VR_IsActive() && vr.act_worked ) ? 210 : 0;
 }
 
-/*
-================
-VR_HoldViewModel
-
-Stop the weapon mid-animation while it is waiting to be worked, and carry on
-from the same frame once it has been.
-
-A pump gun animates its own pump as part of firing, so the gun cycled on the
-mod's schedule no matter what the player did - shoot, pump, shoot - with the
-player's pull an unrelated gesture happening alongside a weapon that had
-already cycled itself. Playing a pump sequence on the gesture only made it
-twice.
-
-The animation position is elapsed time - the renderer takes the frame from
-cl.time minus weaponstarttime - so holding that difference constant freezes
-the picture wherever it had got to, and releasing it carries on rather than
-jumping to where it would have been. The recoil plays, the gun stops with the
-action unworked, and the pump happens when the player pumps.
-
-Costs nothing on weapons that never ask for the action, and works without the
-mod knowing: it is the engine's own viewmodel clock.
-================
-*/
-void VR_HoldViewModel( void )
-{
-	static int saved_seq = -1;
-	const vr_wprofile_t *wp;
-	float progress;
-
-	if( !VR_IsActive() || !vr.act_needs )
-	{
-		// Hand the weapon back exactly as it was found.
-		if( saved_seq >= 0 )
-		{
-			cl.local.weaponsequence = saved_seq;
-			cl.local.weaponstarttime = cl.time;
-			saved_seq = -1;
-		}
-		return;
-	}
-
-	wp = VR_GetWeaponProfile();
-
-	if( !wp || !wp->valid || wp->pump_seq < 0 || wp->pump_secs <= 0.0f )
-		return;
-
-	// THE PUMP SEQUENCE, DRIVEN BY THE STROKE.
-	//
-	// The weapon carries an animation of its action being worked, so play
-	// that one rather than scrubbing the tail of the firing animation and
-	// hoping the motion is in there. Half-Life's runs 0.846s; every other
-	// weapon runs however long its own does, which is why the length is read
-	// from the model instead of chosen here.
-	//
-	// Out along the first half of the stroke and back along the second, so
-	// the fore-end goes back as the hand goes back and returns as it
-	// returns. Nothing plays: the frame is only ever where the hand put it.
-	if( saved_seq < 0 )
-		saved_seq = cl.local.weaponsequence;
-
-	progress = vr.act_back
-		? ( 0.5f + ( 1.0f - vr.act_pull ) * 0.5f )
-		: ( vr.act_pull * 0.5f );
-
-	// Just inside the end, because landing exactly on the final frame lets
-	// the renderer wrap to the first one and the action snaps shut.
-	if( progress > 0.98f )
-		progress = 0.98f;
-
-	cl.local.weaponsequence = wp->pump_seq;
-	cl.local.weaponstarttime = cl.time - (double)( progress * wp->pump_secs );
-}
 
 /*
 ================
@@ -8576,7 +8517,6 @@ qboolean VR_GetMeleeAttack( void ) { return false; }
 qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_ActionBlocked( void ) { return false; }
 int      VR_GetActionImpulse( void ) { return 0; }
-void     VR_HoldViewModel( void ) { }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }

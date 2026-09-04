@@ -887,6 +887,113 @@ StudioSetupBones
 
 ====================
 */
+/*
+====================
+R_StudioFindAction
+
+Locate the sequence that works this weapon's action, and the single bone it
+moves. Cached per studio header, since it never changes for a model.
+
+The sequence is found by name, because a pump has to be animated to exist. The
+BONE is found by evaluating that sequence at its first and last frame and
+taking whichever bone differs most between them - no name list, no assumption
+about rigging. Half-Life's shotgun answers "Bone01", a custom bone parented to
+the weapon hand that owns the fore-end and nothing else; another mod's weapon
+answers with whatever its own author called it.
+====================
+*/
+static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone, qboolean *out_cycle )
+{
+	static studiohdr_t *cached_hdr = NULL;
+	static int cached_seq = -1, cached_bone = -1;
+	static qboolean cached_cycle = false;
+	mstudioseqdesc_t *pseqdesc;
+	mstudioanim_t *panim;
+	int i, j;
+
+	if( cached_hdr == m_pStudioHeader )
+	{
+		*out_seq = cached_seq;
+		*out_bone = cached_bone;
+		*out_cycle = cached_cycle;
+		return ( cached_seq >= 0 && cached_bone >= 0 );
+	}
+
+	cached_hdr = m_pStudioHeader;
+	cached_seq = cached_bone = -1;
+
+	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
+
+	for( i = 0; i < m_pStudioHeader->numseq; i++ )
+	{
+		if( Q_stristr( pseqdesc[i].label, "pump" ) || Q_stristr( pseqdesc[i].label, "bolt" )
+			|| Q_stristr( pseqdesc[i].label, "lever" ))
+		{
+			cached_seq = i;
+			break;
+		}
+	}
+
+	if( cached_seq >= 0 && pseqdesc[cached_seq].numframes > 1 )
+	{
+		static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
+		static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
+		float best = 0.0f;
+
+		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[cached_seq] );
+
+		R_StudioCalcRotations( e, apos, aq, &pseqdesc[cached_seq], panim, 0.0f );
+		// Against the MIDDLE frame, not the last.
+		//
+		// A pump sequence may be a full cycle - closed, open, closed - in
+		// which case its first and last frames are identical and comparing
+		// them finds no moving bone at all. The midpoint is where such a
+		// sequence is furthest from home, and for a one-way sequence it is
+		// still plainly different from the start.
+		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[cached_seq], panim,
+			(float)( pseqdesc[cached_seq].numframes - 1 ) * 0.5f );
+
+		for( i = 0; i < m_pStudioHeader->numbones; i++ )
+		{
+			float d = 0.0f;
+
+			for( j = 0; j < 4; j++ )
+				d += fabs( aq[i][j] - bq[i][j] );
+
+			if( d > best )
+			{
+				best = d;
+				cached_bone = i;
+			}
+		}
+
+		// A sequence that moves nothing is not an action.
+		if( best < 0.0001f )
+			cached_bone = -1;
+
+		// Does it come back? Evaluate the end and see whether that bone has
+		// returned to where it started. A cycle has to be driven out and
+		// back by the hand; a one-way sequence is driven straight through.
+		if( cached_bone >= 0 )
+		{
+			float d = 0.0f;
+
+			R_StudioCalcRotations( e, bpos, bq, &pseqdesc[cached_seq], panim,
+				(float)( pseqdesc[cached_seq].numframes - 1 ));
+
+			for( j = 0; j < 4; j++ )
+				d += fabs( aq[cached_bone][j] - bq[cached_bone][j] );
+
+			cached_cycle = ( d < best * 0.25f );
+		}
+	}
+
+	*out_seq = cached_seq;
+	*out_bone = cached_bone;
+	*out_cycle = cached_cycle;
+	return ( cached_seq >= 0 && cached_bone >= 0 );
+}
+
 static void R_StudioSetupBones( cl_entity_t *e )
 {
 	static vec3_t	pos[MAXSTUDIOBONES];
@@ -1004,6 +1111,53 @@ static void R_StudioSetupBones( cl_entity_t *e )
 
 			VectorCopy( pos2[i], pos[i] );
 			Vector4Copy( q2[i], q[i] );
+		}
+	}
+
+	// THE PLAYER'S HAND ON THE ACTION.
+	//
+	// Where the VR layer says an action is being worked, the bone that works
+	// it is taken out of whatever sequence is playing and posed from the
+	// hand instead. Everything else animates normally, so the weapon fires,
+	// reloads and idles exactly as it always did - only the pump answers to
+	// the player.
+	//
+	// This also settles the firing animation cycling the action on its own:
+	// Half-Life's shoot sequence rotates the same bone, and overriding it
+	// simply holds the pump shut through the shot rather than freezing the
+	// whole viewmodel to hide it.
+	//
+	// Evaluated out of the weapon's own action sequence, so the bone travels
+	// exactly as far as its author animated it and no distance is invented
+	// here. Progress is the hand; the pose is the model's.
+	if( gpGlobals->actionProgress >= 0.0f )
+	{
+		int aseq, abone;
+		qboolean acycle = false;
+
+		if( R_StudioFindAction( e, &aseq, &abone, &acycle ))
+		{
+			static vec3_t rpos[MAXSTUDIOBONES];
+			static vec4_t rq[MAXSTUDIOBONES];
+			mstudioseqdesc_t *rsd = (mstudioseqdesc_t *)((byte *)m_pStudioHeader
+				+ m_pStudioHeader->seqindex) + aseq;
+			mstudioanim_t *ranim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader,
+				RI.currentmodel, rsd );
+			float p = gpGlobals->actionProgress;
+
+			if( p > 1.0f ) p = 1.0f;
+
+			// A cycling sequence spends its first half opening and its second
+			// closing, so the hand drives it out to the midpoint and back. A
+			// one-way sequence is simply the hand, straight through.
+			if( acycle )
+				p *= 0.5f;
+
+			R_StudioCalcRotations( e, rpos, rq, rsd, ranim,
+				p * (float)( rsd->numframes - 1 ));
+
+			Vector4Copy( rq[abone], q[abone] );
+			VectorCopy( rpos[abone], pos[abone] );
 		}
 	}
 

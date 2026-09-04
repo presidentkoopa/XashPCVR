@@ -107,10 +107,6 @@ static void V_SetupViewModel( void )
 	view->curstate.rendermode = kRenderNormal;
 
 	// alias models has another animation methods
-	// A weapon waiting to have its action worked holds where it is.
-	// Before the timing is read, so the hold is what gets read.
-	VR_HoldViewModel();
-
 	if( view->model && view->model->type == mod_studio )
 	{
 		view->curstate.animtime = cl.local.weaponstarttime;

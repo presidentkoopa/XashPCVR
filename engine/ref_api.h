@@ -174,6 +174,16 @@ typedef struct ref_globals_s
 	float zNear;
 	float zFar;
 
+	// How far a weapon's action is worked, 0 (closed) to 1 (fully open), or
+	// -1 when nothing is working it.
+	//
+	// Written by the VR layer from the player's hand, read by the renderer,
+	// which drives the pump bone from it directly. A canned animation can
+	// only ever be played at the hand's PACE; this moves the mechanism to
+	// the hand's POSITION, which is the whole difference between watching a
+	// pump and working one.
+	float actionProgress;
+
 	// todo: fill this without engine help
 	// move to local
 
