@@ -5924,6 +5924,40 @@ An unhandled impulse falls through harmlessly, so mods that know nothing
 about this are unaffected. 210 is clear of everything Half-Life uses.
 ================
 */
+/*
+================
+VR_GetDropMagImpulse
+
+The impulse that tells the mod to pull the magazine out, or 0.
+
+In a headset the reload control does not perform a reload - there is a hand
+free to seat the new magazine, and taking that away is the whole point. So
+the button drops the old one and the player does the rest.
+
+On the rising edge only, so holding it does not empty magazine after magazine.
+The held-button escape in VR_GetReloadCmd is untouched and still performs an
+ordinary reload, which is what a player reaches for when a gesture will not
+work on some weapon nobody here has tried.
+================
+*/
+int VR_GetDropMagImpulse( void )
+{
+	static qboolean prev = false;
+	qboolean now, edge;
+
+	if( !VR_IsActive() || vr_reload.value == 0.0f )
+	{
+		prev = false;
+		return 0;
+	}
+
+	now = VR_GetButton( VR_BTN_RELOAD ) ? true : false;
+	edge = ( now && !prev );
+	prev = now;
+
+	return edge ? 211 : 0;
+}
+
 int VR_GetActionImpulse( void )
 {
 	return ( VR_IsActive() && vr.act_worked ) ? 210 : 0;
@@ -8646,6 +8680,7 @@ qboolean VR_GetMeleeAttack( void ) { return false; }
 qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_ActionBlocked( void ) { return false; }
 int      VR_GetActionImpulse( void ) { return 0; }
+int      VR_GetDropMagImpulse( void ) { return 0; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }
