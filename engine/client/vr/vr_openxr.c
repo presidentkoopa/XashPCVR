@@ -84,9 +84,9 @@ static CVAR_DEFINE_AUTO( vr_shoulder_light, "1", FCVAR_ARCHIVE, "reach beside yo
 static CVAR_DEFINE_AUTO( vr_shoulder_melee, "1", FCVAR_ARCHIVE, "reach beside your head to swap to the melee weapon and back" );
 static CVAR_DEFINE_AUTO( vr_reload, "1", FCVAR_ARCHIVE, "load the gun by hand instead of pressing reload" );
 static CVAR_DEFINE_AUTO( vr_reload_side, "11", FCVAR_ARCHIVE, "ammo pouch offset out to the off-hand side, units" );
-static CVAR_DEFINE_AUTO( vr_reload_down, "26", FCVAR_ARCHIVE, "how far below the head the pouch sits, units" );
+static CVAR_DEFINE_AUTO( vr_reload_down, "20", FCVAR_ARCHIVE, "how far below the head the pouch sits, units" );
 static CVAR_DEFINE_AUTO( vr_reload_back, "2", FCVAR_ARCHIVE, "pouch offset behind the head, units" );
-static CVAR_DEFINE_AUTO( vr_reload_radius, "11", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
+static CVAR_DEFINE_AUTO( vr_reload_radius, "20", FCVAR_ARCHIVE, "size of the ammo pouch hotspot, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port, "13", FCVAR_ARCHIVE, "how near the gun counts as the loading port, units" );
 static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset forward of the grip, units" );
 // PUBLISHED TO THE SERVER, PER PLAYER.
@@ -5957,6 +5957,25 @@ static void VR_UpdateReload( void )
 	{
 		float pouch = VR_BodySpotDist( VR_OffHand(), side, vr_reload_back.value,
 			-vr_reload_down.value );
+		float hand_side = 0.0f, hand_back = 0.0f, hand_down = 0.0f;
+
+		// WHERE THE HAND ACTUALLY GOES, in the same frame the pouch is placed in.
+		//
+		// A distance to the pouch says the reach failed but not which way it was
+		// wrong, and the offsets are numbers picked for a standing player. These
+		// three are what vr_reload_side, _back and _down should have been.
+		{
+			vec3_t head, hang_w, hfwd, hright, hup, rel;
+
+			if( VR_GetListener( head, hang_w ))
+			{
+				AngleVectors( hang_w, hfwd, hright, hup );
+				VectorSubtract( hand, head, rel );
+				hand_side = DotProduct( rel, hright );
+				hand_back = -DotProduct( rel, hfwd );
+				hand_down = -rel[2];
+			}
+		}
 		float pdist = -1.0f;
 
 		if( VR_GetWeaponAim( wpn, wang ))
@@ -5967,9 +5986,10 @@ static void VR_UpdateReload( void )
 			pdist = VectorLength( d );
 		}
 
-		VR_DiagPrintf( "RELOAD grip=%d hold=%d insert=%d pouch=%.1f/%.0f port=%.1f/%.0f clip=%d\n",
+		VR_DiagPrintf( "RELOAD grip=%d hold=%d insert=%d pouch=%.1f/%.0f port=%.1f/%.0f at=(s%.0f b%.0f d%.0f) clip=%d\n",
 			grip ? 1 : 0, vr.rl_holding ? 1 : 0, vr.rl_insert ? 1 : 0,
-			pouch, vr_reload_radius.value, pdist, vr_reload_port.value, vr.rl_clip );
+			pouch, vr_reload_radius.value, pdist, vr_reload_port.value,
+			hand_side, hand_back, hand_down, vr.rl_clip );
 	}
 
 	grip_prev = grip;
