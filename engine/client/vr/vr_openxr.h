@@ -315,6 +315,7 @@ qboolean VR_GetMeleeAttack( void );
 qboolean VR_GetReloadCmd( void );
 qboolean VR_ActionBlocked( void );
 int      VR_GetActionImpulse( void );
+void     VR_HoldViewModel( void );
 void     VR_DrawHeldRound( void );
 
 // Off-hand flashlight source. Returns false to use the stock head mount.

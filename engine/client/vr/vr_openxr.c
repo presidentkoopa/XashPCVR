@@ -104,6 +104,7 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
+static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before it holds for the pump" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "2.5", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
@@ -5663,6 +5664,56 @@ int VR_GetActionImpulse( void )
 
 /*
 ================
+VR_HoldViewModel
+
+Stop the weapon mid-animation while it is waiting to be worked, and carry on
+from the same frame once it has been.
+
+A pump gun animates its own pump as part of firing, so the gun cycled on the
+mod's schedule no matter what the player did - shoot, pump, shoot - with the
+player's pull an unrelated gesture happening alongside a weapon that had
+already cycled itself. Playing a pump sequence on the gesture only made it
+twice.
+
+The animation position is elapsed time - the renderer takes the frame from
+cl.time minus weaponstarttime - so holding that difference constant freezes
+the picture wherever it had got to, and releasing it carries on rather than
+jumping to where it would have been. The recoil plays, the gun stops with the
+action unworked, and the pump happens when the player pumps.
+
+Costs nothing on weapons that never ask for the action, and works without the
+mod knowing: it is the engine's own viewmodel clock.
+================
+*/
+void VR_HoldViewModel( void )
+{
+	static double held = -1.0;
+	double elapsed;
+
+	if( !VR_IsActive() || !vr.act_needs )
+	{
+		held = -1.0;
+		return;
+	}
+
+	elapsed = cl.time - cl.local.weaponstarttime;
+
+	// Let the shot itself play first. Freezing the instant the round leaves
+	// catches the weapon mid-flash, which reads as a hitch rather than a gun
+	// waiting to be worked.
+	if( held < 0.0 )
+	{
+		if( elapsed < (double)Q_max( 0.0f, vr_pump_recoil.value ))
+			return;
+
+		held = elapsed;
+	}
+
+	cl.local.weaponstarttime = cl.time - held;
+}
+
+/*
+================
 VR_ActionBlocked
 
 True while the weapon is waiting for its action to be worked. The trigger is
@@ -6280,6 +6331,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
 	Cvar_RegisterVariable( &vr_reload_model );
+	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
@@ -8331,6 +8383,7 @@ qboolean VR_GetMeleeAttack( void ) { return false; }
 qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_ActionBlocked( void ) { return false; }
 int      VR_GetActionImpulse( void ) { return 0; }
+void     VR_HoldViewModel( void ) { }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }
