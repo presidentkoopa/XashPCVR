@@ -682,6 +682,7 @@ static struct
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
+	qboolean      act_have_clip;    // and whether that baseline is real yet
 	int           act_id;           // and which weapon it belonged to
 	qboolean      act_worked;       // the action was worked THIS frame
 	float         act_pull;         // 0..1, how far back the action is being held
@@ -5605,7 +5606,7 @@ static void VR_UpdateAction( void )
 	if( vr_wlist.cur_id != vr.act_id )
 	{
 		vr.act_id = vr_wlist.cur_id;
-		vr.act_clip = vr.rl_clip;
+		vr.act_have_clip = false;
 		vr.act_needs = false;
 		vr.act_armed = false;
 		return;
@@ -5614,6 +5615,7 @@ static void VR_UpdateAction( void )
 	if( !wp || !wp->valid || ( !wp->pump && !wp->slide ))
 	{
 		vr.act_needs = false;
+		if( vr.rl_clip >= 0 )
 		vr.act_clip = vr.rl_clip;
 		return;
 	}
@@ -5629,10 +5631,29 @@ static void VR_UpdateAction( void )
 	// Both read the clip rather than our own record of sending IN_ATTACK,
 	// because a trigger pull is not a shot: it can land during the refire
 	// delay, on an empty chamber, or while the mod has the weapon busy.
-	if( wp->pump && vr.rl_clip < vr.act_clip )
+	// A BASELINE HAS TO BE REAL BEFORE ANYTHING IS MEASURED AGAINST IT.
+	//
+	// This used to seed itself from whatever CurWeapon happened to hold when
+	// the weapon changed, and at that instant it holds -1: the sentinel for
+	// a weapon with no clip. Every real count afterwards is larger than -1,
+	// so no drop registered and the first shots went ungated - deterministic
+	// rather than flaky, which is why it was always the first two.
+	//
+	// Wait for a genuine count, take that as the baseline, and only then
+	// start looking for it to fall.
+	if( vr.rl_clip < 0 )
+	{
+		vr.act_have_clip = false;
+	}
+	else if( !vr.act_have_clip )
+	{
+		vr.act_clip = vr.rl_clip;
+		vr.act_have_clip = true;
+	}
+	else if( wp->pump && vr.rl_clip < vr.act_clip )
 		vr.act_needs = true;
 
-	if( wp->slide && vr.act_clip == 0 && vr.rl_clip > 0 )
+	if( wp->slide && vr.act_have_clip && vr.act_clip == 0 && vr.rl_clip > 0 )
 		vr.act_needs = true;
 
 	vr.act_clip = vr.rl_clip;
