@@ -5815,6 +5815,21 @@ static void VR_UpdateAction( void )
 		// hand has put it, forwards or backwards, for as long as the hand is on
 		// the weapon.
 		float travel = Q_max( 0.1f, vr_pump_travel.value );
+		// THE REFERENCE FOLLOWS THE FURTHEST-FORWARD POINT.
+		//
+		// It used to be captured once, the instant the hand came within arming
+		// range - and that range is wide enough to latch while the hand is
+		// still reaching. Everything after that read as moving the wrong way,
+		// travel going as negative as -32 units, so a real stroke registered
+		// nothing and only an enormous one ever crossed back over the latch.
+		//
+		// Tracking the most-forward position instead makes the reference the
+		// closed position by definition, wherever the hand started. Moving
+		// forward re-seats it; moving back is a pull. No arming point to be
+		// wrong about.
+		if( proj > vr.act_ref )
+			vr.act_ref = proj;
+
 		float pull = ( vr.act_ref - proj ) / travel;
 
 		if( pull < 0.0f ) pull = 0.0f;
