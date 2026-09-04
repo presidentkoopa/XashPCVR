@@ -104,9 +104,8 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
-static CVAR_DEFINE_AUTO( vr_pump_scrub, "0.45", FCVAR_ARCHIVE, "seconds of animation a full pull of the action covers" );
 static CVAR_DEFINE_AUTO( vr_pump_ejects, "0", FCVAR_ARCHIVE, "working a loaded action throws the chambered round away, as it would" );
-static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before it holds for the pump" );
+static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.8", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
@@ -2139,10 +2138,49 @@ typedef struct
 	qboolean       throwable;   // has throw/pin style sequences
 	qboolean       has_muzzle;  // at least one attachment
 	qboolean       pump;        // has a pump/bolt/lever action to work
+	int            pump_seq;    // which sequence that is, for driving it by hand
+	float          pump_secs;   // and how long it runs
 	qboolean       slide;       // its action locks back on empty and must be released
 } vr_wprofile_t;
 
 static vr_wprofile_t vr_wprof;
+
+/*
+================
+VR_SeqFind
+
+Locate a sequence by name and report how long it runs.
+
+Knowing a weapon HAS a pump was enough to require one; playing it needs the
+sequence itself and its length, and both are in the model. Half-Life's pump
+is eleven frames at thirteen a second - 0.846s - and no constant written here
+would be right for anyone else's weapon.
+================
+*/
+static int VR_SeqFind( const studiohdr_t *hdr, const char *needle, float *out_secs )
+{
+	const mstudioseqdesc_t *seq;
+	int i;
+
+	if( out_secs ) *out_secs = 0.0f;
+
+	if( !hdr || hdr->numseq <= 0 )
+		return -1;
+
+	seq = (const mstudioseqdesc_t *)((const byte *)hdr + hdr->seqindex);
+
+	for( i = 0; i < hdr->numseq; i++ )
+	{
+		if( !Q_stristr( seq[i].label, needle ))
+			continue;
+
+		if( out_secs && seq[i].fps > 0.0f )
+			*out_secs = (float)seq[i].numframes / seq[i].fps;
+
+		return i;
+	}
+	return -1;
+}
 
 static qboolean VR_SeqLabelContains( const studiohdr_t *hdr, const char *needle )
 {
@@ -2203,10 +2241,13 @@ static const vr_wprofile_t *VR_GetWeaponProfile( void )
 	// list says whether this weapon has one. Half-Life's shotgun carries a
 	// "pump" sequence; a mod's own pump-action carries one for the same
 	// reason, and an autoloader carries none. No weapon needs naming.
-	vr_wprof.pump =
-		VR_SeqLabelContains( hdr, "pump" ) ||
-		VR_SeqLabelContains( hdr, "bolt" ) ||
-		VR_SeqLabelContains( hdr, "lever" );
+	vr_wprof.pump_seq = VR_SeqFind( hdr, "pump", &vr_wprof.pump_secs );
+	if( vr_wprof.pump_seq < 0 )
+		vr_wprof.pump_seq = VR_SeqFind( hdr, "bolt", &vr_wprof.pump_secs );
+	if( vr_wprof.pump_seq < 0 )
+		vr_wprof.pump_seq = VR_SeqFind( hdr, "lever", &vr_wprof.pump_secs );
+
+	vr_wprof.pump = ( vr_wprof.pump_seq >= 0 && vr_wprof.pump_secs > 0.0f );
 
 	// A SLIDE THAT LOCKS BACK announces itself by needing two reloads.
 	//
@@ -5539,9 +5580,10 @@ static void VR_UpdateAction( void )
 		if( clgame.viewent.model != last )
 		{
 			last = clgame.viewent.model;
-			VR_DiagPrintf( "PROFILE %s valid=%d pump=%d slide=%d clip=%d\n",
+			VR_DiagPrintf( "PROFILE %s valid=%d pump=%d(%.2fs) slide=%d clip=%d\n",
 				last ? last->name : "(none)", wp ? wp->valid : 0,
-				( wp && wp->pump ) ? 1 : 0, ( wp && wp->slide ) ? 1 : 0, vr.rl_clip );
+				( wp && wp->pump ) ? 1 : 0, wp ? wp->pump_secs : 0.0f,
+				( wp && wp->slide ) ? 1 : 0, vr.rl_clip );
 		}
 	}
 
@@ -5742,65 +5784,52 @@ mod knowing: it is the engine's own viewmodel clock.
 */
 void VR_HoldViewModel( void )
 {
-	static double held = -1.0;
-	double elapsed;
+	static int saved_seq = -1;
+	const vr_wprofile_t *wp;
+	float progress;
 
 	if( !VR_IsActive() || !vr.act_needs )
 	{
-		held = -1.0;
+		// Hand the weapon back exactly as it was found.
+		if( saved_seq >= 0 )
+		{
+			cl.local.weaponsequence = saved_seq;
+			cl.local.weaponstarttime = cl.time;
+			saved_seq = -1;
+		}
 		return;
 	}
 
-	elapsed = cl.time - cl.local.weaponstarttime;
+	wp = VR_GetWeaponProfile();
 
-	// Let the shot itself play first. Freezing the instant the round leaves
-	// catches the weapon mid-flash, which reads as a hitch rather than a gun
-	// waiting to be worked.
-	if( held < 0.0 )
-	{
-		// THE SAME FRAME EVERY TIME.
-		//
-		// This used to hold wherever the animation had reached when the
-		// shot was noticed - and it is noticed when the clip drop arrives
-		// in a CurWeapon message, whose latency varies. So every shot
-		// stopped the weapon somewhere slightly different and the timing
-		// came out right only by luck.
-		//
-		// Naming the frame outright makes it identical shot to shot, and
-		// makes vr_pump_recoil mean what it says: where in the firing
-		// animation the weapon waits.
-		if( elapsed < (double)Q_max( 0.0f, vr_pump_recoil.value ))
-			return;
+	if( !wp || !wp->valid || wp->pump_seq < 0 || wp->pump_secs <= 0.0f )
+		return;
 
-		held = (double)Q_max( 0.0f, vr_pump_recoil.value );
-	}
-
-	// SCRUBBED BY THE HAND, not merely stopped.
+	// THE PUMP SEQUENCE, DRIVEN BY THE STROKE.
 	//
-	// Holding the elapsed time still freezes the weapon; offsetting it by
-	// how far the action is pulled runs the same animation forwards and
-	// backwards under the hand. The fore-end goes back when the hand goes
-	// back and returns when it does, so the player is manipulating the
-	// mechanism rather than triggering it.
-	//
-	// It lands on the same frames the sequence would have played anyway -
-	// nothing is invented, it is only being read at the hand's pace
-	// instead of the clock's.
-	// THE FRAME IS THE HAND'S POSITION, the whole way through.
+	// The weapon carries an animation of its action being worked, so play
+	// that one rather than scrubbing the tail of the firing animation and
+	// hoping the motion is in there. Half-Life's runs 0.846s; every other
+	// weapon runs however long its own does, which is why the length is read
+	// from the model instead of chosen here.
 	//
 	// Out along the first half of the stroke and back along the second, so
-	// the fore-end goes back as the hand goes back and returns as it returns.
-	// Nothing here plays: the animation is only ever read at wherever the
-	// hand has put it, which is the difference between working a mechanism
-	// and setting one off.
-	{
-		float progress = vr.act_back
-			? ( 0.5f + ( 1.0f - vr.act_pull ) * 0.5f )
-			: ( vr.act_pull * 0.5f );
+	// the fore-end goes back as the hand goes back and returns as it
+	// returns. Nothing plays: the frame is only ever where the hand put it.
+	if( saved_seq < 0 )
+		saved_seq = cl.local.weaponsequence;
 
-		cl.local.weaponstarttime = cl.time
-			- ( held + (double)( progress * Q_max( 0.0f, vr_pump_scrub.value )));
-	}
+	progress = vr.act_back
+		? ( 0.5f + ( 1.0f - vr.act_pull ) * 0.5f )
+		: ( vr.act_pull * 0.5f );
+
+	// Just inside the end, because landing exactly on the final frame lets
+	// the renderer wrap to the first one and the action snaps shut.
+	if( progress > 0.98f )
+		progress = 0.98f;
+
+	cl.local.weaponsequence = wp->pump_seq;
+	cl.local.weaponstarttime = cl.time - (double)( progress * wp->pump_secs );
 }
 
 /*
@@ -6422,7 +6451,6 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
 	Cvar_RegisterVariable( &vr_reload_model );
-	Cvar_RegisterVariable( &vr_pump_scrub );
 	Cvar_RegisterVariable( &vr_pump_ejects );
 	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
