@@ -5577,7 +5577,18 @@ static void VR_UpdateAction( void )
 	//
 	// The state it reports persists across frames, so publishing it first is
 	// correct no matter which exit this frame takes.
-	refState.actionProgress = ( VR_IsActive() && vr.act_needs ) ? vr.act_pull : -1.0f;
+	// ALWAYS, not only while a shot is owed.
+	//
+	// Gating this on act_needs left a gap: the flag is raised when the clip
+	// drop arrives from the server, several frames after the trigger, and
+	// the firing animation has already begun cycling the action by then. So
+	// the gun pumped itself on every shot regardless of the override.
+	//
+	// A pump should never move on its own at all, which makes this simple:
+	// the action sits wherever the hand has it, always, and zero means shut.
+	// Weapons with no action sequence are ignored by the renderer anyway, so
+	// publishing unconditionally costs them nothing.
+	refState.actionProgress = VR_IsActive() ? vr.act_pull : -1.0f;
 
 	// Before any exit, for the same reason the publish is. A trigger pull
 	// noticed only on frames that reach the bottom of this function is a
