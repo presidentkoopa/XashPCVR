@@ -683,6 +683,7 @@ static struct
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
 	qboolean      act_have_clip;    // and whether that baseline is real yet
+	qboolean      act_fired;        // trigger pulled since this weapon was drawn
 	int           act_id;           // and which weapon it belonged to
 	qboolean      act_worked;       // the action was worked THIS frame
 	float         act_pull;         // 0..1, how far back the action is being held
@@ -5578,6 +5579,12 @@ static void VR_UpdateAction( void )
 	// correct no matter which exit this frame takes.
 	refState.actionProgress = ( VR_IsActive() && vr.act_needs ) ? vr.act_pull : -1.0f;
 
+	// Before any exit, for the same reason the publish is. A trigger pull
+	// noticed only on frames that reach the bottom of this function is a
+	// trigger pull mostly not noticed at all.
+	if( VR_IsActive() && VR_GetButton( VR_BTN_ATTACK ))
+		vr.act_fired = true;
+
 	static qboolean grip_prev = false;
 	const vr_wprofile_t *wp;
 	vec3_t hand, hang, wpn, wang, fwd, d;
@@ -5617,6 +5624,7 @@ static void VR_UpdateAction( void )
 	{
 		vr.act_id = vr_wlist.cur_id;
 		vr.act_have_clip = false;
+		vr.act_fired = false;
 		vr.act_needs = false;
 		vr.act_armed = false;
 		return;
@@ -5657,8 +5665,21 @@ static void VR_UpdateAction( void )
 	}
 	else if( !vr.act_have_clip )
 	{
+		// THE FIRST NUMBER WE EVER SEE MAY ITSELF BE A SHOT.
+		//
+		// CurWeapon is sent on change, and at weapon draw it reads -1, so the
+		// first real count does not arrive until something moves it - which is
+		// the player firing. Taking that as a baseline silently swallows the
+		// shot that produced it, and the next one too, since the gate then has
+		// to wait for a second drop. Structurally two, every time.
+		//
+		// We know whether a trigger was pulled since this weapon came out, so
+		// a count arriving after one is a shot rather than a starting state.
 		vr.act_clip = vr.rl_clip;
 		vr.act_have_clip = true;
+
+		if( wp->pump && vr.act_fired )
+			vr.act_needs = true;
 	}
 	else if( wp->pump && vr.rl_clip < vr.act_clip )
 		vr.act_needs = true;
