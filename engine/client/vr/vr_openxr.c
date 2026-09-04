@@ -5746,6 +5746,27 @@ static void VR_UpdateAction( void )
 	}
 	else if( !grip )
 	{
+		// LETTING GO AT THE BACK OF THE STROKE STILL COUNTS.
+		//
+		// Releasing used to throw the whole stroke away, so a pull that went
+		// all the way back and then opened the hand - which is most of how
+		// people actually work a pump - registered as nothing. It took three
+		// attempts to land one that happened to keep hold through the return.
+		//
+		// The action was drawn back. That is the part that matters; the hand
+		// coming home is not something to demand.
+		if( vr.act_back )
+		{
+			vr.act_needs = false;
+			vr.act_worked = true;
+
+			if( vr_action_sound.string[0] )
+				S_StartLocalSound( vr_action_sound.string, VOL_NORM, false );
+
+			VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
+			VR_Haptic( VR_DominantHand(), 0.08f, 0.0f, 0.9f );
+		}
+
 		vr.act_armed = false;
 		vr.act_pull = 0.0f;
 		vr.act_back = false;
@@ -5776,7 +5797,11 @@ static void VR_UpdateAction( void )
 		// Closed again. A little short of all the way, because a hand does not
 		// return to the exact unit it started from and demanding that leaves the
 		// action hanging open with nothing the player can do about it.
-		if( vr.act_back && pull <= 0.15f )
+		// Half the stroke back is closed enough. The old test was a fraction
+		// of the travel, and with a short travel that became a return window
+		// under a millimetre wide - a stroke of exactly the right length that
+		// simply could not land in it.
+		if( vr.act_back && pull <= 0.5f )
 		{
 			vr.act_needs = false;
 			vr.act_back = false;
