@@ -115,6 +115,8 @@ static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firi
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
+static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
+static CVAR_DEFINE_AUTO( vr_part_reach, "7", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
 static CVAR_DEFINE_AUTO( vr_slide_travel, "0.30", FCVAR_ARCHIVE, "how far a SLIDE must be pulled back, units; a shorter stroke than a fore-end" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_grab, "1", FCVAR_ARCHIVE, "shoulder hotspots need the grip closed, not just a hand passing through" );
@@ -694,6 +696,10 @@ static struct
 	qboolean      act_open;         // a slide locked back, resting open until racked
 	qboolean      act_rearm;        // hand must leave the weapon before a stroke can start
 	float         throw_peak;       // trailing peak hand speed, HL units/sec
+	int           part_held;        // which weapon part the hand has hold of, -1 none
+	vec3_t        part_grab_hand;   // where the hand was when it took hold
+	float         part_grab_value;  // where the part was when it was taken hold of
+	float         part_value[VR_MAX_PARTS];
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
@@ -5059,6 +5065,133 @@ documents: world space carries the body along, and a sprint alone reads as a
 hard throw.
 ====================
 */
+/*
+====================
+VR_UpdateParts
+
+Take hold of a part of the weapon where it actually is, and move it.
+
+This replaces gesture recognition with reaching. The renderer publishes where
+every drivable part of the current weapon is in the world, and which way and
+how far it travels; the hand goes to one and moves it. Nothing has to decide
+whether a motion "counted", because the player either had hold of the
+fore-end or did not.
+
+Two things fall out of that which were never going to come from gestures:
+
+  - No tuned distances. The model knows how far its own slide goes, so the
+    hand is asked for exactly that. vr_pump_travel and vr_slide_travel were
+    both dialled in by feel, on one weapon, and wrong on every other.
+
+  - More than one part. A revolver has a cylinder AND a speedloader; the hand
+    takes whichever it is nearest, and they move independently.
+
+Positions are a frame old, on a hand that moves in centimetres per frame -
+far inside the reach radius, and not worth ordering surgery to remove.
+====================
+*/
+static void VR_UpdateParts( void )
+{
+	static qboolean grip_prev = false;
+	vec3_t hand, hang, d;
+	qboolean grip;
+	int i, n, near_i = -1;
+	float near_d = 0.0f;
+
+	n = refState.vrPartCount;
+	if( n > VR_MAX_PARTS ) n = VR_MAX_PARTS;
+
+	// Answered every frame, ahead of any exit, or the renderer reads a stale
+	// value on every frame this function happens to leave early.
+	for( i = 0; i < VR_MAX_PARTS; i++ )
+		refState.vrParts[i].value = ( i < n ) ? vr.part_value[i] : 0.0f;
+
+	if( !VR_IsActive() || vr_parts.value == 0.0f || n <= 0
+		|| !VR_GetHandWorld( VR_OffHand(), hand, hang ))
+	{
+		vr.part_held = -1;
+		grip_prev = false;
+		return;
+	}
+
+	grip = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+
+	// The nearest part the hand is actually at.
+	for( i = 0; i < n; i++ )
+	{
+		float dist;
+
+		if( !refState.vrParts[i].present )
+			continue;
+
+		VectorSubtract( hand, refState.vrParts[i].origin, d );
+		dist = VectorLength( d );
+
+		if( dist > Q_max( 1.0f, vr_part_reach.value ))
+			continue;
+
+		if( near_i < 0 || dist < near_d )
+		{
+			near_i = i;
+			near_d = dist;
+		}
+	}
+
+	if( vr.part_held < 0 )
+	{
+		// Taking hold is a fresh close of the hand ON something. A grip that
+		// was already shut is a brace, not a grab.
+		if( grip && !grip_prev && near_i >= 0 )
+		{
+			vr.part_held = near_i;
+			VectorCopy( hand, vr.part_grab_hand );
+			vr.part_grab_value = vr.part_value[near_i];
+			VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.5f );
+		}
+	}
+	else if( !grip )
+	{
+		vr.part_held = -1;
+	}
+	else
+	{
+		// Along the travel this part actually has, so nothing else the hand
+		// does can move it. Sideways motion, wrist roll and the whole body
+		// walking all project to nothing on that axis.
+		vr_part_t *pp = &refState.vrParts[vr.part_held];
+		float len2 = DotProduct( pp->axis, pp->axis );
+
+		if( len2 > 0.000001f )
+		{
+			float t;
+
+			VectorSubtract( hand, vr.part_grab_hand, d );
+			t = vr.part_grab_value + DotProduct( d, pp->axis ) / len2;
+
+			if( t < 0.0f ) t = 0.0f;
+			if( t > 1.0f ) t = 1.0f;
+
+			vr.part_value[vr.part_held] = t;
+			refState.vrParts[vr.part_held].value = t;
+		}
+	}
+
+	grip_prev = grip;
+
+	if( vr_diag.value != 0.0f )
+	{
+		static double next = 0.0;
+
+		if( host.realtime >= next )
+		{
+			next = host.realtime + 0.25;
+			VR_DiagPrintf( "PART n=%d near=%d(%.1fu) held=%d v0=%.2f v1=%.2f\n",
+				n, near_i, near_d, vr.part_held,
+				vr.part_value[0], vr.part_value[1] );
+		}
+	}
+}
+
 static void VR_UpdateThrow( void )
 {
 	static vec3_t prev_org;
@@ -6164,7 +6297,15 @@ static void VR_UpdateAction( void )
 		if( proj > vr.act_ref )
 			vr.act_ref = proj;
 
-		float pull = ( vr.act_ref - proj ) / travel;
+		// FROM THE PART ITSELF, where the model has told us about one.
+		//
+		// The projection below stays for weapons with no part mapping, but it
+		// is the weaker measure: it reads the hand against the weapon forward
+		// axis over a distance dialled in by feel, where the part knows its
+		// own axis and its own travel exactly.
+		float pull = ( vr_parts.value != 0.0f && refState.vrPartCount > 0 )
+			? vr.part_value[0]
+			: ( vr.act_ref - proj ) / travel;
 
 		if( pull < 0.0f ) pull = 0.0f;
 		if( pull > 1.0f ) pull = 1.0f;
@@ -6976,6 +7117,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
+	Cvar_RegisterVariable( &vr_parts );
+	Cvar_RegisterVariable( &vr_part_reach );
 	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_grab );
@@ -8559,6 +8702,7 @@ qboolean VR_BeginFrame( void )
 	VR_UpdateDeath();
 	VR_UpdateShoulderMelee();
 	VR_UpdateReload();
+	VR_UpdateParts();
 	VR_UpdateAction();
 	VR_UpdateThrow();
 	VR_UpdateMenu2D();

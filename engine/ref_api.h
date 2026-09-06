@@ -150,6 +150,21 @@ typedef struct
 	int		cull;
 } sortedface_t;
 
+// Independently driven parts of a weapon model - a pump, a slide, a
+// cylinder, a speedloader. Shared both ways: the renderer fills in what and
+// where, the VR layer fills in how far.
+#define VR_MAX_PARTS 8
+
+typedef struct vr_part_s
+{
+	char     name[32];   // renderer -> engine: the bone this part is
+	vec3_t   origin;     // renderer -> engine: where it is in the world, this frame
+	vec3_t   axis;       // renderer -> engine: rest to full extent, world space
+	float    travel;     // renderer -> engine: how far it moves, world units
+	float    value;      // engine -> renderer: 0 at rest, 1 at full extent
+	qboolean present;    // renderer -> engine: this weapon has this part
+} vr_part_t;
+
 typedef struct ref_globals_s
 {
 	qboolean developer;
@@ -183,6 +198,24 @@ typedef struct ref_globals_s
 	// the hand's POSITION, which is the whole difference between watching a
 	// pump and working one.
 	float actionProgress;
+
+	// A WEAPON AS A SET OF PARTS.
+	//
+	// One progress value can drive one mechanism, which is why every weapon
+	// needed its own special case. A revolver wants its cylinder and its
+	// speedloader moving at once and independently; a shotgun wants the
+	// fore-end and the shell it is fed.
+	//
+	// The renderer publishes WHERE each part is, because it is the only side
+	// that knows - it builds a world transform for every bone, every frame,
+	// and until now told nobody. The VR layer answers with how far the hand
+	// has moved each one.
+	//
+	// That inversion is the point: the hand no longer performs a gesture that
+	// something else interprets. It reaches a place, and whatever is at that
+	// place is what moves.
+	vr_part_t vrParts[VR_MAX_PARTS];
+	int       vrPartCount;
 
 	// todo: fill this without engine help
 	// move to local

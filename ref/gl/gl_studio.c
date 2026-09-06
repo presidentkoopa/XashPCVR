@@ -139,7 +139,7 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // have never seen. Substring match, ';' separated, case insensitive.
 CVAR_DEFINE_AUTO( r_vr_hide_bone, "shell", FCVAR_ARCHIVE, "collapse this bone so its geometry vanishes; the model shell during reloads" );
 CVAR_DEFINE_AUTO( r_vr_action_bone,
-	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 3;v_9mmar=clip;v_crossbow=Slide",
+	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 3;v_9mmar=clip;v_crossbow=Slide,Bolt;v_357=revolver,speed_loader;v_grenade=ring,spoon",
 	FCVAR_ARCHIVE, "per model: model=bone, semicolon separated - the part the hand works" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
@@ -943,45 +943,240 @@ only in shoot - never in the sequence actually called "pump".
 // frames; this only has to be past anything real.
 #define VR_ACTION_MAXFRAMES 512
 
-// Rest and full-extent pose of the driven part, derived from the model once.
-static vec3_t cached_rest_pos, cached_ext_pos;
-static vec4_t cached_rest_q, cached_ext_q;
-
-static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone, qboolean *out_cycle, float *out_peak )
+// A part of a weapon the player can take hold of, with the two poses that
+// bracket its travel. Derived from the model, never authored.
+typedef struct
 {
-	static studiohdr_t *cached_hdr = NULL;
-	static int cached_seq = -1, cached_bone = -1;
-	static float cached_peak = 0.0f;
-	static qboolean cached_cycle = true;
-	mstudioseqdesc_t *pseqdesc;
-	char want[64];
-	int i, s;
+	char     name[32];
+	int      bone;
+	int      seq;                    // the sequence its travel was measured in
+	float    peak;                   // frame where it reaches full extent
+	float    travel;                 // how far that is, world units
+	vec3_t   probe;                  // middle of this part's geometry, bone-local
+	vec3_t   rest_pos, ext_pos;
+	vec4_t   rest_q,  ext_q;
+} vr_studio_part_t;
 
-	if( cached_hdr == m_pStudioHeader )
+static vr_studio_part_t vr_parts[VR_MAX_PARTS];
+static int vr_nparts = 0;
+
+/*
+====================
+R_StudioDerivePart
+
+Measure one bone: which sequence moves it furthest, where in that sequence it
+is furthest out, and the two poses that bracket the travel.
+
+The extent is scored against its NEIGHBOURING frames so a one-frame spike
+cannot win. This pistol has one - frame 1 of shoot_empty throws the slide 76
+degrees the wrong way for a single frame as a recoil snap, while the real
+stroke is a smooth curve peaking at frame 6. A plain maximum would drive the
+slide backwards off a frame nobody ever sees.
+====================
+*/
+static qboolean R_StudioDerivePart( cl_entity_t *e, int bone,
+	mstudioseqdesc_t *pseqdesc, vr_studio_part_t *out )
+{
+	static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
+	static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
+	static float travel[VR_ACTION_MAXFRAMES];
+	mstudioanim_t *panim;
+	float best = 0.0f;
+	int s, f, c, nf, best_f = 0, best_s = -1;
+
+	out->bone = bone;
+	out->seq = -1;
+	out->peak = 0.0f;
+	out->travel = 0.0f;
+
+	// Which sequence moves THIS bone furthest. Sampled across each one,
+	// because a part that goes out and comes back inside the animation reads
+	// as motionless if only its endpoints are checked.
+	for( s = 0; s < m_pStudioHeader->numseq; s++ )
 	{
-		*out_seq = cached_seq;
-		*out_bone = cached_bone;
-		*out_cycle = cached_cycle;
-		*out_peak = cached_peak;
-		return ( cached_seq >= 0 && cached_bone >= 0 );
+		int k;
+
+		if( pseqdesc[s].numframes <= 1 )
+			continue;
+
+		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[s] );
+		R_StudioCalcRotations( e, apos, aq, &pseqdesc[s], panim, 0.0f );
+
+		for( k = 1; k <= 8; k++ )
+		{
+			float d = 0.0f;
+
+			R_StudioCalcRotations( e, bpos, bq, &pseqdesc[s], panim,
+				(float)( pseqdesc[s].numframes - 1 ) * ( (float)k / 8.0f ));
+
+			for( c = 0; c < 4; c++ )
+				d += fabs( aq[bone][c] - bq[bone][c] );
+			for( c = 0; c < 3; c++ )
+				d += fabs( apos[bone][c] - bpos[bone][c] ) * 0.25f;
+
+			if( d > best )
+			{
+				best = d;
+				best_s = s;
+			}
+		}
 	}
 
-	cached_hdr = m_pStudioHeader;
-	cached_seq = cached_bone = -1;
-	cached_cycle = true;
-	want[0] = 0;
+	if( best_s < 0 )
+		return false;
 
-	*out_seq = -1;
-	*out_bone = -1;
-	*out_cycle = true;
-	*out_peak = 0.0f;
+	// Where in that sequence it is furthest out.
+	nf = pseqdesc[best_s].numframes;
+	if( nf > VR_ACTION_MAXFRAMES ) nf = VR_ACTION_MAXFRAMES;
+
+	panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[best_s] );
+	R_StudioCalcRotations( e, apos, aq, &pseqdesc[best_s], panim, 0.0f );
+
+	for( f = 0; f < nf; f++ )
+	{
+		float d = 0.0f;
+
+		R_StudioCalcRotations( e, bpos, bq, &pseqdesc[best_s], panim, (float)f );
+
+		for( c = 0; c < 4; c++ )
+			d += fabs( aq[bone][c] - bq[bone][c] );
+		for( c = 0; c < 3; c++ )
+			d += fabs( apos[bone][c] - bpos[bone][c] ) * 0.25f;
+
+		travel[f] = d;
+	}
+
+	best = 0.0f;
+	for( f = 1; f < nf - 1; f++ )
+	{
+		float lo = travel[f];
+
+		if( travel[f-1] < lo ) lo = travel[f-1];
+		if( travel[f+1] < lo ) lo = travel[f+1];
+
+		if( lo > best )
+		{
+			best = lo;
+			best_f = f;
+		}
+	}
+
+	if( best <= 0.0f )
+		return false;   // nothing that lasts more than a frame
+
+	out->seq = best_s;
+	out->peak = (float)best_f;
+
+	// The two poses that bracket the travel, and nothing in between.
+	R_StudioCalcRotations( e, apos, aq, &pseqdesc[best_s], panim, 0.0f );
+	VectorCopy( apos[bone], out->rest_pos );
+	Vector4Copy( aq[bone], out->rest_q );
+
+	R_StudioCalcRotations( e, bpos, bq, &pseqdesc[best_s], panim, out->peak );
+	VectorCopy( bpos[bone], out->ext_pos );
+	Vector4Copy( bq[bone], out->ext_q );
+
+	// WHERE THE PART'S GEOMETRY IS, not where its bone origin is.
+	//
+	// A bone that rotates about its own origin does not move that origin at
+	// all - and this pistol's slide is exactly that case: constant position,
+	// rotation only. Measuring the bone would report a part that never moves
+	// and sits inside the frame rather than out on the slide.
+	//
+	// So the part is represented by the middle of the geometry actually bound
+	// to it. Studio vertices are stored bone-local, so their mean is already
+	// in the right frame, and it is also the sensible place for a hand to
+	// reach for: the middle of the thing you are grabbing.
+	{
+		mstudiobodyparts_t *pbp = (mstudiobodyparts_t *)((byte *)m_pStudioHeader
+			+ m_pStudioHeader->bodypartindex);
+		int bp, mi, vi, count = 0;
+
+		VectorClear( out->probe );
+
+		for( bp = 0; bp < m_pStudioHeader->numbodyparts; bp++ )
+		{
+			mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
+				+ pbp[bp].modelindex);
+
+			for( mi = 0; mi < pbp[bp].nummodels; mi++ )
+			{
+				byte  *pvb = ((byte *)m_pStudioHeader + pmod[mi].vertinfoindex);
+				vec3_t *pv = (vec3_t *)((byte *)m_pStudioHeader + pmod[mi].vertindex);
+
+				for( vi = 0; vi < pmod[mi].numverts; vi++ )
+				{
+					if( pvb[vi] != bone )
+						continue;
+
+					VectorAdd( out->probe, pv[vi], out->probe );
+					count++;
+				}
+			}
+		}
+
+		if( count > 0 )
+			VectorScale( out->probe, 1.0f / (float)count, out->probe );
+	}
+
+	// How far the part travels, measured on that probe so a rotation counts.
+	{
+		matrix3x4 m0, m1;
+		vec3_t a, b, d;
+
+		Matrix3x4_FromOriginQuat( m0, out->rest_q, out->rest_pos );
+		Matrix3x4_FromOriginQuat( m1, out->ext_q,  out->ext_pos );
+
+		Matrix3x4_VectorTransform( m0, out->probe, a );
+		Matrix3x4_VectorTransform( m1, out->probe, b );
+
+		VectorSubtract( b, a, d );
+		out->travel = VectorLength( d );
+	}
+
+	return true;
+}
+
+/*
+====================
+R_StudioFindParts
+
+Work out which parts of this weapon the player can take hold of, and how far
+each one travels. Derived from the model once and cached per studio header.
+
+The bones are NAMED, per model, in r_vr_action_bone - "model=bone,bone".
+Measuring cannot find them: on one shotgun the hand out-swings the fore-end
+during firing, and scoring by motion picked a fingertip however it was
+weighted. Nor can the names be guessed - this pistol calls its slide "Hands
+mesh 3" and this shotgun calls the pump "Charger". So the mapping is data,
+where it can be looked at and corrected.
+
+Everything else IS measured, because with the bone known there is nothing to
+out-swing it: which sequence moves that bone furthest, where in that sequence
+it reaches its extent, and the two poses that bracket the travel.
+====================
+*/
+static int R_StudioFindParts( cl_entity_t *e )
+{
+	static studiohdr_t *cached_hdr = NULL;
+	mstudioseqdesc_t *pseqdesc;
+	mstudiobone_t *pbones;
+	char want[256];
+	int i;
+
+	if( cached_hdr == m_pStudioHeader )
+		return vr_nparts;
+
+	cached_hdr = m_pStudioHeader;
+	vr_nparts = 0;
+	want[0] = 0;
 
 	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0
 		|| !r_vr_action_bone.string[0] || !RI.currentmodel )
-		return false;
+		return 0;
 
-	// Which entry is for this model. "model=bone", semicolon separated, and
-	// the model side matches anywhere in the path so "v_shotgun" is enough.
+	// The entry for this model. "model=bones", semicolon separated; the model
+	// side matches anywhere in the path so "v_shotgun" is enough.
 	{
 		const char *p = r_vr_action_bone.string;
 
@@ -1000,7 +1195,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 
 				p++;
 
-				while( *p && *p != ';' && v < 63 )
+				while( *p && *p != ';' && v < 255 )
 					want[v++] = *p++;
 				want[v] = 0;
 
@@ -1018,172 +1213,62 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	}
 
 	if( !want[0] )
-		return false;
+		return 0;
 
-	{
-		mstudiobone_t *pbones = (mstudiobone_t *)((byte *)m_pStudioHeader
-			+ m_pStudioHeader->boneindex);
-
-		for( i = 0; i < m_pStudioHeader->numbones; i++ )
-		{
-			if( !Q_stricmp( pbones[i].name, want ))
-			{
-				cached_bone = i;
-				break;
-			}
-		}
-	}
-
-	if( cached_bone < 0 )
-		return false;
-
+	pbones = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex);
 	pseqdesc = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex);
 
-	// Whichever sequence moves THIS bone furthest. Sampled across each one,
-	// because a part that goes out and comes back inside the animation reads
-	// as motionless if only its midpoint is checked.
+	// Each comma-separated bone becomes a part. Bone names carry spaces but
+	// never commas, so this splits cleanly on real content.
 	{
-		static vec3_t apos[MAXSTUDIOBONES], bpos[MAXSTUDIOBONES];
-		static vec4_t aq[MAXSTUDIOBONES], bq[MAXSTUDIOBONES];
-		mstudioanim_t *panim;
-		float best = 0.0f;
-		int k, c;
+		char *tok = want;
 
-		for( s = 0; s < m_pStudioHeader->numseq; s++ )
+		while( *tok && vr_nparts < VR_MAX_PARTS )
 		{
-			if( pseqdesc[s].numframes <= 1 )
-				continue;
+			char bname[64];
+			int b = 0, bone = -1;
 
-			panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, &pseqdesc[s] );
-			R_StudioCalcRotations( e, apos, aq, &pseqdesc[s], panim, 0.0f );
+			while( *tok == ' ' ) tok++;
+			while( *tok && *tok != ',' && b < 63 )
+				bname[b++] = *tok++;
+			while( b > 0 && bname[b-1] == ' ' ) b--;
+			bname[b] = 0;
+			if( *tok == ',' ) tok++;
+			if( !bname[0] ) continue;
 
-			for( k = 1; k <= 8; k++ )
+			for( i = 0; i < m_pStudioHeader->numbones; i++ )
 			{
-				float d = 0.0f;
-
-				R_StudioCalcRotations( e, bpos, bq, &pseqdesc[s], panim,
-					(float)( pseqdesc[s].numframes - 1 ) * ( (float)k / 8.0f ));
-
-				for( c = 0; c < 4; c++ )
-					d += fabs( aq[cached_bone][c] - bq[cached_bone][c] );
-
-				// Slides translate rather than rotate, so position counts too.
-				for( c = 0; c < 3; c++ )
-					d += fabs( apos[cached_bone][c] - bpos[cached_bone][c] ) * 0.25f;
-
-				if( d > best )
+				if( !Q_stricmp( pbones[i].name, bname ))
 				{
-					best = d;
-					cached_seq = s;
+					bone = i;
+					break;
 				}
 			}
-		}
-	}
 
-	// A bone found is never a failure: posing it from any sequence at least
-	// holds the mechanism still, where giving up hands the weapon back to its
-	// animation to cycle itself.
-	if( cached_seq < 0 )
-	{
-		for( s = 0; s < m_pStudioHeader->numseq; s++ )
-		{
-			if( pseqdesc[s].numframes > 1 )
+			if( bone < 0 )
+				continue;   // named a part this model does not have
+
+			if( R_StudioDerivePart( e, bone, pseqdesc, &vr_parts[vr_nparts] ))
 			{
-				cached_seq = s;
-				break;
+				Q_strncpy( vr_parts[vr_nparts].name, bname,
+					sizeof( vr_parts[vr_nparts].name ));
+				vr_nparts++;
 			}
 		}
 	}
 
-	// WHERE THE PART IS ACTUALLY FURTHEST OUT.
-	//
-	// The stroke does NOT run to the end of the sequence. Every weapon
-	// measured returns its mechanism to rest by the last frame - the pistol
-	// slide peaks at frame 6 of 19, the shotgun fore-end at 19 of 30, the
-	// rifle magazine at 11 of 46 - because these animations show a whole
-	// cycle, out AND back, not a one-way travel.
-	//
-	// Mapping the hand across the entire sequence therefore drew the action
-	// SHUT at full pull, and worse, made the second half run backwards: past
-	// the peak, pulling further sent the part forward again. That is the
-	// "I have to pull way too far" and the pump that "moves on its own".
-	//
-	// So the hand is mapped from rest to the peak, and stops there.
+	if( r_vr_action_debug.value != 0.0f )
 	{
-		static vec3_t zpos[MAXSTUDIOBONES], fpos[MAXSTUDIOBONES];
-		static vec4_t zq[MAXSTUDIOBONES], fq[MAXSTUDIOBONES];
-		static float travel[VR_ACTION_MAXFRAMES];
-		mstudioanim_t *panim;
-		int f, nf, best_f = 0;
-		float best = 0.0f;
-
-		nf = pseqdesc[cached_seq].numframes;
-		if( nf > VR_ACTION_MAXFRAMES ) nf = VR_ACTION_MAXFRAMES;
-
-		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel,
-			&pseqdesc[cached_seq] );
-		R_StudioCalcRotations( e, zpos, zq, &pseqdesc[cached_seq], panim, 0.0f );
-
-		for( f = 0; f < nf; f++ )
-		{
-			float d = 0.0f;
-			int c;
-
-			R_StudioCalcRotations( e, fpos, fq, &pseqdesc[cached_seq], panim, (float)f );
-
-			for( c = 0; c < 4; c++ )
-				d += fabs( fq[cached_bone][c] - zq[cached_bone][c] );
-			for( c = 0; c < 3; c++ )
-				d += fabs( fpos[cached_bone][c] - zpos[cached_bone][c] ) * 0.25f;
-
-			travel[f] = d;
-		}
-
-		// Scored against its NEIGHBOURS, so a single-frame spike cannot win.
-		// The pistol has one: frame 1 of shoot_empty throws the slide 76
-		// degrees the wrong way for exactly one frame - the recoil snap - while
-		// the real stroke is a smooth curve peaking at frame 6. Taking a plain
-		// maximum would pose the slide backwards off a frame nobody sees.
-		for( f = 1; f < nf - 1; f++ )
-		{
-			float lo = travel[f];
-
-			if( travel[f-1] < lo ) lo = travel[f-1];
-			if( travel[f+1] < lo ) lo = travel[f+1];
-
-			if( lo > best )
-			{
-				best = lo;
-				best_f = f;
-			}
-		}
-
-		// Nothing found that lasts: fall back to the whole sequence rather
-		// than collapsing the stroke to a single frame.
-		cached_peak = ( best > 0.0f ) ? (float)best_f : (float)( nf - 1 );
-
-		// THE TWO POSES THAT DEFINE THE TRAVEL, and nothing in between.
-		//
-		// Kept so the part can be driven straight from rest to full extent
-		// without ever visiting the frames between them. Those frames are not
-		// a travel, they are an animator's performance: the pistol throws its
-		// slide 76 degrees the wrong way on frame 1 as a recoil snap, and any
-		// hand scrubbing through the sequence inherits that.
-		R_StudioCalcRotations( e, zpos, zq, &pseqdesc[cached_seq], panim, 0.0f );
-		VectorCopy( zpos[cached_bone], cached_rest_pos );
-		Vector4Copy( zq[cached_bone], cached_rest_q );
-
-		R_StudioCalcRotations( e, fpos, fq, &pseqdesc[cached_seq], panim, cached_peak );
-		VectorCopy( fpos[cached_bone], cached_ext_pos );
-		Vector4Copy( fq[cached_bone], cached_ext_q );
+		for( i = 0; i < vr_nparts; i++ )
+			gEngfuncs.Con_Printf( "VRPART %s: bone=%d seq=%d peak=%.0f travel=%.2f %s\n",
+				vr_parts[i].name, vr_parts[i].bone, vr_parts[i].seq,
+				vr_parts[i].peak, vr_parts[i].travel,
+				RI.currentmodel ? RI.currentmodel->name : "?" );
 	}
 
-	*out_seq = cached_seq;
-	*out_bone = cached_bone;
-	*out_cycle = cached_cycle;
-	*out_peak = cached_peak;
-	return ( cached_seq >= 0 );
+	return vr_nparts;
 }
+
 
 
 
@@ -3310,85 +3395,95 @@ fore-end and parents nothing - so no other bone inherits the change.
 */
 static void R_StudioApplyHandAction( void )
 {
-	static vec3_t rpos[MAXSTUDIOBONES];
-	static vec4_t rq[MAXSTUDIOBONES];
 	mstudiobone_t *pbones;
-	mstudioseqdesc_t *rsd;
-	mstudioanim_t *ranim;
 	matrix3x4 bonematrix;
-	int aseq, abone, parent;
-	qboolean acycle = false;
-	float apeak = 0.0f;
-	float p;
+	int n, i;
 
-	if( r_vr_action_debug.value != 0.0f )
-	{
-		// Per MODEL, not per second. A one-a-second print samples whatever
-		// happens to be drawing and kept landing on the HEV suit, so the
-		// weapon - the only model this is about - was never reported.
-		static model_t *last = NULL;
+	gpGlobals->vrPartCount = 0;
 
-		if( RI.currentmodel != last )
-		{
-			last = RI.currentmodel;
-			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f hdr=%d cvar=[%s] bones=%d b0=%s %s\n",
-				gpGlobals->actionProgress, m_pStudioHeader ? 1 : 0,
-				r_vr_action_bone.string,
-				m_pStudioHeader ? m_pStudioHeader->numbones : -1,
-				m_pStudioHeader ? ((mstudiobone_t *)((byte *)m_pStudioHeader
-					+ m_pStudioHeader->boneindex))[0].name : "-",
-				RI.currentmodel ? RI.currentmodel->name : "?" );
-		}
-	}
-
-	if( !m_pStudioHeader || gpGlobals->actionProgress < 0.0f )
+	if( !m_pStudioHeader )
 		return;
 
-	if( !R_StudioFindAction( RI.currententity, &aseq, &abone, &acycle, &apeak ))
+	n = R_StudioFindParts( RI.currententity );
+
+	if( n <= 0 )
 		return;
 
 	pbones = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex);
-	parent = pbones[abone].parent;
 
-	rsd = (mstudioseqdesc_t *)((byte *)m_pStudioHeader + m_pStudioHeader->seqindex) + aseq;
-	ranim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel, rsd );
-
-	p = gpGlobals->actionProgress;
-	if( p > 1.0f ) p = 1.0f;
-
-	// DRIVEN, NOT SCRUBBED.
-	//
-	// The part is blended straight from its rest pose to its full extent by
-	// the hand, and the animation between them is never played. Indexing a
-	// canned sequence could not do this job:
-	//
-	//  - the sequence ENDS where it started, so full pull drew the action
-	//    shut and no hand position could ever hold it open;
-	//  - past the halfway point it ran backwards, so pulling further pushed
-	//    the part forward again;
-	//  - and it carries whatever else the animator put on that bone, like
-	//    the pistol's 76-degree recoil snap one frame in.
-	//
-	// Blending two poses removes all three at once. The travel is exactly
-	// linear in the hand, monotonic, and reaches full extent at full pull.
-	// The out-and-back is the PLAYER's to make; it is not baked in here,
-	// which is why the halving this used to do is gone.
+	for( i = 0; i < n && i < VR_MAX_PARTS; i++ )
 	{
+		vr_studio_part_t *sp = &vr_parts[i];
+		vr_part_t *pub = &gpGlobals->vrParts[i];
+		int parent = pbones[sp->bone].parent;
+		float p = pub->value;
 		vec4_t q;
 		vec3_t pos;
 
-		QuaternionSlerp( cached_rest_q, cached_ext_q, p, q );
-		VectorLerp( cached_rest_pos, p, cached_ext_pos, pos );
+		if( p < 0.0f ) p = 0.0f;
+		if( p > 1.0f ) p = 1.0f;
+
+		// DRIVEN, NOT SCRUBBED.
+		//
+		// Blended straight from rest to full extent; the frames between them
+		// are never played. Those frames are not a travel, they are an
+		// animator's performance - and they end where they began, which is
+		// why indexing them drew every action shut at full pull.
+		QuaternionSlerp( sp->rest_q, sp->ext_q, p, q );
+		VectorLerp( sp->rest_pos, p, sp->ext_pos, pos );
 
 		Matrix3x4_FromOriginQuat( bonematrix, q, pos );
-	}
 
-	if( parent >= 0 )
-		Matrix3x4_ConcatTransforms( g_studio.bonestransform[abone],
-			g_studio.bonestransform[parent], bonematrix );
-	else
-		Matrix3x4_ConcatTransforms( g_studio.bonestransform[abone],
-			g_studio.rotationmatrix, bonematrix );
+		if( parent >= 0 )
+			Matrix3x4_ConcatTransforms( g_studio.bonestransform[sp->bone],
+				g_studio.bonestransform[parent], bonematrix );
+		else
+			Matrix3x4_ConcatTransforms( g_studio.bonestransform[sp->bone],
+				g_studio.rotationmatrix, bonematrix );
+
+		// WHERE THE PART IS, published for the hand to reach for.
+		//
+		// This is the half that was always missing. The renderer builds a
+		// world transform for every bone, every frame, and told nobody - so
+		// the VR layer had to infer which mechanism the player meant from
+		// gestures and reach radii tuned per weapon. It does not have to
+		// infer anything if it can simply be told where the pump is.
+		//
+		// Taken AFTER the drive above, so it reports where the part actually
+		// is now rather than where its animation would have put it.
+		Q_strncpy( pub->name, sp->name, sizeof( pub->name ));
+		Matrix3x4_VectorTransform( g_studio.bonestransform[sp->bone],
+			sp->probe, pub->origin );
+
+		// AND WHICH WAY IT TRAVELS, in world space, so the hand needs no tuned
+		// distance at all. The model already knows how far its own slide goes;
+		// asking the player for that exact distance is strictly better than a
+		// constant dialled in by feel on a different weapon.
+		{
+			matrix3x4 m, w;
+			vec3_t a, b;
+
+			Matrix3x4_FromOriginQuat( m, sp->rest_q, sp->rest_pos );
+			if( parent >= 0 )
+				Matrix3x4_ConcatTransforms( w, g_studio.bonestransform[parent], m );
+			else
+				Matrix3x4_ConcatTransforms( w, g_studio.rotationmatrix, m );
+			Matrix3x4_VectorTransform( w, sp->probe, a );
+
+			Matrix3x4_FromOriginQuat( m, sp->ext_q, sp->ext_pos );
+			if( parent >= 0 )
+				Matrix3x4_ConcatTransforms( w, g_studio.bonestransform[parent], m );
+			else
+				Matrix3x4_ConcatTransforms( w, g_studio.rotationmatrix, m );
+			Matrix3x4_VectorTransform( w, sp->probe, b );
+
+			VectorSubtract( b, a, pub->axis );
+		}
+		pub->travel = sp->travel;
+		pub->present = true;
+
+		gpGlobals->vrPartCount = i + 1;
+	}
 
 	if( r_vr_action_debug.value != 0.0f )
 	{
@@ -3397,12 +3492,17 @@ static void R_StudioApplyHandAction( void )
 		if( gEngfuncs.pfnTime() > next )
 		{
 			next = gEngfuncs.pfnTime() + 1.0;
-			gEngfuncs.Con_Printf( "ACTIONGL p=%.2f seq=%d bone=%d parent=%d cycle=%d %s\n",
-				gpGlobals->actionProgress, aseq, abone, parent, acycle ? 1 : 0,
-				RI.currentmodel ? RI.currentmodel->name : "?" );
+
+			for( i = 0; i < gpGlobals->vrPartCount; i++ )
+				gEngfuncs.Con_Printf( "VRPART %s at %.1f %.1f %.1f value=%.2f travel=%.2f\n",
+					gpGlobals->vrParts[i].name,
+					gpGlobals->vrParts[i].origin[0], gpGlobals->vrParts[i].origin[1],
+					gpGlobals->vrParts[i].origin[2], gpGlobals->vrParts[i].value,
+					gpGlobals->vrParts[i].travel );
 		}
 	}
 }
+
 
 static void R_StudioRenderModel( void )
 {
