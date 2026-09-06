@@ -107,6 +107,9 @@ static CVAR_DEFINE_AUTO( vr_reload_model_scale, "0.35", FCVAR_ARCHIVE, "size of 
 static CVAR_DEFINE_AUTO( vr_reload_model_mag, "models/w_9mmclip.mdl", FCVAR_ARCHIVE, "what a carried magazine looks like" );
 static CVAR_DEFINE_AUTO( vr_slide_sound, "weapons/reload3.wav", FCVAR_ARCHIVE, "sound for working a slide rather than a pump" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
+static CVAR_DEFINE_AUTO( vr_reload_model_map,
+	"v_9mmar=models/w_9mmarclip.mdl;v_357=models/w_357ammobox.mdl;v_crossbow=models/w_crossbow_clip.mdl",
+	FCVAR_ARCHIVE, "per model: viewmodel=round model, semicolon separated" );
 static CVAR_DEFINE_AUTO( vr_pump_giveup, "1.5", FCVAR_ARCHIVE, "seconds of holding the trigger that releases a stuck action; 0 never gives up" );
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
@@ -2960,6 +2963,56 @@ void VR_DrawHeldRound( void )
 	// follows from that without naming any weapon.
 	want = ( wp && wp->valid && wp->pump )
 		? vr_reload_model.string : vr_reload_model_mag.string;
+
+	// A WEAPON THAT CARRIES SOMETHING ELSE SAYS SO.
+	//
+	// The shell-or-magazine rule above gets the shape right but not the
+	// object: every magazine weapon drew the pistol's, so a rifle magazine
+	// arrived at the gun looking like a 9mm clip, and a revolver would carry
+	// a magazine it has no way to accept.
+	//
+	// Named per model, in the same shape as the action bone map and for the
+	// same reason: this is data about content, it is different for every mod,
+	// and it belongs somewhere it can be looked at and changed rather than in
+	// a table of weapon names compiled into the engine. Anything not listed
+	// keeps the general rule above.
+	if( clgame.viewent.model && vr_reload_model_map.string[0] )
+	{
+		const char *p = vr_reload_model_map.string;
+		static char found[64];
+
+		while( *p )
+		{
+			char key[64];
+			int k = 0;
+
+			while( *p && *p != '=' && *p != ';' && k < 63 )
+				key[k++] = *p++;
+			key[k] = 0;
+
+			if( *p == '=' )
+			{
+				int v = 0;
+
+				p++;
+
+				while( *p && *p != ';' && v < 63 )
+					found[v++] = *p++;
+				found[v] = 0;
+
+				if( key[0] && Q_stristr( clgame.viewent.model->name, key ))
+				{
+					want = found;
+					break;
+				}
+			}
+
+			while( *p && *p != ';' )
+				p++;
+			if( *p == ';' )
+				p++;
+		}
+	}
 
 	if( !want[0] )
 		return;
@@ -6903,6 +6956,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_model_mag );
 	Cvar_RegisterVariable( &vr_slide_sound );
 	Cvar_RegisterVariable( &vr_reload_model );
+	Cvar_RegisterVariable( &vr_reload_model_map );
 	Cvar_RegisterVariable( &vr_pump_giveup );
 	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
