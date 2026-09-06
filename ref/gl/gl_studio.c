@@ -939,10 +939,19 @@ moves its slide only in shoot_empty and reload, and the shotgun moves its pump
 only in shoot - never in the sequence actually called "pump".
 ====================
 */
-static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone, qboolean *out_cycle )
+// Longest sequence the peak search will scan. Weapon actions are tens of
+// frames; this only has to be past anything real.
+#define VR_ACTION_MAXFRAMES 512
+
+// Rest and full-extent pose of the driven part, derived from the model once.
+static vec3_t cached_rest_pos, cached_ext_pos;
+static vec4_t cached_rest_q, cached_ext_q;
+
+static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone, qboolean *out_cycle, float *out_peak )
 {
 	static studiohdr_t *cached_hdr = NULL;
 	static int cached_seq = -1, cached_bone = -1;
+	static float cached_peak = 0.0f;
 	static qboolean cached_cycle = true;
 	mstudioseqdesc_t *pseqdesc;
 	char want[64];
@@ -953,6 +962,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 		*out_seq = cached_seq;
 		*out_bone = cached_bone;
 		*out_cycle = cached_cycle;
+		*out_peak = cached_peak;
 		return ( cached_seq >= 0 && cached_bone >= 0 );
 	}
 
@@ -964,6 +974,7 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 	*out_seq = -1;
 	*out_bone = -1;
 	*out_cycle = true;
+	*out_peak = 0.0f;
 
 	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0
 		|| !r_vr_action_bone.string[0] || !RI.currentmodel )
@@ -1084,9 +1095,93 @@ static qboolean R_StudioFindAction( cl_entity_t *e, int *out_seq, int *out_bone,
 		}
 	}
 
+	// WHERE THE PART IS ACTUALLY FURTHEST OUT.
+	//
+	// The stroke does NOT run to the end of the sequence. Every weapon
+	// measured returns its mechanism to rest by the last frame - the pistol
+	// slide peaks at frame 6 of 19, the shotgun fore-end at 19 of 30, the
+	// rifle magazine at 11 of 46 - because these animations show a whole
+	// cycle, out AND back, not a one-way travel.
+	//
+	// Mapping the hand across the entire sequence therefore drew the action
+	// SHUT at full pull, and worse, made the second half run backwards: past
+	// the peak, pulling further sent the part forward again. That is the
+	// "I have to pull way too far" and the pump that "moves on its own".
+	//
+	// So the hand is mapped from rest to the peak, and stops there.
+	{
+		static vec3_t zpos[MAXSTUDIOBONES], fpos[MAXSTUDIOBONES];
+		static vec4_t zq[MAXSTUDIOBONES], fq[MAXSTUDIOBONES];
+		static float travel[VR_ACTION_MAXFRAMES];
+		mstudioanim_t *panim;
+		int f, nf, best_f = 0;
+		float best = 0.0f;
+
+		nf = pseqdesc[cached_seq].numframes;
+		if( nf > VR_ACTION_MAXFRAMES ) nf = VR_ACTION_MAXFRAMES;
+
+		panim = gEngfuncs.R_StudioGetAnim( m_pStudioHeader, RI.currentmodel,
+			&pseqdesc[cached_seq] );
+		R_StudioCalcRotations( e, zpos, zq, &pseqdesc[cached_seq], panim, 0.0f );
+
+		for( f = 0; f < nf; f++ )
+		{
+			float d = 0.0f;
+			int c;
+
+			R_StudioCalcRotations( e, fpos, fq, &pseqdesc[cached_seq], panim, (float)f );
+
+			for( c = 0; c < 4; c++ )
+				d += fabs( fq[cached_bone][c] - zq[cached_bone][c] );
+			for( c = 0; c < 3; c++ )
+				d += fabs( fpos[cached_bone][c] - zpos[cached_bone][c] ) * 0.25f;
+
+			travel[f] = d;
+		}
+
+		// Scored against its NEIGHBOURS, so a single-frame spike cannot win.
+		// The pistol has one: frame 1 of shoot_empty throws the slide 76
+		// degrees the wrong way for exactly one frame - the recoil snap - while
+		// the real stroke is a smooth curve peaking at frame 6. Taking a plain
+		// maximum would pose the slide backwards off a frame nobody sees.
+		for( f = 1; f < nf - 1; f++ )
+		{
+			float lo = travel[f];
+
+			if( travel[f-1] < lo ) lo = travel[f-1];
+			if( travel[f+1] < lo ) lo = travel[f+1];
+
+			if( lo > best )
+			{
+				best = lo;
+				best_f = f;
+			}
+		}
+
+		// Nothing found that lasts: fall back to the whole sequence rather
+		// than collapsing the stroke to a single frame.
+		cached_peak = ( best > 0.0f ) ? (float)best_f : (float)( nf - 1 );
+
+		// THE TWO POSES THAT DEFINE THE TRAVEL, and nothing in between.
+		//
+		// Kept so the part can be driven straight from rest to full extent
+		// without ever visiting the frames between them. Those frames are not
+		// a travel, they are an animator's performance: the pistol throws its
+		// slide 76 degrees the wrong way on frame 1 as a recoil snap, and any
+		// hand scrubbing through the sequence inherits that.
+		R_StudioCalcRotations( e, zpos, zq, &pseqdesc[cached_seq], panim, 0.0f );
+		VectorCopy( zpos[cached_bone], cached_rest_pos );
+		Vector4Copy( zq[cached_bone], cached_rest_q );
+
+		R_StudioCalcRotations( e, fpos, fq, &pseqdesc[cached_seq], panim, cached_peak );
+		VectorCopy( fpos[cached_bone], cached_ext_pos );
+		Vector4Copy( fq[cached_bone], cached_ext_q );
+	}
+
 	*out_seq = cached_seq;
 	*out_bone = cached_bone;
 	*out_cycle = cached_cycle;
+	*out_peak = cached_peak;
 	return ( cached_seq >= 0 );
 }
 
@@ -3223,6 +3318,7 @@ static void R_StudioApplyHandAction( void )
 	matrix3x4 bonematrix;
 	int aseq, abone, parent;
 	qboolean acycle = false;
+	float apeak = 0.0f;
 	float p;
 
 	if( r_vr_action_debug.value != 0.0f )
@@ -3248,7 +3344,7 @@ static void R_StudioApplyHandAction( void )
 	if( !m_pStudioHeader || gpGlobals->actionProgress < 0.0f )
 		return;
 
-	if( !R_StudioFindAction( RI.currententity, &aseq, &abone, &acycle ))
+	if( !R_StudioFindAction( RI.currententity, &aseq, &abone, &acycle, &apeak ))
 		return;
 
 	pbones = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex);
@@ -3260,15 +3356,32 @@ static void R_StudioApplyHandAction( void )
 	p = gpGlobals->actionProgress;
 	if( p > 1.0f ) p = 1.0f;
 
-	// A cycling sequence opens over its first half and closes over its
-	// second, so the hand drives it out to the midpoint and back.
-	if( acycle )
-		p *= 0.5f;
+	// DRIVEN, NOT SCRUBBED.
+	//
+	// The part is blended straight from its rest pose to its full extent by
+	// the hand, and the animation between them is never played. Indexing a
+	// canned sequence could not do this job:
+	//
+	//  - the sequence ENDS where it started, so full pull drew the action
+	//    shut and no hand position could ever hold it open;
+	//  - past the halfway point it ran backwards, so pulling further pushed
+	//    the part forward again;
+	//  - and it carries whatever else the animator put on that bone, like
+	//    the pistol's 76-degree recoil snap one frame in.
+	//
+	// Blending two poses removes all three at once. The travel is exactly
+	// linear in the hand, monotonic, and reaches full extent at full pull.
+	// The out-and-back is the PLAYER's to make; it is not baked in here,
+	// which is why the halving this used to do is gone.
+	{
+		vec4_t q;
+		vec3_t pos;
 
-	R_StudioCalcRotations( RI.currententity, rpos, rq, rsd, ranim,
-		p * (float)( rsd->numframes - 1 ));
+		QuaternionSlerp( cached_rest_q, cached_ext_q, p, q );
+		VectorLerp( cached_rest_pos, p, cached_ext_pos, pos );
 
-	Matrix3x4_FromOriginQuat( bonematrix, rq[abone], rpos[abone] );
+		Matrix3x4_FromOriginQuat( bonematrix, q, pos );
+	}
 
 	if( parent >= 0 )
 		Matrix3x4_ConcatTransforms( g_studio.bonestransform[abone],

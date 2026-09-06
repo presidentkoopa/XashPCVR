@@ -115,6 +115,7 @@ static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firi
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
+static CVAR_DEFINE_AUTO( vr_slide_travel, "0.30", FCVAR_ARCHIVE, "how far a SLIDE must be pulled back, units; a shorter stroke than a fore-end" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_grab, "1", FCVAR_ARCHIVE, "shoulder hotspots need the grip closed, not just a hand passing through" );
 static CVAR_DEFINE_AUTO( vr_shoulder_radius, "9", FCVAR_ARCHIVE, "size of the over-the-shoulder hotspot, units" );
@@ -6135,7 +6136,19 @@ static void VR_UpdateAction( void )
 		// Nothing plays on its own at any point. The animation is wherever the
 		// hand has put it, forwards or backwards, for as long as the hand is on
 		// the weapon.
-		float travel = Q_max( 0.1f, vr_pump_travel.value );
+		// A SLIDE IS A SHORTER STROKE THAN A FORE-END.
+		//
+		// One distance served both, and it was tuned by feel on the shotgun,
+		// so the pistol inherited a number chosen for a different mechanism.
+		// A fore-end travels the better part of a hand-span; a slide is about
+		// a thumb-length. Asking for the same stroke from both makes one of
+		// them wrong however carefully the other is dialled in.
+		//
+		// Split by MECHANISM rather than by weapon: anything with a slide
+		// wants the short stroke, and nothing has to be listed for it.
+		float travel = ( wp->slide && !wp->pump )
+			? Q_max( 0.1f, vr_slide_travel.value )
+			: Q_max( 0.1f, vr_pump_travel.value );
 		// THE REFERENCE FOLLOWS THE FURTHEST-FORWARD POINT.
 		//
 		// It used to be captured once, the instant the hand came within arming
@@ -6219,7 +6232,8 @@ static void VR_UpdateAction( void )
 		VR_DiagPrintf( "ACTION needs=%d armed=%d grip=%d travel=%.1f/%.0f pull=%.2f back=%d hand=%.1f clip=%d\n",
 			vr.act_needs ? 1 : 0, vr.act_armed ? 1 : 0, grip ? 1 : 0,
 			vr.act_armed ? ( vr.act_ref - proj ) : 0.0f,
-			vr_pump_travel.value, vr.act_pull, vr.act_back ? 1 : 0,
+			( wp->slide && !wp->pump ) ? vr_slide_travel.value : vr_pump_travel.value,
+			vr.act_pull, vr.act_back ? 1 : 0,
 			VectorLength( d ), vr.rl_clip );
 
 	// HAND THE POSITION TO THE RENDERER.
@@ -6962,6 +6976,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
 	Cvar_RegisterVariable( &vr_pump_travel );
+	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_grab );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
