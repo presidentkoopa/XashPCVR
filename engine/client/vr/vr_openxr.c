@@ -117,7 +117,7 @@ static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
 static CVAR_DEFINE_AUTO( vr_part_kick, "0.11", FCVAR_ARCHIVE, "seconds a self-loading action takes to cycle when fired; 0 never cycles itself" );
-static CVAR_DEFINE_AUTO( vr_part_reach, "7", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
+static CVAR_DEFINE_AUTO( vr_part_reach, "12", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
 static CVAR_DEFINE_AUTO( vr_slide_travel, "0.30", FCVAR_ARCHIVE, "how far a SLIDE must be pulled back, units; a shorter stroke than a fore-end" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
 static CVAR_DEFINE_AUTO( vr_shoulder_grab, "1", FCVAR_ARCHIVE, "shoulder hotspots need the grip closed, not just a hand passing through" );
@@ -1558,8 +1558,8 @@ void VR_SetWorldReference( const vec3_t origin )
 		{
 			vr.smooth_z = origin[2];		// snap: not a step
 		}
-		else
-		{
+			else
+			{
 			float t = vr_step_smooth.value * host.frametime;
 
 			if( t > 1.0f ) t = 1.0f;
@@ -5101,6 +5101,7 @@ static void VR_UpdateParts( void )
 	qboolean grip;
 	int i, n, near_i = -1;
 	float near_d = 0.0f;
+	qboolean in_reach = false;
 
 	n = refState.vrPartCount;
 	if( n > VR_MAX_PARTS ) n = VR_MAX_PARTS;
@@ -5120,7 +5121,12 @@ static void VR_UpdateParts( void )
 
 	grip = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
 
-	// The nearest part the hand is actually at.
+	// The nearest part, measured whether or not it is in reach.
+	//
+	// Reporting only parts already within range made the trace useless at the
+	// one moment it mattered: a weapon whose parts were never grabbed logged
+	// "nothing near" at a distance of zero, which cannot distinguish missing
+	// by two units from missing by fifty.
 	for( i = 0; i < n; i++ )
 	{
 		float dist;
@@ -5131,9 +5137,6 @@ static void VR_UpdateParts( void )
 		VectorSubtract( hand, refState.vrParts[i].origin, d );
 		dist = VectorLength( d );
 
-		if( dist > Q_max( 1.0f, vr_part_reach.value ))
-			continue;
-
 		if( near_i < 0 || dist < near_d )
 		{
 			near_i = i;
@@ -5141,11 +5144,13 @@ static void VR_UpdateParts( void )
 		}
 	}
 
+	in_reach = ( near_i >= 0 && near_d <= Q_max( 1.0f, vr_part_reach.value ));
+
 	if( vr.part_held < 0 )
 	{
 		// Taking hold is a fresh close of the hand ON something. A grip that
 		// was already shut is a brace, not a grab.
-		if( grip && !grip_prev && near_i >= 0 )
+		if( grip && !grip_prev && near_i >= 0 && in_reach )
 		{
 			vr.part_held = near_i;
 			VectorCopy( hand, vr.part_grab_hand );
@@ -5205,23 +5210,36 @@ static void VR_UpdateParts( void )
 		vr.part_clip = clip;
 	}
 
-	if( vr.part_held != 0 && vr_part_kick.value > 0.0f && vr.part_fired > 0.0 )
+	// ONLY A SELF-LOADER THROWS ITS OWN PART.
+	//
+	// A pump does not cycle itself, and a revolver cylinder is not an action
+	// at all - kicking part 0 on every shot would swing the cylinder open
+	// each time the trigger was pulled. The weapon profile already tells the
+	// two apart by whether the model animates a second, empty reload, which
+	// is the thing only a weapon with a locking action needs.
 	{
-		double age = host.realtime - vr.part_fired;
-		float out = (float)vr_part_kick.value * 0.3f;
-		float back = (float)vr_part_kick.value * 0.7f;
+		const vr_wprofile_t *kwp = VR_GetWeaponProfile();
+		qboolean self_loading = ( kwp && kwp->valid && kwp->slide && !kwp->pump );
 
-		if( age < out )
-			vr.part_value[0] = (float)( age / out );
-		else if( age < out + back )
-			vr.part_value[0] = 1.0f - (float)(( age - out ) / back );
+		if( self_loading && vr.part_held != 0
+			&& vr_part_kick.value > 0.0f && vr.part_fired > 0.0 )
+	{
+			double age = host.realtime - vr.part_fired;
+			float out = (float)vr_part_kick.value * 0.3f;
+			float back = (float)vr_part_kick.value * 0.7f;
+
+			if( age < out )
+				vr.part_value[0] = (float)( age / out );
+			else if( age < out + back )
+				vr.part_value[0] = 1.0f - (float)(( age - out ) / back );
 		else
 		{
-			vr.part_value[0] = 0.0f;
-			vr.part_fired = 0.0;
-		}
+				vr.part_value[0] = 0.0f;
+				vr.part_fired = 0.0;
+			}
 
-		refState.vrParts[0].value = vr.part_value[0];
+			refState.vrParts[0].value = vr.part_value[0];
+		}
 	}
 
 	// AND IT STAYS BACK WHEN THE GUN IS EMPTY.
@@ -5268,9 +5286,9 @@ static void VR_UpdateParts( void )
 		if( host.realtime >= next )
 		{
 			next = host.realtime + 0.25;
-			VR_DiagPrintf( "PART n=%d near=%d(%.1fu) held=%d v0=%.2f v1=%.2f\n",
-				n, near_i, near_d, vr.part_held,
-				vr.part_value[0], vr.part_value[1] );
+			VR_DiagPrintf( "PART n=%d near=%d(%.1fu%s) reach=%.0f held=%d v0=%.2f v1=%.2f\n",
+				n, near_i, near_d, in_reach ? "" : " OUT", vr_part_reach.value,
+				vr.part_held, vr.part_value[0], vr.part_value[1] );
 		}
 	}
 }
