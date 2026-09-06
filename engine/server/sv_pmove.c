@@ -885,6 +885,44 @@ static void SV_RestoreMoveInterpolant( sv_client_t *cl )
 SV_RunCmd
 ===========
 */
+#if !XASH_DEDICATED
+#define VR_THROW_TRACKED 32
+
+/*
+====================
+SV_VRCollectThrown
+
+Everything this player currently has in the air: owned by them, moving, and
+on a movetype the engine tosses rather than drives.
+
+Deliberately a description rather than a list of classnames, so a mod's own
+thrown weapon is caught without being named anywhere.
+====================
+*/
+static int SV_VRCollectThrown( edict_t *owner, edict_t **out, int max )
+{
+	int i, n = 0;
+
+	for( i = svs.maxclients + 1; i < svgame.numEntities && n < max; i++ )
+	{
+		edict_t *e = SV_EdictNum( i );
+
+		if( !e || e->free || e->v.owner != owner )
+			continue;
+
+		if( e->v.movetype != MOVETYPE_TOSS && e->v.movetype != MOVETYPE_BOUNCE )
+			continue;
+
+		if( VectorLength( e->v.velocity ) <= 1.0f )
+			continue;   // resting, not flying
+
+		out[n++] = e;
+	}
+
+	return n;
+}
+#endif
+
 void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 {
 	edict_t	*clent;
@@ -1452,8 +1490,76 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 			}
 		}
 
+#if !XASH_DEDICATED
+		// A THROWN ITEM LEAVES WITH THE SPEED OF THE HAND THAT THREW IT.
+		//
+		// Half-Life throws at constants - the satchel at 274, the snark at 200,
+		// the grenade on a cook timer - so in VR a gentle underarm toss and a
+		// full overarm throw land in exactly the same place. Direction already
+		// comes from the controller, because the aim substitution above redirects
+		// the v_forward these all launch along. Only the speed is still canned.
+		//
+		// Done HERE, against the entity the DLL just spawned, rather than by
+		// teaching a game DLL to ask how hard the player threw. That keeps it
+		// working on an unmodified mod - the same reason firing from the
+		// controller works everywhere - and it needs no protocol, so a desktop
+		// player on the same server is unaffected.
+		//
+		// It also stays out of every weapon's own timing. Nothing here knows or
+		// cares which button throws, or that the grenade cooks while held; it
+		// only notices that something new is now in the air.
+		{
+			float throw_speed = vr_local ? VR_GetThrowSpeed() : 0.0f;
+			edict_t *pre[VR_THROW_TRACKED];
+			int npre = 0;
+
+			if( throw_speed > 0.0f )
+			{
+				// What is ALREADY in the air, so the one that appears during the
+				// think below can be told apart from it. Edict slots get reused,
+				// so a plain high-water mark on the entity count would mistake a
+				// recycled slot for a new throw.
+				npre = SV_VRCollectThrown( clent, pre, VR_THROW_TRACKED );
+			}
+
+			svgame.dllFuncs.pfnPlayerPostThink( clent );
+
+			if( throw_speed > 0.0f )
+			{
+				edict_t *post[VR_THROW_TRACKED];
+				int npost = SV_VRCollectThrown( clent, post, VR_THROW_TRACKED );
+				int i, j;
+
+				for( i = 0; i < npost; i++ )
+				{
+					float cur;
+
+					for( j = 0; j < npre; j++ )
+						if( pre[j] == post[i] ) break;
+
+					if( j < npre )
+						continue;   // was already flying
+
+					// Rescaled, never redirected: the direction is the player's aim
+					// and is already correct, and it is what the on-screen arc was
+					// drawn along.
+					cur = VectorLength( post[i]->v.velocity );
+
+					if( cur > 1.0f )
+					{
+						Con_Reportf( "VR: throw %s %.0f -> %.0f u/s\n",
+							SV_ClassName( post[i] ), cur, throw_speed );
+
+						VectorScale( post[i]->v.velocity, throw_speed / cur,
+							post[i]->v.velocity );
+					}
+				}
+			}
+		}
+#else
 		// run post-think
 		svgame.dllFuncs.pfnPlayerPostThink( clent );
+#endif
 
 #if !XASH_DEDICATED
 		VR_SetFirePhase( VR_FIRE_PHASE_NONE, NULL, 0 );

@@ -191,6 +191,10 @@ qboolean VR_ApplyTwoHandedAim( const vec3_t dom_org, vec3_t ang );
 // True when the equipped viewmodel is a melee weapon (crowbar and friends).
 qboolean VR_HoldingMelee( void );
 
+// Launch speed for a thrown item, from how hard the hand was moving.
+// 0 leaves the game DLL's own throw constant alone.
+float    VR_GetThrowSpeed( void );
+
 // Compute the frame's fire ray once (call early in CL_CreateCmd). Every
 // consumer then reads it via VR_GetFireRay/VR_GetWeaponAim so the laser and
 // the actual shot can never disagree.

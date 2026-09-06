@@ -103,6 +103,7 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 // states a fact about the player and nothing more.
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
+static CVAR_DEFINE_AUTO( vr_reload_model_scale, "0.35", FCVAR_ARCHIVE, "size of the round carried in the hand" );
 static CVAR_DEFINE_AUTO( vr_reload_model_mag, "models/w_9mmclip.mdl", FCVAR_ARCHIVE, "what a carried magazine looks like" );
 static CVAR_DEFINE_AUTO( vr_slide_sound, "weapons/reload3.wav", FCVAR_ARCHIVE, "sound for working a slide rather than a pump" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
@@ -291,6 +292,11 @@ static CVAR_DEFINE_AUTO( vr_laser_dot,    "1.6", FCVAR_ARCHIVE, "laser impact do
 static CVAR_DEFINE_AUTO( vr_laser_range,  "4096", FCVAR_ARCHIVE, "laser sight max range, HL units" );
 
 static CVAR_DEFINE_AUTO( vr_arc,          "1",   FCVAR_ARCHIVE, "grenade trajectory arc: 0 off, 1 on when holding a throwable" );
+static CVAR_DEFINE_AUTO( vr_throw,       "1",    FCVAR_ARCHIVE, "thrown items leave with the speed of the hand that threw them" );
+static CVAR_DEFINE_AUTO( vr_throw_scale, "1.6",  FCVAR_ARCHIVE, "hand speed to launch speed multiplier" );
+static CVAR_DEFINE_AUTO( vr_throw_min,   "220",  FCVAR_ARCHIVE, "slowest a thrown item may leave, HL units/sec" );
+static CVAR_DEFINE_AUTO( vr_throw_max,   "1100", FCVAR_ARCHIVE, "fastest a thrown item may leave, HL units/sec" );
+static CVAR_DEFINE_AUTO( vr_throw_window,"0.30", FCVAR_ARCHIVE, "seconds of wind-up a throw remembers" );
 static CVAR_DEFINE_AUTO( vr_arc_speed,    "500", FCVAR_ARCHIVE, "assumed throw speed for the arc, HL units/sec (HL grenade is ~500 + view velocity)" );
 static CVAR_DEFINE_AUTO( vr_arc_gravity,  "800", FCVAR_ARCHIVE, "gravity used for the arc, HL units/sec^2 (sv_gravity default 800)" );
 static CVAR_DEFINE_AUTO( vr_arc_steps,    "48",  FCVAR_ARCHIVE, "arc simulation steps (higher = smoother)" );
@@ -666,6 +672,7 @@ static struct
 	float         move_x, move_y;   // -1..1 locomotion stick
 	float         turn_x, turn_y;   // -1..1 turn stick
 	qboolean      select_open;       // weapon select HUD up (grip + stick click)
+	double        select_idle;       // when an untouched select is assumed gone
 	qboolean      sh_inside;        // dominant hand is in the shoulder hotspot
 	qboolean      sh_light_inside;  // off hand is in the flashlight hotspot
 	qboolean      sh_swapped;       // we swapped to melee from the hotspot
@@ -680,6 +687,9 @@ static struct
 	// Working the action. Separate from reloading because it gates FIRING,
 	// and a pump gun needs it after every shot rather than only when empty.
 	qboolean      act_needs;        // the action is spent and must be worked
+	qboolean      act_open;         // a slide locked back, resting open until racked
+	qboolean      act_rearm;        // hand must leave the weapon before a stroke can start
+	float         throw_peak;       // trailing peak hand speed, HL units/sec
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
@@ -2985,7 +2995,12 @@ void VR_DrawHeldRound( void )
 		vr_round_ent.curstate.framerate = 1.0f;
 		vr_round_ent.curstate.rendermode = kRenderNormal;
 		vr_round_ent.curstate.renderamt = 255;
-		vr_round_ent.curstate.scale = 1.0f;
+		// WORLD MODELS ARE NOT HAND-SIZED.
+		//
+		// A pickup magazine is built to be spotted across a room, so held at
+		// arm length it is enormous. Scaled down to something a hand could
+		// actually be holding.
+		vr_round_ent.curstate.scale = Q_max( 0.01f, vr_reload_model_scale.value );
 	}
 
 	// Same synthetic-index safety as the hands and the off-hand weapon: in
@@ -2993,6 +3008,7 @@ void VR_DrawHeldRound( void )
 	if( clgame.maxEntities <= 8 )
 		return;
 	vr_round_ent.index = clgame.maxEntities - 4;
+	vr_round_ent.curstate.scale = Q_max( 0.01f, vr_reload_model_scale.value );
 
 	VectorCopy( org, vr_round_ent.origin );
 	VectorCopy( org, vr_round_ent.curstate.origin );
@@ -4968,6 +4984,96 @@ static qboolean VR_HoldingThrowable( void )
 	    || Q_stristr( name, "v_squeak" ) != NULL;
 }
 
+/*
+====================
+VR_UpdateThrow
+
+How hard the hand is moving, kept as a decaying peak.
+
+A throw is not the instant the item leaves. By the time the hand opens it is
+already decelerating, and on a weapon that throws the moment the trigger goes
+down - the satchel and the snark both do - the release is not even the end of
+the motion. Either way the speed AT the throw is the wrong number.
+
+So the peak is remembered and allowed to decay, and whenever the game decides
+to let go, the wind-up that preceded it is still there to be read. Nothing has
+to know which button a given weapon throws on, or whether it cooks first, and
+the grenade keeps its own hold-to-cook behaviour untouched.
+
+Differentiated in PLAY space for the reason the melee swing detector already
+documents: world space carries the body along, and a sprint alone reads as a
+hard throw.
+====================
+*/
+static void VR_UpdateThrow( void )
+{
+	static vec3_t prev_org;
+	static qboolean have_prev = false;
+	const vr_pose_t *pose;
+	vec3_t delta;
+	float speed, window;
+
+	if( !VR_IsActive() || vr_throw.value == 0.0f )
+	{
+		vr.throw_peak = 0.0f;
+		have_prev = false;
+		return;
+	}
+
+	pose = VR_GetHandPose( VR_DominantHand( ));
+
+	if( !pose || !pose->valid || host.frametime <= 0.0 )
+	{
+		have_prev = false;
+		return;
+	}
+
+	if( !have_prev )
+	{
+		VectorCopy( pose->origin, prev_org );
+		have_prev = true;
+		return;
+	}
+
+	VectorSubtract( pose->origin, prev_org, delta );
+	VectorCopy( pose->origin, prev_org );
+
+	speed = VectorLength( delta ) / (float)host.frametime;
+
+	// Decayed rather than windowed, so there is no ring buffer to size and a
+	// throw that takes longer than expected still finds its wind-up.
+	window = Q_max( 0.05f, vr_throw_window.value );
+	vr.throw_peak *= expf( -(float)host.frametime / window );
+
+	if( speed > vr.throw_peak )
+		vr.throw_peak = speed;
+}
+
+/*
+====================
+VR_GetThrowSpeed
+
+Launch speed for whatever the player is about to throw, or 0 to leave the
+game DLL's own constant alone.
+
+Read by the server around PlayerPostThink, where a thrown entity appears.
+====================
+*/
+float VR_GetThrowSpeed( void )
+{
+	float want;
+
+	if( !VR_IsActive() || vr_throw.value == 0.0f || !VR_HoldingThrowable( ))
+		return 0.0f;
+
+	want = vr.throw_peak * vr_throw_scale.value;
+
+	// A floor, because a thrown object that barely leaves the hand lands on
+	// the player's own feet, and with a satchel that is not a funny outcome.
+	return bound( Q_max( 1.0f, vr_throw_min.value ), want,
+		Q_max( vr_throw_min.value, vr_throw_max.value ));
+}
+
 static void VR_DrawArc( void )
 {
 	vec3_t org, fwd, pos, vel, next;
@@ -4982,7 +5088,20 @@ static void VR_DrawArc( void )
 	grav  = vr_arc_gravity.value;
 
 	VectorCopy( org, pos );
-	VectorScale( fwd, vr_arc_speed.value, vel );
+	// THE ARC SHOWS THE THROW THE PLAYER IS ACTUALLY WINDING UP.
+	//
+	// It was drawn at a fixed speed, which was honest while the game threw
+	// at a fixed speed too. Now that the hand sets it, a static arc would
+	// promise one landing spot and deliver another - so it reads the same
+	// number the throw will use, and the line stretches as the arm loads.
+	{
+		float launch = VR_GetThrowSpeed();
+
+		if( launch <= 0.0f )
+			launch = vr_arc_speed.value;
+
+		VectorScale( fwd, launch, vel );
+	}
 
 	ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
 	VR_BindOverlayTexture();
@@ -5610,7 +5729,66 @@ static void VR_UpdateAction( void )
 	// the action sits wherever the hand has it, always, and zero means shut.
 	// Weapons with no action sequence are ignored by the renderer anyway, so
 	// publishing unconditionally costs them nothing.
-	refState.actionProgress = VR_IsActive() ? vr.act_pull : -1.0f;
+	// A LOCKED-BACK SLIDE RESTS OPEN.
+	//
+	// Zero means shut, which is right for a pump - it sits forward and the
+	// hand takes it back. A self-loader is the other way round: when it runs
+	// dry the slide stays back, and it is the hand that sends it home.
+	//
+	// Publishing act_pull for both held the slide forward through every state
+	// where the gun was actually open, so seating a magazine appeared to rack
+	// the weapon by itself - the slide was already drawn shut and had been
+	// since the gun emptied.
+	//
+	// Open, it still follows the hand - it just rests at the other end.
+	//
+	// Pinning it at the back while open was worse than it sounds: the value
+	// then only ever read 1 or 0, so the slide had no travel at all. It sat
+	// locked back and jumped shut on the frame the stroke registered, which
+	// is precisely a gun racking itself while the hand that racked it does
+	// nothing visible.
+	//
+	// So: back until it has been drawn back (act_back), and from there home
+	// with the hand as the pull falls away. Same continuous stroke the pump
+	// gets - the only difference is which end it rests at.
+	// AN OPEN SLIDE MOVES ONLY IN A HAND THAT IS HOLDING IT.
+	//
+	// Stated as a rule about the grip rather than about flags, because two
+	// attempts to spell out the correct flag combination both left a path
+	// where the slide shut on its own, and a third guess is not worth the
+	// round trip. There is no combination of internal state that closes a
+	// slide nobody is touching: it stays back, and travelling home requires
+	// a hand on it that has drawn it back first.
+	{
+		float prog = vr.act_pull;
+
+		if( vr.act_open )
+		{
+			qboolean held = VR_IsActive() && VR_GetButton( VR_BTN_OFFGRIP );
+
+			prog = ( vr.act_back && held ) ? vr.act_pull : 1.0f;
+		}
+
+		refState.actionProgress = VR_IsActive() ? prog : -1.0f;
+	}
+
+	// Every frame, ahead of the early exits, because the state that matters
+	// here is the state where nothing is owed - which is exactly the state
+	// the trace at the bottom of this function can never reach.
+	if( vr_diag.value != 0.0f )
+	{
+		static double next = 0.0;
+
+		if( host.realtime >= next )
+		{
+			next = host.realtime + 0.1;
+			VR_DiagPrintf( "SLIDE clip=%d open=%d needs=%d back=%d armed=%d pull=%.2f hold=%d rearm=%d ref=%.1f out=%.2f\n",
+				vr.rl_clip, vr.act_open ? 1 : 0, vr.act_needs ? 1 : 0,
+				vr.act_back ? 1 : 0, vr.act_armed ? 1 : 0, vr.act_pull,
+				vr.rl_holding ? 1 : 0, vr.act_rearm ? 1 : 0, vr.act_ref,
+				refState.actionProgress );
+		}
+	}
 
 	// Before any exit, for the same reason the publish is. A trigger pull
 	// noticed only on frames that reach the bottom of this function is a
@@ -5627,6 +5805,7 @@ static void VR_UpdateAction( void )
 	if( !VR_IsActive() || vr_pump.value == 0.0f )
 	{
 		vr.act_needs = false;
+		vr.act_open = false;
 		return;
 	}
 
@@ -5659,6 +5838,7 @@ static void VR_UpdateAction( void )
 		vr.act_have_clip = false;
 		vr.act_fired = false;
 		vr.act_needs = false;
+		vr.act_open = false;
 		vr.act_armed = false;
 		return;
 	}
@@ -5666,6 +5846,7 @@ static void VR_UpdateAction( void )
 	if( !wp || !wp->valid || ( !wp->pump && !wp->slide ))
 	{
 		vr.act_needs = false;
+		vr.act_open = false;
 		if( vr.rl_clip >= 0 )
 		vr.act_clip = vr.rl_clip;
 		return;
@@ -5727,6 +5908,12 @@ static void VR_UpdateAction( void )
 		&& vr.act_clip == 0 && vr.rl_clip > 0 )
 		vr.act_needs = true;
 
+	// Empty means open, on anything with a slide. The last round takes the
+	// slide back and the catch holds it there - that is the state the player
+	// has to see, and it is what makes a magazine change legible.
+	if( wp->slide && vr.act_have_clip && vr.rl_clip == 0 )
+		vr.act_open = true;
+
 	vr.act_clip = vr.rl_clip;
 
 	// A HAND WITH A SHELL IN IT IS NOT WORKING THE ACTION.
@@ -5745,6 +5932,18 @@ static void VR_UpdateAction( void )
 		vr.act_pull = 0.0f;
 		vr.act_back = false;
 		vr.act_sounded = false;
+		// SLIDES ONLY.
+		//
+		// The gate below wants either a fresh grip or a hand out past reach,
+		// and a braced shotgun offers neither: the off hand stays closed on
+		// the fore-end and well inside reach the entire time. Raising this
+		// for a pump would have left it unable to cycle after loading a
+		// shell - the same lockup that once cost sixteen hundred frames.
+		//
+		// A slide is not braced that way, and the settle window still covers
+		// the pump case it was written for.
+		if( wp && wp->slide && !wp->pump )
+			vr.act_rearm = true;
 		vr.act_settle = host.realtime + 0.4;
 		return;
 	}
@@ -5773,6 +5972,52 @@ static void VR_UpdateAction( void )
 	AngleVectors( wang, fwd, NULL, NULL );
 	VectorSubtract( hand, wpn, d );
 	proj = DotProduct( d, fwd );
+
+	// A HAND LEAVING THE GUN IS NOT A STROKE.
+	//
+	// Seating a magazine ends with the hand at the weapon and closed around
+	// it - which is exactly the arming condition below. So the stroke armed
+	// on the spot, seated its reference at the gun, and then the player
+	// taking their hand away measured as a full pull to the back. The slide
+	// racked itself on every reload, and no amount of correcting what the
+	// slide DREW could help, because the stroke really was completing.
+	//
+	// A settle timer could not fix this either: it has to outlast a hand
+	// withdrawing, which has no fixed duration.
+	//
+	// So the precondition is physical rather than timed. After a round goes
+	// in, the hand has to be clear of the weapon before anything can arm.
+	// Leaving is then consumed as leaving, and the stroke can only begin on
+	// a hand that comes back.
+	if( vr.act_rearm )
+	{
+		vr.act_armed = false;
+		vr.act_pull = 0.0f;
+		vr.act_back = false;
+		vr.act_sounded = false;
+
+		// CLOSING THE HAND AGAIN, which an insertion always produces: the
+		// round only goes in when the hand OPENS to let go of it, so closing
+		// it again is a deliberate new hold rather than the tail of the last
+		// one. No distance to tune and nothing to withdraw far enough past.
+		//
+		// A fresh grip could not be demanded for the pump - a braced shotgun
+		// is already held when the shot goes off, so the edge never came and
+		// the weapon locked up. It is safe here because this only ever gates
+		// the frames after a round goes in, where the hand demonstrably just
+		// opened.
+		//
+		// Distance stays as a second way out, at plain reach rather than a
+		// multiple of it. Measured from the muzzle, 1.25x reach was 55 units
+		// - further than an off hand withdraws - and the gate simply never
+		// opened. Two independent releases, so this cannot deadlock.
+		if(( grip && !grip_prev )
+			|| VectorLength( d ) > Q_max( 1.0f, vr_pump_reach.value ))
+			vr.act_rearm = false;
+
+		grip_prev = grip;
+		return;
+	}
 
 	// TAKE HOLD, not take hold ANEW.
 	//
@@ -5813,6 +6058,7 @@ static void VR_UpdateAction( void )
 		if( vr.act_back )
 		{
 			vr.act_needs = false;
+			vr.act_open = false;
 			vr.act_worked = true;
 
 			VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 1.0f );
@@ -5898,6 +6144,7 @@ static void VR_UpdateAction( void )
 		if( vr.act_back && pull <= 0.5f )
 		{
 			vr.act_needs = false;
+			vr.act_open = false;
 			vr.act_back = false;
 			vr.act_pull = 0.0f;
 			vr.act_sounded = false;
@@ -6652,6 +6899,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_reload_model_scale );
 	Cvar_RegisterVariable( &vr_reload_model_mag );
 	Cvar_RegisterVariable( &vr_slide_sound );
 	Cvar_RegisterVariable( &vr_reload_model );
@@ -6697,6 +6945,11 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_laser_width );
 	Cvar_RegisterVariable( &vr_laser_dot );
 	Cvar_RegisterVariable( &vr_laser_range );
+	Cvar_RegisterVariable( &vr_throw );
+	Cvar_RegisterVariable( &vr_throw_scale );
+	Cvar_RegisterVariable( &vr_throw_min );
+	Cvar_RegisterVariable( &vr_throw_max );
+	Cvar_RegisterVariable( &vr_throw_window );
 	Cvar_RegisterVariable( &vr_arc );
 	Cvar_RegisterVariable( &vr_arc_speed );
 	Cvar_RegisterVariable( &vr_arc_gravity );
@@ -7764,6 +8017,8 @@ static void VR_SyncInput( void )
 			// invnext already does in that state.
 			if( cyc && !cyc_prev )
 			{
+				vr.select_idle = host.realtime + 3.0;
+
 				const char *dir = ( stick_x > 0.0f ) ? "invnext" : "invprev";
 				
 				VR_DiagPrintf( "SELCYC dir=%s open=%d grip=%d turn_x=%.2f move_x=%.2f\n",
@@ -7777,6 +8032,8 @@ static void VR_SyncInput( void )
 	
 			if( click && !click_prev )
 			{
+				vr.select_idle = host.realtime + 3.0;
+
 				if( !vr.select_open )
 				{
 					// The select HUD only appears with fast-switch OFF;
@@ -7796,6 +8053,29 @@ static void VR_SyncInput( void )
 			}
 		}
 	
+		// THE SELECT CLOSES ITSELF AND NEVER SAYS SO.
+		//
+		// GoldSrc fades the select HUD out on its own after a few seconds, and
+		// the mod also drops it on a confirm. Neither reaches this flag, so it
+		// latched true on the first stick click of a session and stayed there:
+		// a whole session of cycling logged open=1 on every single flick and
+		// none with it closed. Every later grip+stick then walked a highlight
+		// no longer on screen instead of switching outright, and the player
+		// hud_fastswitch stayed parked at 0 for the rest of the run.
+		//
+		// Grip is the modifier the whole layer hangs off, so letting go of it
+		// ends the layer. The idle timeout is a second, independent way down,
+		// because a flag with only one way down is how this stuck to begin
+		// with.
+		if( vr.select_open && ( !grip || host.realtime > vr.select_idle ))
+		{
+			Cbuf_AddText( "cancelselect\n" );
+			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+			vr.select_open = false;
+			VR_DiagPrintf( "SELCLOSE grip=%d idle=%d\n",
+				grip ? 1 : 0, ( host.realtime > vr.select_idle ) ? 1 : 0 );
+		}
+
 		// The mod closes the select itself once fire confirms, so put the
 		// player's own fast-switch setting back rather than leaving it off for
 		// the rest of the session.
@@ -8211,6 +8491,7 @@ qboolean VR_BeginFrame( void )
 	VR_UpdateShoulderMelee();
 	VR_UpdateReload();
 	VR_UpdateAction();
+	VR_UpdateThrow();
 	VR_UpdateMenu2D();
 
 	VR_DiagSample();
