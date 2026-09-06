@@ -116,6 +116,7 @@ static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapo
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
+static CVAR_DEFINE_AUTO( vr_part_kick, "0.11", FCVAR_ARCHIVE, "seconds a self-loading action takes to cycle when fired; 0 never cycles itself" );
 static CVAR_DEFINE_AUTO( vr_part_reach, "7", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
 static CVAR_DEFINE_AUTO( vr_slide_travel, "0.30", FCVAR_ARCHIVE, "how far a SLIDE must be pulled back, units; a shorter stroke than a fore-end" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
@@ -700,6 +701,9 @@ static struct
 	vec3_t        part_grab_hand;   // where the hand was when it took hold
 	float         part_grab_value;  // where the part was when it was taken hold of
 	float         part_value[VR_MAX_PARTS];
+	double        part_fired;       // when the action was last cycled by firing
+	int           part_clip;        // clip count the cycle detector last saw
+	qboolean      mag_out;          // the magazine has been dropped and not replaced
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
@@ -5178,6 +5182,85 @@ static void VR_UpdateParts( void )
 
 	grip_prev = grip;
 
+	// A SELF-LOADER CYCLES ITSELF. THE HAND ONLY DOES IT BY HAND.
+	//
+	// Pinning every part wherever the hand left it is right for a pump, which
+	// genuinely does not move unless worked, and wrong for a pistol, which
+	// throws its own slide every shot. Driving parts stopped the animation
+	// from doing it, and nothing replaced it, so the slide simply sat still
+	// through firing.
+	//
+	// Replaced with the motion itself rather than the animation of it: out to
+	// full extent and back, fast, as an impulse on the part. That is closer
+	// to what the mechanism does anyway, and it cannot fight the player -
+	// a part in the hand is the hand's, always.
+	{
+		int clip = vr.rl_clip;
+
+		// Fired, as opposed to a trigger pull that did nothing: the count
+		// actually went down. A dry click cycles nothing.
+		if( clip >= 0 && vr.part_clip >= 0 && clip < vr.part_clip )
+			vr.part_fired = host.realtime;
+
+		vr.part_clip = clip;
+	}
+
+	if( vr.part_held != 0 && vr_part_kick.value > 0.0f && vr.part_fired > 0.0 )
+	{
+		double age = host.realtime - vr.part_fired;
+		float out = (float)vr_part_kick.value * 0.3f;
+		float back = (float)vr_part_kick.value * 0.7f;
+
+		if( age < out )
+			vr.part_value[0] = (float)( age / out );
+		else if( age < out + back )
+			vr.part_value[0] = 1.0f - (float)(( age - out ) / back );
+		else
+		{
+			vr.part_value[0] = 0.0f;
+			vr.part_fired = 0.0;
+		}
+
+		refState.vrParts[0].value = vr.part_value[0];
+	}
+
+	// AND IT STAYS BACK WHEN THE GUN IS EMPTY.
+	//
+	// The locked-back state was published through actionProgress, which the
+	// renderer stopped reading when parts took over - so an empty weapon
+	// silently went back to looking closed. It belongs on the part now, since
+	// the part is what is drawn.
+	// The magazine part, wherever the player named one. A weapon that keeps
+	// its magazine on a bone can show it gone; one that does not simply will
+	// not, and nothing here has to know which is which.
+	{
+		int m;
+
+		if( vr.rl_clip > vr.part_clip && vr.part_clip >= 0 )
+			vr.mag_out = false;   // something went back in
+
+		for( m = 0; m < n; m++ )
+		{
+			if( !Q_stristr( refState.vrParts[m].name, "clip" )
+				&& !Q_stristr( refState.vrParts[m].name, "mag" ))
+				continue;
+
+			if( vr.part_held != m && vr.mag_out )
+			{
+				vr.part_value[m] = 1.0f;
+				refState.vrParts[m].value = 1.0f;
+			}
+			break;
+		}
+	}
+
+	if( vr.part_held != 0 && vr.act_open )
+	{
+		vr.part_value[0] = 1.0f;
+		vr.part_fired = 0.0;
+		refState.vrParts[0].value = 1.0f;
+	}
+
 	if( vr_diag.value != 0.0f )
 	{
 		static double next = 0.0;
@@ -6437,6 +6520,16 @@ int VR_GetDropMagImpulse( void )
 	edge = ( now && !prev );
 	prev = now;
 
+	// A DROPPED MAGAZINE IS OUT OF THE GUN, not merely subtracted from it.
+	//
+	// Where the model puts the magazine on its own bone - the rifle does -
+	// the part can simply be held at the far end of its travel, which IS the
+	// magazine out of the magwell. No new content, no hiding geometry: the
+	// model already contains the pose, it was only ever reachable by playing
+	// the reload animation.
+	if( edge )
+		vr.mag_out = true;
+
 	return edge ? 211 : 0;
 }
 
@@ -7119,6 +7212,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_parts );
 	Cvar_RegisterVariable( &vr_part_reach );
+	Cvar_RegisterVariable( &vr_part_kick );
 	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_grab );
