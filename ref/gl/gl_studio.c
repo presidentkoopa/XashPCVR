@@ -64,6 +64,10 @@ typedef struct
 	// bones
 	matrix3x4		rotationmatrix;
 	matrix3x4		bonestransform[MAXSTUDIOBONES];
+	// Each bone relative to its PARENT, kept so a bone driven by hand can have
+	// its descendants rebuilt onto the new pose. Without it the only safe part
+	// to drive is a leaf, and a non-leaf silently detaches its whole chain.
+	matrix3x4		bonelocal[MAXSTUDIOBONES];
 	matrix3x4		lighttransform[MAXSTUDIOBONES];
 
 	// boneweighting stuff
@@ -869,6 +873,7 @@ static void R_StudioMergeBones( cl_entity_t *e, model_t *m_pSubModel )
 		{
 			matrix3x4 bonematrix;
 			Matrix3x4_FromOriginQuat( bonematrix, q[i], pos[i] );
+			Matrix3x4_Copy( g_studio.bonelocal[i], bonematrix );
 			if( pbones[i].parent == -1 )
 			{
 				Matrix3x4_ConcatTransforms( g_studio.bonestransform[i], g_studio.rotationmatrix, bonematrix );
@@ -3483,6 +3488,56 @@ static void R_StudioApplyHandAction( void )
 		pub->present = true;
 
 		gpGlobals->vrPartCount = i + 1;
+	}
+
+	// EVERYTHING HANGING OFF A DRIVEN PART MOVES WITH IT.
+	//
+	// Only the driven bone was written, which is correct only while every
+	// configured part is a leaf. It is not a safe assumption to leave standing:
+	// name any bone with children in r_vr_action_bone - a revolver cylinder
+	// carrying six shells, a crossbow slide carrying its bolt - and the
+	// children keep their animated world transforms while the parent moves,
+	// so the chain silently comes apart.
+	//
+	// Studio bones are stored parent-before-child, so one forward sweep is
+	// enough; a bone is rebuilt only if its parent was touched and it is not
+	// itself driven.
+	//
+	// lighttransform is written alongside, because it is a SECOND chain built
+	// from the same locals and R_StudioLighting reads it. Writing only
+	// bonestransform lit every driven part in the pose its animation would
+	// have had rather than the pose the hand put it in.
+	{
+		static byte touched[MAXSTUDIOBONES];
+		int lo = m_pStudioHeader->numbones;
+
+		memset( touched, 0, m_pStudioHeader->numbones );
+
+		for( i = 0; i < n && i < VR_MAX_PARTS; i++ )
+		{
+			touched[vr_parts[i].bone] = 1;
+			if( vr_parts[i].bone < lo )
+				lo = vr_parts[i].bone;
+
+			// The driven bone lights from where it now is, not where it was.
+			Matrix3x4_Copy( g_studio.lighttransform[vr_parts[i].bone],
+				g_studio.bonestransform[vr_parts[i].bone] );
+		}
+
+		for( i = lo + 1; i < m_pStudioHeader->numbones; i++ )
+		{
+			int par = pbones[i].parent;
+
+			if( touched[i] || par < 0 || !touched[par] )
+				continue;
+
+			Matrix3x4_ConcatTransforms( g_studio.bonestransform[i],
+				g_studio.bonestransform[par], g_studio.bonelocal[i] );
+			Matrix3x4_ConcatTransforms( g_studio.lighttransform[i],
+				g_studio.lighttransform[par], g_studio.bonelocal[i] );
+
+			touched[i] = 1;
+		}
 	}
 
 	if( r_vr_action_debug.value != 0.0f )
