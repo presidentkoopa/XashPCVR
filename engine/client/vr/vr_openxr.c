@@ -9609,13 +9609,38 @@ static void VR_SyncInput( void )
 		// ends the layer. The idle timeout is a second, independent way down,
 		// because a flag with only one way down is how this stuck to begin
 		// with.
-		if( vr.select_open && ( !grip || host.realtime > vr.select_idle ))
+		// LETTING GO TAKES THE WEAPON. It does not throw it away.
+		//
+		// Releasing the modifier used to issue cancelselect, so the player held
+		// grip, flicked through the menu to the weapon they wanted, let go - and
+		// got nothing. Measured: nine cycles through an open select in one
+		// session and not a single weapon taken.
+		//
+		// Hold, choose, release is the whole gesture. The release is the choice,
+		// which is why it must confirm.
+		//
+		// Confirming needs the CLIENT DLL's own button accumulator, not ours:
+		// ammo.cpp takes the weapon on gHUD.m_iKeyBits & IN_ATTACK, and that is
+		// filled from CL_ButtonBits() - driven by the "+attack" COMMAND. Setting
+		// cmd->buttons never reaches it. Issuing the command is also what stops
+		// the gun going off: ammo.cpp clears the bit on confirm, exactly as it
+		// does for a desktop player.
+		if( vr.select_open && !grip )
 		{
+			Cbuf_AddText( "+attack\n-attack\n" );
+			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+			vr.select_open = false;
+			VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.6f );
+			VR_DiagPrintf( "SELTAKE released, weapon confirmed\n" );
+		}
+		else if( vr.select_open && host.realtime > vr.select_idle )
+		{
+			// Gone quiet with the modifier still held - the player wandered off
+			// rather than chose, so nothing is taken.
 			Cbuf_AddText( "cancelselect\n" );
 			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
 			vr.select_open = false;
-			VR_DiagPrintf( "SELCLOSE grip=%d idle=%d\n",
-				grip ? 1 : 0, ( host.realtime > vr.select_idle ) ? 1 : 0 );
+			VR_DiagPrintf( "SELCLOSE idle\n" );
 		}
 
 		// The mod closes the select itself once fire confirms, so put the
