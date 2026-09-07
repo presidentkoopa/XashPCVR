@@ -433,6 +433,7 @@ static CVAR_DEFINE_AUTO( vr_haptics, "1", FCVAR_ARCHIVE, "haptic feedback streng
 // Off-hand flashlight: 0 = stock head-mounted, 1 = off hand, 2 = weapon hand.
 static CVAR_DEFINE_AUTO( vr_flashlight_hand, "0", FCVAR_ARCHIVE, "flashlight mount: 0 head, 1 off hand, 2 weapon hand" );
 
+static CVAR_DEFINE_AUTO( vr_seat_rotate, "1", FCVAR_ARCHIVE, "orient boreless models (thrown things) from their own hand bone instead of a gun calibration" );
 static CVAR_DEFINE_AUTO( vr_seat_pivot, "1", FCVAR_ARCHIVE, "seat the weapon on the hand's own grip point, measured from the model" );
 static CVAR_DEFINE_AUTO( vr_seat_grip_pose, "1", FCVAR_ARCHIVE, "seat on the GRIP pose (the palm) rather than the aim pose" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_fwd,  "-5.139", FCVAR_ARCHIVE, "hand mesh pivot point, model-space X (forward), HL units" );
@@ -776,6 +777,7 @@ static struct
 	float         part_value[VR_MAX_PARTS];
 	double        part_fired;       // when the action was last cycled by firing
 	int           part_clip;        // clip count the cycle detector last saw
+	int           part_clip_prev;   // and the count before that, for the magazine
 	qboolean      mag_out;          // the magazine has been dropped and not replaced
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
@@ -3060,6 +3062,108 @@ Seat the equipped weapon on the dominant hand. Returns false if it could not,
 in which case the caller keeps doing exactly what it did before.
 ================
 */
+/*
+================
+VR_SeatAngles
+
+Orientation for a model that has no bore to aim.
+
+A gun is oriented by its muzzle: VR_AlignModelToFireRay measures where the
+barrel actually points and corrects the mesh so the bore follows the shot.
+That is exactly right and is left alone here - the visual and the fire ray
+must agree, and nothing about a thrown object is worth breaking that for.
+
+But a snark, a satchel and a tripmine have no bore, so that whole correction
+bails out on them and they inherit a calibration fitted to guns. Each is then
+wrong by however its own rest pose happens to differ - reported as the snark
+pointing 90 degrees down and the satchel and tripmine flipped over.
+
+The model can answer this too. Its hand bone has an orientation, not just a
+position, and the controller's grip pose has one. Matching them is the same
+measurement as seating, one step further:
+
+    the hand is drawn at  R(a) * B      B = the hand bone's model-space rotation
+    we want that to equal G            G = the grip pose's world rotation
+    so                    R(a) = G * B^-1
+
+B is orthonormal, so its inverse is its transpose.
+
+The renderer's model-to-world basis has columns ( F, -Rt, U ) - the middle one
+negated, because AngleVectors' right vector is the image of model -Y. Both
+matrices are built that way here so the negation cancels rather than becoming
+the 180-degree error this is meant to fix.
+================
+*/
+static qboolean VR_SeatAngles( cl_entity_t *view, vec3_t out_ang )
+{
+	static matrix3x4 bones[MAXSTUDIOBONES];
+	studiohdr_t *hdr;
+	vec3_t gorg, gang, gf, gr, gu;
+	vec3_t rf, rr, ru;
+	float B[3][3], G[3][3], R[3][3];
+	int hand, i, j, k;
+
+	if( vr_seat_rotate.value == 0.0f || !view || !view->model )
+		return false;
+
+	// Guns keep the bore alignment. This is only for what it refuses.
+	if( VR_ModelHasBore( view->model ))
+		return false;
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( view->model );
+
+	if( !hdr || !Mod_StudioBoneTransforms( view->model, 0, 0.0f, bones ))
+		return false;
+
+	hand = VR_StudioFindHandBone( hdr, VR_DominantHand( ));
+
+	if( hand < 0 )
+		return false;
+
+	if( !VR_GetHandGripWorld( VR_DominantHand( ), gorg, gang ))
+		return false;
+
+	AngleVectors( gang, gf, gr, gu );
+
+	// Both in the renderer's own convention, columns ( F, -Rt, U ).
+	for( i = 0; i < 3; i++ )
+	{
+		G[i][0] =  gf[i];
+		G[i][1] = -gr[i];
+		G[i][2] =  gu[i];
+
+		B[i][0] = bones[hand][i][0];
+		B[i][1] = bones[hand][i][1];
+		B[i][2] = bones[hand][i][2];
+	}
+
+	// R = G * B^T
+	for( i = 0; i < 3; i++ )
+	{
+		for( j = 0; j < 3; j++ )
+		{
+			R[i][j] = 0.0f;
+
+			for( k = 0; k < 3; k++ )
+				R[i][j] += G[i][k] * B[j][k];
+		}
+	}
+
+	for( i = 0; i < 3; i++ )
+	{
+		rf[i] =  R[i][0];
+		rr[i] = -R[i][1];
+		ru[i] =  R[i][2];
+	}
+
+	VectorNormalize( rf );
+	VectorNormalize( rr );
+	VectorNormalize( ru );
+
+	VR_AnglesFromBasis( rf, rr, ru, out_ang );
+	return true;
+}
+
 qboolean VR_SeatViewmodel( cl_entity_t *view, const vec3_t ang_physical )
 {
 	vec3_t grip, palm, org;
@@ -3076,7 +3180,23 @@ qboolean VR_SeatViewmodel( cl_entity_t *view, const vec3_t ang_physical )
 
 	ysign = ( view->curstate.scale < 0.0f ) ? -1.0f : 1.0f;
 
-	VR_SeatOnHand( palm, ang_physical, grip, ysign, org );
+	// A boreless model orients from its own hand bone; everything with a
+	// barrel keeps the muzzle alignment, so the shot and the picture agree.
+	{
+		vec3_t rot;
+
+		if( VR_SeatAngles( view, rot ))
+		{
+			VectorCopy( rot, view->angles );
+			VectorCopy( rot, view->curstate.angles );
+			VectorCopy( rot, view->latched.prevangles );
+			VR_SeatOnHand( palm, rot, grip, ysign, org );
+		}
+		else
+		{
+			VR_SeatOnHand( palm, ang_physical, grip, ysign, org );
+		}
+	}
 
 	VectorCopy( org, view->origin );
 	VectorCopy( org, view->curstate.origin );
@@ -5636,6 +5756,12 @@ static void VR_UpdateParts( void )
 		if( clip >= 0 && vr.part_clip >= 0 && clip < vr.part_clip )
 			vr.part_fired = host.realtime;
 
+		// Kept for the magazine test below, which has to compare against what
+		// the count WAS. Updating first made "the clip went up, so a magazine
+		// went in" compare rl_clip against itself - never true, so a dropped
+		// magazine never went back and sat outside the gun for the rest of the
+		// session.
+		vr.part_clip_prev = vr.part_clip;
 		vr.part_clip = clip;
 	}
 
@@ -5683,7 +5809,7 @@ static void VR_UpdateParts( void )
 	{
 		int m;
 
-		if( vr.rl_clip > vr.part_clip && vr.part_clip >= 0 )
+		if( vr.rl_clip > vr.part_clip_prev && vr.part_clip_prev >= 0 )
 			vr.mag_out = false;   // something went back in
 
 		for( m = 0; m < n; m++ )
@@ -8546,6 +8672,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_weapon_pitch_offset );
 	Cvar_RegisterVariable( &vr_weapon_yaw_offset );
 	Cvar_RegisterVariable( &vr_weapon_roll_offset );
+	Cvar_RegisterVariable( &vr_seat_rotate );
 	Cvar_RegisterVariable( &vr_seat_pivot );
 	Cvar_RegisterVariable( &vr_seat_grip_pose );
 	Cvar_RegisterVariable( &vr_hand_pivot_fwd );
