@@ -376,6 +376,17 @@ static CVAR_DEFINE_AUTO( vr_roomscale_max, "600", FCVAR_ARCHIVE, "cap on room-sc
 static CVAR_DEFINE_AUTO( vr_lefthand, "0", FCVAR_ARCHIVE, "left-handed: weapon in the left hand" );
 static CVAR_DEFINE_AUTO( vr_height, "68", FCVAR_ARCHIVE, "your standing eye height in units, ~1 unit per inch" );
 static CVAR_DEFINE_AUTO( vr_height_offset, "0", FCVAR_ARCHIVE, "shift the view up or down from the tracked height" );
+static CVAR_DEFINE_AUTO( vr_body, "1", FCVAR_ARCHIVE, "solve a torso from the head and hands, and hang the reach hotspots off it" );
+static CVAR_DEFINE_AUTO( vr_body_debug, "0", FCVAR_ARCHIVE, "report the solved body and the residual reach offsets" );
+static CVAR_DEFINE_AUTO( vr_torso_limit, "60", FCVAR_ARCHIVE, "how far the head may turn before the shoulders follow, degrees" );
+static CVAR_DEFINE_AUTO( vr_neck_derive, "0", FCVAR_ARCHIVE, "use the SOLVED neck pivot for locomotion instead of vr_neck_up/fwd" );
+static CVAR_DEFINE_AUTO( vr_shoulder_grab_back, "4", FCVAR_ARCHIVE, "over-shoulder hotspot, behind the shoulder JOINT, units" );
+static CVAR_DEFINE_AUTO( vr_shoulder_grab_up, "2", FCVAR_ARCHIVE, "over-shoulder hotspot, above the shoulder JOINT, units" );
+static CVAR_DEFINE_AUTO( vr_shoulder_grab_radius, "11", FCVAR_ARCHIVE, "over-shoulder hotspot size once solved, units" );
+static CVAR_DEFINE_AUTO( vr_pouch_fwd, "4", FCVAR_ARCHIVE, "ammo pouch, forward of the hip JOINT, units" );
+static CVAR_DEFINE_AUTO( vr_pouch_out, "2", FCVAR_ARCHIVE, "ammo pouch, outboard of the hip JOINT, units" );
+static CVAR_DEFINE_AUTO( vr_pouch_up, "0", FCVAR_ARCHIVE, "ammo pouch, above the hip JOINT, units" );
+static CVAR_DEFINE_AUTO( vr_pouch_radius, "20", FCVAR_ARCHIVE, "ammo pouch size once solved, units" );
 static CVAR_DEFINE_AUTO( vr_seated, "0", FCVAR_ARCHIVE, "seated play: no physical crouch, and the view is raised to standing height" );
 static CVAR_DEFINE_AUTO( vr_seated_lift, "0", FCVAR_ARCHIVE, "extra height for seated play; normally 0 - the view is already anchored to the mod's eye position, so lifting it only makes the player tall" );
 static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
@@ -663,6 +674,64 @@ static struct
 	vr_pose_t     hand_pose[2];      // AIM pose - for weapon pointing direction
 	vr_pose_t     hand_grip_pose[2]; // GRIP pose - for rendering held meshes (hands, weapon model)
 
+	// ---- solved body -------------------------------------------------
+	//
+	// The head-anchored hotspots resolve their side and back offsets in the
+	// head's FULL basis, so looking down swings the shoulder spot forward and
+	// up, while their vertical term is world Z when the other two are
+	// head-relative. Both are fixed by resolving everything in a yaw-only
+	// torso frame hung off a point that is genuinely rigid to the skull -
+	// and that point is measured rather than assumed. See neck_n.
+	qboolean      stage_is_floor;   // STAGE space actually bound. The session
+	                                // falls back to LOCAL, where play-space Z
+	                                // is NOT height above the physical floor,
+	                                // and every stature estimate is meaningless.
+	XrTime        body_sample_t;    // display time of the last accepted sample.
+	                                // VR_ConvertPose sets valid unconditionally,
+	                                // so a failed locate leaves LAST frame's pose
+	                                // in place wearing its old flag - poses go
+	                                // STALE rather than invalid, and an estimator
+	                                // fed frozen samples builds a false consensus.
+
+	// Head rotation centre, head-local (fwd, left, up), solved by least squares
+	// on rotation against translation. A frame of PURE translation contributes
+	// nothing to either accumulator, so walking and room-scale cannot bias it -
+	// which is exactly the distinction VR_NeckOrigin says it needs and a fixed
+	// 8-down/4-back cannot make.
+	vec3_t        neck_n;
+	float         neck_M[6];        // symmetric 3x3 normal equations, decaying
+	vec3_t        neck_v;
+	float         neck_conf;
+	vec3_t        ring_org[16];     // 0.12s stride: consecutive frames at 90Hz
+	vec3_t        ring_f[16], ring_l[16], ring_u[16];  // give a rotation delta
+	XrTime        ring_t[16];       // too small to condition the solve
+	int           ring_head, ring_n;
+
+	// Two scales, deliberately NOT fused. People vary independently in limb
+	// against trunk, and collapsing them would throw away the disagreement -
+	// which is the only signal that says an estimator is broken. A controller
+	// left on a desk shows up here and nowhere else.
+	float         eye95;            // P95 eye height above the physical floor
+	float         span95;           // P95 grip-to-grip, PLAY space, because a
+	                                // separation is invariant to body_yaw and so
+	                                // needs no rotation at all
+	int           eye_n, span_n;
+	float         k_stat, k_arm;    // 1.0 is the 68-unit default player
+	float         conf_h, conf_span;
+
+	// Torso yaw. NOT body_yaw: that is locomotion facing, and a player can
+	// strafe a corridor while looking down it. Circular accumulators rather
+	// than a linear filter, because a player facing near +/-180 averages to
+	// zero under a linear one.
+	float         torso_yaw, torso_S, torso_C, torso_Z, torso_conf;
+
+	vec3_t        anchor_neck, anchor_chest;
+	vec3_t        anchor_shoulder[2], anchor_hip[2];
+	float         body_conf;        // one cross-fade weight. Consumers blend from
+	                                // the legacy head spot to the solved anchor by
+	                                // this, so the gesture geometry never jumps.
+	qboolean      body_valid;
+
 	int           gl_major, gl_minor;
 
 	// ---- input ----
@@ -880,6 +949,7 @@ Periodic snapshot of everything that matters, plus anomaly tracking.
 // Forward declarations: VR_DiagSample (below) reports live hand-mesh state,
 // which needs these before their real definitions later in this file.
 static qboolean VR_GetHandGripWorld( int hand, vec3_t out_org, vec3_t out_ang );
+static void VR_BodyReset( void );
 static model_t   *vr_hand_model_suit;
 static model_t   *vr_hand_model_labcoat;
 static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
@@ -1575,6 +1645,7 @@ void VR_SetWorldReference( const vec3_t origin )
 		// A teleport or level change is not head movement. Drop the previous
 		// sample so the discontinuity is not read as an enormous step.
 		vr.neck_prev_valid = false;
+		VR_BodyReset();
 	}
 }
 
@@ -1608,6 +1679,22 @@ Map a play-space position/orientation into game world space, using the same
 anchor and rotation the eyes use so hands and view agree.
 ================
 */
+// A play-space POINT into world space - the position half of VR_PlayToWorld,
+// split out because the body solve works in points and has no angles to carry.
+static void VR_PlayPointToWorld( const vec3_t p_play, vec3_t out )
+{
+	vec3_t rel;
+	float s, c;
+	const float *hmd_ref = vr.hmd_origin_at_sync_valid ? vr.hmd_origin_at_sync : vr.hmd_pose.origin;
+
+	VectorSubtract( p_play, hmd_ref, rel );
+	SinCos( DEG2RAD( vr.body_yaw ), &s, &c );
+
+	out[0] = vr.world_origin[0] + ( rel[0] * c - rel[1] * s );
+	out[1] = vr.world_origin[1] + ( rel[0] * s + rel[1] * c );
+	out[2] = vr.world_origin[2] + rel[2];
+}
+
 static void VR_PlayToWorld( const vr_pose_t *pose, vec3_t out_org, vec3_t out_ang )
 {
 	vec3_t rel;
@@ -5913,6 +6000,620 @@ the fire ray is computed once and cached.
 ================
 */
 /*
+=================================================================
+	the solved body
+
+Every reach hotspot in this file used to hang off the head at a hand-tuned
+offset: so many units out, so many back, so many down. Those numbers were
+dialled in by feel, once, on one body, standing. They are wrong for anyone
+else, wrong for the same player seated, and one of them - the over-shoulder
+spot at 2 units ABOVE the eye - is wrong by more than ten units AND in the
+wrong direction, because a shoulder is well below the eyes. It only ever
+worked because the radius was large enough to swallow it.
+
+So the body is solved instead of assumed. Everything below is derived from
+what tracking already reports; nothing here is a number somebody liked.
+
+Ratios ARE constants, and they are population means. A long-torso player
+still gets a hip a couple of units off. But a mean-shaped body beats one
+absolute number applied to every human, the error is bounded by the hotspot
+radius, and the residual readout measures the real spread rather than hiding
+it.
+=================================================================
+*/
+#define VR_BODY_H0        ( 68.0f / 0.936f )  // reference stature, units. 68 is
+                                              // vr_height's default and 0.936 the
+                                              // eye-height/stature ratio; the stock
+                                              // player model is 73.33 sole-to-crown,
+                                              // so this is within 1% of the avatar.
+#define VR_GRIP_SPAN_FRAC 0.90f               // grip-to-grip span over stature. Also
+                                              // absorbs a runtime-dependent grip
+                                              // origin - a wand and a knuckle report
+                                              // different origins for one hand - so
+                                              // k_arm is NOT a portable measure of a
+                                              // person and must not be shown as one.
+#define VR_MU_NECK        0.5f
+#define VR_TAU_YAW        1.2f
+#define VR_LEAN_HIP       0.25f
+
+// Signed difference between two angles, -180..180. anglemod gives 0..360 and
+// there is no signed helper in this file.
+static float VR_WrapAngle180( float a )
+{
+	a = anglemod( a );
+	return ( a > 180.0f ) ? a - 360.0f : a;
+}
+
+/*
+================
+VR_QuantileP95Update
+
+Track the 95th percentile of a stream without keeping the stream.
+
+Robbins-Monro: at equilibrium E[step] = 0, so P(above)*w_up = P(below)*w_down.
+With w_up = 0.95 and w_down = 0.05 that gives P(above) = 0.05 - the 95th
+percentile. Swapping the two weights, which is the easy mistake, converges on
+the FIFTH percentile instead and looks entirely reasonable while doing it.
+
+Rising is therefore the fast direction and falling the slow one, which is what
+a standing-height estimator wants: stand up straight and it recovers in
+seconds, while one spurious tall sample bleeds off over minutes.
+
+The rate is a fraction of the estimate rather than an absolute units-per-second,
+so it needs no separate tuning for a quantity measured in inches and one
+measured in feet.
+================
+*/
+static void VR_QuantileP95Update( float *q, float x, float dt )
+{
+	float eta;
+
+	if( dt <= 0.0f || *q <= 0.0f )
+		return;
+
+	eta = 0.02f * ( *q ) * dt;
+
+	if( x > *q ) *q += eta * 0.95f;
+	else         *q -= eta * 0.05f;
+}
+
+// Cholesky solve of a symmetric 3x3 held as { m00, m01, m02, m11, m12, m22 }.
+// Regularised by the caller so it is positive definite by construction; false
+// means the factorisation failed and the caller must keep its previous answer
+// rather than accept a zero.
+static qboolean VR_Solve3x3SymPD( const float M[6], const vec3_t b, vec3_t out )
+{
+	float l11, l21, l31, l22, l32, l33, y1, y2, y3;
+
+	if( M[0] <= 1e-9f ) return false;
+	l11 = sqrtf( M[0] );
+	l21 = M[1] / l11;
+	l31 = M[2] / l11;
+
+	if( M[3] - l21 * l21 <= 1e-9f ) return false;
+	l22 = sqrtf( M[3] - l21 * l21 );
+	l32 = ( M[4] - l31 * l21 ) / l22;
+
+	if( M[5] - l31 * l31 - l32 * l32 <= 1e-9f ) return false;
+	l33 = sqrtf( M[5] - l31 * l31 - l32 * l32 );
+
+	y1 = b[0] / l11;
+	y2 = ( b[1] - l21 * y1 ) / l22;
+	y3 = ( b[2] - l31 * y1 - l32 * y2 ) / l33;
+
+	out[2] = y3 / l33;
+	out[1] = ( y2 - l32 * out[2] ) / l22;
+	out[0] = ( y1 - l21 * out[1] - l31 * out[2] ) / l11;
+	return true;
+}
+
+/*
+================
+VR_SolveNeckPivot
+
+Find the point the head ROTATES ABOUT, in head-local coordinates.
+
+Modelled as N = h + R*n with n constant in head-local space and N momentarily
+fixed in play space. Differencing two samples kills the unknown N:
+
+    D = R_now - R_then,  q = h_now - h_then,  D n + q = 0
+
+The property that makes this trustworthy is that a frame of PURE TRANSLATION
+has D = 0, so it contributes exactly nothing to either accumulator no matter
+how far the player walked. Walking, leaning and room-scale locomotion cannot
+bias the answer. No ratio of distances can make that claim.
+
+Mixed frames - turning while walking - DO carry a biased row, so they are
+gated out rather than trusted.
+
+Run in PLAY space on purpose: a stick turn changes body_yaw and rotates
+nothing physical, so in play space it correctly contributes no evidence at
+all.
+
+Regularised toward the anatomical prior, so the answer is never worse than a
+constant - only better once the player has turned their head a few times.
+================
+*/
+static void VR_SolveNeckPivot( float dt )
+{
+	static const vec3_t n_prior = { -1.5f, 0.0f, -3.0f };   // occipital condyles,
+	                                                        // head-local fwd/left/up
+	vec3_t f, l, u, prior_scaled;
+	int newest, old, i;
+	float lambda, dnorm, qlen, nlen, lmin;
+	float D[3][3], q[3], Mreg[6], v[3];
+
+	if( !vr.hmd_pose.valid )
+		return;
+
+	AngleVectors( vr.hmd_pose.angles, f, l, u );
+	VectorNegate( l, l );   // AngleVectors gives RIGHT; the model is in left
+
+	newest = vr.ring_head;
+	VectorCopy( vr.hmd_pose.origin, vr.ring_org[newest] );
+	VectorCopy( f, vr.ring_f[newest] );
+	VectorCopy( l, vr.ring_l[newest] );
+	VectorCopy( u, vr.ring_u[newest] );
+	vr.ring_t[newest] = vr.frame_state.predictedDisplayTime;
+	vr.ring_head = ( vr.ring_head + 1 ) & 15;
+	if( vr.ring_n < 16 ) vr.ring_n++;
+
+	// The oldest sample at least 0.12s back. Consecutive frames at 90Hz give a
+	// rotation delta far too small to condition the solve.
+	old = -1;
+	for( i = 1; i < vr.ring_n; i++ )
+	{
+		int idx = ( newest - i ) & 15;
+
+		if( vr.ring_t[newest] - vr.ring_t[idx] >= (XrTime)120000000 )
+		{
+			old = idx;
+			break;
+		}
+	}
+
+	lambda = expf( -dt / 20.0f );
+	for( i = 0; i < 6; i++ ) vr.neck_M[i] *= lambda;
+	VectorScale( vr.neck_v, lambda, vr.neck_v );
+
+	if( old >= 0 )
+	{
+		D[0][0] = vr.ring_f[newest][0] - vr.ring_f[old][0];
+		D[0][1] = vr.ring_l[newest][0] - vr.ring_l[old][0];
+		D[0][2] = vr.ring_u[newest][0] - vr.ring_u[old][0];
+		D[1][0] = vr.ring_f[newest][1] - vr.ring_f[old][1];
+		D[1][1] = vr.ring_l[newest][1] - vr.ring_l[old][1];
+		D[1][2] = vr.ring_u[newest][1] - vr.ring_u[old][1];
+		D[2][0] = vr.ring_f[newest][2] - vr.ring_f[old][2];
+		D[2][1] = vr.ring_l[newest][2] - vr.ring_l[old][2];
+		D[2][2] = vr.ring_u[newest][2] - vr.ring_u[old][2];
+
+		q[0] = vr.ring_org[newest][0] - vr.ring_org[old][0];
+		q[1] = vr.ring_org[newest][1] - vr.ring_org[old][1];
+		q[2] = vr.ring_org[newest][2] - vr.ring_org[old][2];
+
+		dnorm = 0.0f;
+		for( i = 0; i < 3; i++ )
+			dnorm += D[i][0]*D[i][0] + D[i][1]*D[i][1] + D[i][2]*D[i][2];
+		dnorm = sqrtf( dnorm );
+
+		qlen = sqrtf( q[0]*q[0] + q[1]*q[1] + q[2]*q[2] );
+		nlen = VectorLength( vr.neck_n );
+		if( nlen < 0.5f ) nlen = 0.5f;
+
+		// Rotation big enough to say something (about 4 degrees), and a
+		// translation small enough to BE that rotation rather than a walk.
+		if( dnorm >= 0.10f && qlen <= 2.0f * dnorm * nlen )
+		{
+			for( i = 0; i < 3; i++ )
+			{
+				vr.neck_M[0] += D[i][0] * D[i][0];
+				vr.neck_M[1] += D[i][0] * D[i][1];
+				vr.neck_M[2] += D[i][0] * D[i][2];
+				vr.neck_M[3] += D[i][1] * D[i][1];
+				vr.neck_M[4] += D[i][1] * D[i][2];
+				vr.neck_M[5] += D[i][2] * D[i][2];
+
+				vr.neck_v[0] -= D[i][0] * q[i];
+				vr.neck_v[1] -= D[i][1] * q[i];
+				vr.neck_v[2] -= D[i][2] * q[i];
+			}
+		}
+	}
+
+	Mreg[0] = vr.neck_M[0] + VR_MU_NECK;
+	Mreg[1] = vr.neck_M[1];
+	Mreg[2] = vr.neck_M[2];
+	Mreg[3] = vr.neck_M[3] + VR_MU_NECK;
+	Mreg[4] = vr.neck_M[4];
+	Mreg[5] = vr.neck_M[5] + VR_MU_NECK;
+
+	VectorScale( n_prior, VR_MU_NECK, prior_scaled );
+	VectorAdd( vr.neck_v, prior_scaled, v );
+
+	{
+		vec3_t sol;
+
+		if( VR_Solve3x3SymPD( Mreg, v, sol ))
+		{
+			// A pivot further than a head's radius is a failed fit, not a neck.
+			if( VectorLength( sol ) < 12.0f )
+				VectorCopy( sol, vr.neck_n );
+		}
+	}
+
+	// Smallest Gershgorin lower bound - enough for a confidence scalar, and it
+	// cannot claim confidence a rank-deficient fit has not earned.
+	{
+		float r0 = fabs( vr.neck_M[1] ) + fabs( vr.neck_M[2] );
+		float r1 = fabs( vr.neck_M[1] ) + fabs( vr.neck_M[4] );
+		float r2 = fabs( vr.neck_M[2] ) + fabs( vr.neck_M[4] );
+		float g0 = vr.neck_M[0] - r0, g1 = vr.neck_M[3] - r1, g2 = vr.neck_M[5] - r2;
+
+		lmin = g0;
+		if( g1 < lmin ) lmin = g1;
+		if( g2 < lmin ) lmin = g2;
+		if( lmin < 0.0f ) lmin = 0.0f;
+	}
+
+	vr.neck_conf = lmin / ( lmin + VR_MU_NECK );
+}
+
+/*
+================
+VR_UpdateBodyScale
+
+Two independent measures of how big the player is, kept apart on purpose.
+
+Eye height gives stature. Grip-to-grip span gives reach. A person varies in
+limb against trunk, so these genuinely differ - and keeping them separate
+means their DISAGREEMENT is available, which is the only thing that ever says
+an estimator has broken. A controller left on a desk shows up in exactly one
+of them and nowhere else in the whole system.
+================
+*/
+static void VR_UpdateBodyScale( float dt )
+{
+	vec3_t head, hang;
+	float span, k;
+
+	// Span first: a separation is a difference of two points in one space, so
+	// it needs no floor reference and works even under LOCAL.
+	if( vr.hand_grip_pose[0].valid && vr.hand_grip_pose[1].valid && !VR_LadderHands())
+	{
+		vec3_t d;
+
+		VectorSubtract( vr.hand_grip_pose[1].origin, vr.hand_grip_pose[0].origin, d );
+		span = VectorLength( d );
+
+		// Both hands actually moving. A hand at rest on a desk while the player
+		// walks away from it has a monotonically growing separation and would
+		// otherwise pass any "getting wider" test forever.
+		if( span > 1.0f && span < 200.0f )
+		{
+			if( vr.span95 <= 0.0f ) vr.span95 = span;
+			VR_QuantileP95Update( &vr.span95, span, dt );
+			if( vr.span_n < 100000 ) vr.span_n++;
+		}
+	}
+
+	// Height needs a floor to be measured from, and under LOCAL space there
+	// isn't one. Refused outright rather than left to a value gate, because a
+	// gate that happens to reject LOCAL today silently shrinks every player to
+	// the clamp the moment somebody relaxes it.
+	if( vr.stage_is_floor && vr_seated.value == 0.0f
+		&& VR_GetListener( head, hang ))
+	{
+		float z = vr.hmd_pose.origin[2];
+
+		if( z > 8.0f && fabs( hang[PITCH] ) < 25.0f )
+		{
+			if( vr.eye95 <= 0.0f ) vr.eye95 = z;
+			VR_QuantileP95Update( &vr.eye95, z, dt );
+			if( vr.eye_n < 100000 ) vr.eye_n++;
+		}
+	}
+
+	k = ( vr.eye95 > 1.0f ) ? ( vr.eye95 / 0.936f ) / VR_BODY_H0 : 1.0f;
+	vr.k_stat = bound( 0.76f, k, 1.24f );
+
+	k = ( vr.span95 > 1.0f ) ? ( vr.span95 / VR_GRIP_SPAN_FRAC ) / VR_BODY_H0 : 1.0f;
+	vr.k_arm = bound( 0.76f, k, 1.24f );
+
+	vr.conf_h    = vr.stage_is_floor ? bound( 0.0f, (float)vr.eye_n / 180.0f, 1.0f ) : 0.0f;
+	vr.conf_span = bound( 0.0f, (float)vr.span_n / 900.0f, 1.0f );
+
+	// Disagreement past ordinary human variation means one of them is broken,
+	// and the trunk measure is the one with fewer ways to go wrong.
+	{
+		float err = fabs( vr.k_arm - vr.k_stat ) / Q_max( vr.k_stat, 0.01f );
+
+		if( err > 0.25f )
+		{
+			vr.conf_span = 0.0f;
+			vr.k_arm = vr.k_stat;
+		}
+	}
+}
+
+/*
+================
+VR_UpdateTorsoYaw
+
+Which way the chest faces - which is NOT which way the head faces, and not
+which way the player is walking either.
+
+Two channels of evidence, accumulated circularly. Linear averaging of angles
+is wrong near the wrap point: a player facing either side of 180 averages to
+zero, i.e. exactly backwards.
+
+The head is the strong channel. Hand separation is the second, and it is only
+worth anything when the hands are apart ACROSS the body - on a two-handed
+weapon they separate fore-and-aft along the barrel, which says nothing about
+facing and would otherwise vote hard for 90 degrees off.
+
+Walking direction is deliberately NOT a channel. A player can strafe a
+corridor while facing down it.
+================
+*/
+static void VR_UpdateTorsoYaw( float dt )
+{
+	vec3_t head, hang, tang, Ft, Rt, Ut;
+	float psi_h, lambda, raw, delta, lim;
+
+	if( !VR_GetListener( head, hang ))
+		return;
+
+	psi_h = hang[YAW];
+
+	VectorSet( tang, 0.0f, vr.torso_yaw, 0.0f );
+	AngleVectors( tang, Ft, Rt, Ut );
+
+	lambda = expf( -dt / 2.5f );
+	vr.torso_S *= lambda;
+	vr.torso_C *= lambda;
+	vr.torso_Z *= lambda;
+
+	vr.torso_S += sinf( DEG2RAD( psi_h ));
+	vr.torso_C += cosf( DEG2RAD( psi_h ));
+	vr.torso_Z += 1.0f;
+
+	{
+		vec3_t gl, gr, gla, gra, d;
+
+		if( VR_GetHandGripWorld( 0, gl, gla ) && VR_GetHandGripWorld( 1, gr, gra ))
+		{
+			VectorSubtract( gr, gl, d );
+			d[2] = 0.0f;
+
+			if( VectorLength( d ) > 1e-3f )
+			{
+				float lat = fabs( DotProduct( d, Rt ));
+				float lon = fabs( DotProduct( d, Ft ));
+
+				if( lat > lon )
+				{
+					// Chest forward is the hand line turned a quarter turn:
+					// right hand on the right, left on the left, so the
+					// perpendicular points where the chest does.
+					float th = RAD2DEG( atan2f( d[0], -d[1] ));
+					float w  = bound( 0.0f, lat / Q_max( 2.0f * 9.41f * vr.k_arm, 1.0f ), 1.0f );
+
+					w *= vr.conf_span;   // no measured breadth, no vote
+
+					vr.torso_S += w * sinf( DEG2RAD( th ));
+					vr.torso_C += w * cosf( DEG2RAD( th ));
+					vr.torso_Z += w;
+				}
+			}
+		}
+	}
+
+	if( vr.torso_Z < 1e-4f )
+	{
+		vr.torso_yaw = psi_h;
+		vr.torso_conf = 0.0f;
+		return;
+	}
+
+	raw = RAD2DEG( atan2f( vr.torso_S, vr.torso_C ));
+	vr.torso_conf = sqrtf( vr.torso_S * vr.torso_S + vr.torso_C * vr.torso_C )
+		/ Q_max( vr.torso_Z, 1e-4f );
+
+	vr.torso_yaw = anglemod( vr.torso_yaw
+		+ VR_WrapAngle180( raw - vr.torso_yaw ) * Q_min( 1.0f, dt / VR_TAU_YAW ));
+
+	// Clamped last, so the slew above can never carry it past the limit. A neck
+	// only turns so far; past that the shoulders have to come round.
+	lim = Q_max( 5.0f, vr_torso_limit.value );
+	delta = VR_WrapAngle180( psi_h - vr.torso_yaw );
+
+	if( delta >  lim ) vr.torso_yaw = anglemod( vr.torso_yaw + delta - lim );
+	if( delta < -lim ) vr.torso_yaw = anglemod( vr.torso_yaw + delta + lim );
+}
+
+static void VR_BodyReset( void )
+{
+	vec3_t head, hang;
+	int i;
+
+	for( i = 0; i < 6; i++ ) vr.neck_M[i] = 0.0f;
+	VectorClear( vr.neck_v );
+	vr.neck_conf = 0.0f;
+	vr.ring_head = vr.ring_n = 0;
+
+	vr.torso_S = vr.torso_C = vr.torso_Z = 0.0f;
+	vr.torso_conf = 0.0f;
+	vr.body_conf = 0.0f;
+	vr.body_valid = false;
+
+	if( VR_GetListener( head, hang ))
+		vr.torso_yaw = hang[YAW];
+}
+
+/*
+================
+VR_BodyUpdate
+
+Solve the torso once per frame and publish its joints in world space.
+
+Ordering matters: this must run after this frame's poses are located and
+before the gestures that test against it, or every hotspot is answered from
+last frame's body.
+================
+*/
+static void VR_BodyUpdate( void )
+{
+	vec3_t head, hang, Fh, Rh, Lh, Uh, C_rot, tang, Ft, Rt, Ut;
+	float dt, H_stat, H_arm, c;
+	float NECK_BACK, NECK_DROP, ACR_FWD, ACR_DROP, SH_HALF, HIP_DROP, HIP_HALF;
+	int i;
+
+	dt = (float)host.frametime;
+
+	if( !VR_IsActive() || vr_body.value == 0.0f || !vr.hmd_pose.valid
+		|| !VR_GetListener( head, hang ) || dt <= 0.0f )
+	{
+		vr.body_conf = 0.0f;
+		vr.body_valid = false;
+		return;
+	}
+
+	// A pose that has not advanced is a STALE pose wearing a valid flag, and
+	// feeding those to a quantile estimator builds a consensus out of one
+	// frozen frame.
+	if( vr.frame_state.predictedDisplayTime <= vr.body_sample_t )
+		return;
+	vr.body_sample_t = vr.frame_state.predictedDisplayTime;
+
+	if( !vr.body_valid && vr.torso_Z <= 0.0f )
+		VR_BodyReset();
+
+	VR_SolveNeckPivot( dt );
+	VR_UpdateBodyScale( dt );
+	VR_UpdateTorsoYaw( dt );
+
+	AngleVectors( hang, Fh, Rh, Uh );
+	VectorNegate( Rh, Lh );
+
+	// The head's rotation centre: a SHORT offset, resolved in the full head
+	// basis because it is genuinely rigid to the skull. Everything longer is
+	// resolved in the torso frame below - which is the whole point. Carrying a
+	// long offset in the head basis is what made looking down swing the
+	// shoulders forward and up.
+	VectorCopy( head, C_rot );
+	VectorMA( C_rot, vr.neck_n[0], Fh, C_rot );
+	VectorMA( C_rot, vr.neck_n[1], Lh, C_rot );
+	VectorMA( C_rot, vr.neck_n[2], Uh, C_rot );
+
+	VectorSet( tang, 0.0f, vr.torso_yaw, 0.0f );
+	AngleVectors( tang, Ft, Rt, Ut );
+
+	H_stat = VR_BODY_H0 * vr.k_stat;
+	H_arm  = VR_BODY_H0 * vr.k_arm;
+
+	NECK_BACK = 0.034f * H_stat;
+	NECK_DROP = 0.069f * H_stat;
+	ACR_FWD   = 0.020f * H_stat;
+	ACR_DROP  = 0.008f * H_stat;
+	SH_HALF   = 0.1295f * H_arm;
+	HIP_DROP  = 0.296f * H_stat;
+	HIP_HALF  = 0.0955f * H_stat;
+
+	VectorCopy( C_rot, vr.anchor_neck );
+	VectorMA( vr.anchor_neck, -NECK_BACK, Ft, vr.anchor_neck );
+	VectorMA( vr.anchor_neck, -NECK_DROP, Ut, vr.anchor_neck );
+
+	for( i = 0; i < 2; i++ )
+	{
+		float side = ( i == 0 ) ? -1.0f : 1.0f;
+
+		VectorCopy( vr.anchor_neck, vr.anchor_shoulder[i] );
+		VectorMA( vr.anchor_shoulder[i], ACR_FWD, Ft, vr.anchor_shoulder[i] );
+		VectorMA( vr.anchor_shoulder[i], side * SH_HALF, Rt, vr.anchor_shoulder[i] );
+		VectorMA( vr.anchor_shoulder[i], -ACR_DROP, Ut, vr.anchor_shoulder[i] );
+	}
+
+	// Crouch shortens the drop to the hips. Only meaningful measured against a
+	// real floor.
+	c = 1.0f;
+	if( vr.stage_is_floor && vr.eye95 > 1.0f && vr_seated.value == 0.0f )
+		c = bound( 0.5f, vr.hmd_pose.origin[2] / vr.eye95, 1.0f );
+
+	{
+		vec3_t hip_c;
+
+		// Hips sit over the FEET, not under the head. world_origin is the body,
+		// so the hip is anchored there and only leans part of the way with a
+		// room-scale step. The head is not reconstructed from world_origin -
+		// that was the old frame bug - it comes from VR_GetListener above.
+		hip_c[0] = vr.world_origin[0] + VR_LEAN_HIP * ( vr.anchor_neck[0] - vr.world_origin[0] );
+		hip_c[1] = vr.world_origin[1] + VR_LEAN_HIP * ( vr.anchor_neck[1] - vr.world_origin[1] );
+		hip_c[2] = vr.anchor_neck[2] - HIP_DROP * ( 0.5f + 0.5f * c );
+
+		for( i = 0; i < 2; i++ )
+		{
+			float side = ( i == 0 ) ? -1.0f : 1.0f;
+
+			VectorCopy( hip_c, vr.anchor_hip[i] );
+			VectorMA( vr.anchor_hip[i], side * HIP_HALF, Rt, vr.anchor_hip[i] );
+		}
+
+		vr.anchor_chest[0] = 0.5f * ( vr.anchor_neck[0] + hip_c[0] );
+		vr.anchor_chest[1] = 0.5f * ( vr.anchor_neck[1] + hip_c[1] );
+		vr.anchor_chest[2] = vr.anchor_neck[2] - 0.35f * ( vr.anchor_neck[2] - hip_c[2] );
+	}
+
+	// One weight, so nothing ever jumps. An unconverged estimator simply leaves
+	// the gesture where it has always been.
+	vr.body_conf = bound( 0.0f, Q_min( vr.conf_h, vr.neck_conf ) * vr.torso_conf, 1.0f );
+	vr.body_valid = true;
+
+	// THE RESIDUAL, which is the only honest measure of whether this works.
+	//
+	// With the joint half solved out, what is left between the hip anchor and
+	// where the hand actually goes IS the gesture offset. A systematic bias
+	// across players is a bug in the anchor; scatter is one player reaching
+	// their own way. Measured from the GRIP pose, because an aim-vs-grip
+	// offset differs per controller and would be read as anchor error by the
+	// very number meant to detect anchor error.
+	if( vr_body_debug.value != 0.0f )
+	{
+		static double next = 0.0;
+
+		if( host.realtime >= next )
+		{
+			vec3_t gw, ga, rel;
+			int off = VR_OffHand();
+			float side = ( off == 0 ) ? -1.0f : 1.0f;
+			float d_fwd = 0.0f, d_out = 0.0f, d_up = 0.0f;
+
+			next = host.realtime + 0.5;
+
+			if( VR_GetHandGripWorld( off, gw, ga ))
+			{
+				VectorSubtract( gw, vr.anchor_hip[off], rel );
+				d_fwd = DotProduct( rel, Ft );
+				d_out = DotProduct( rel, Rt ) * side;
+				d_up  = rel[2];
+			}
+
+			VR_DiagPrintf( "BODY k_stat=%.3f k_arm=%.3f err=%.3f eye=%.1f span=%.1f\n",
+				vr.k_stat, vr.k_arm,
+				fabs( vr.k_arm - vr.k_stat ) / Q_max( vr.k_stat, 0.01f ),
+				vr.eye95, vr.span95 );
+			VR_DiagPrintf( "BODY conf h=%.2f neck=%.2f span=%.2f torso=%.2f -> %.2f floor=%d\n",
+				vr.conf_h, vr.neck_conf, vr.conf_span, vr.torso_conf, vr.body_conf,
+				vr.stage_is_floor ? 1 : 0 );
+			VR_DiagPrintf( "BODY neck_n=(%.2f %.2f %.2f) torso_yaw=%.0f head_yaw=%.0f\n",
+				vr.neck_n[0], vr.neck_n[1], vr.neck_n[2], vr.torso_yaw, hang[YAW] );
+			VR_DiagPrintf( "BODY pouch residual fwd=%.1f out=%.1f up=%.1f\n",
+				d_fwd, d_out, d_up );
+		}
+	}
+}
+
+/*
 ================
 VR_BodySpotDist
 
@@ -5963,11 +6664,100 @@ static qboolean VR_HandInBodySpot( int hand_id, float side, float back,
 	return ( dist >= 0.0f && dist < Q_max( 1.0f, radius )) ? true : false;
 }
 
-// The shoulder gestures, in the terms they were written in.
+/*
+================
+VR_HandInGestureSpot
+
+Is the hand at a hotspot, blending from where that hotspot has always been to
+where the solved body says it should be?
+
+Both spots are computed every frame and crossfaded by one confidence weight.
+At zero confidence the geometry is byte-identical to the head-anchored version,
+so a session with no solve, a session two seconds old, and a session that has
+lost tracking all behave exactly as before. There is no frame at which a
+gesture jumps.
+
+legacy_sbl keeps the old meaning - (side, back, lift) in the HEAD basis, side
+already signed by the caller - because that path has to stay identical.
+
+joint_fou is (forward, outboard, up) in the TORSO frame, and outboard is
+positive on BOTH hands: the anchor carries the side. That is what deletes the
+three hand-is-left-so-negate flips this file used to need, which were the only
+place handedness leaked into hotspot arithmetic.
+================
+*/
+static qboolean VR_HandInGestureSpot( int hand_id, int anchor_id,
+	const vec3_t legacy_sbl, const vec3_t joint_fou,
+	float legacy_r, float joint_r, float *out_dist )
+{
+	vec3_t hand_w, hang, head, hang_w, fwd, right, up;
+	vec3_t legacy_spot, solved_spot, spot, d;
+	float conf, radius, dist;
+
+	if( out_dist ) *out_dist = -1.0f;
+
+	if( !VR_GetHandWorld( hand_id, hand_w, hang ))
+		return false;
+
+	if( !VR_GetListener( head, hang_w ))
+		return false;
+
+	AngleVectors( hang_w, fwd, right, up );
+
+	VectorCopy( head, legacy_spot );
+	VectorMA( legacy_spot, legacy_sbl[0], right, legacy_spot );
+	VectorMA( legacy_spot, -legacy_sbl[1], fwd, legacy_spot );
+	legacy_spot[2] += legacy_sbl[2];
+
+	conf = ( vr.body_valid && vr_body.value != 0.0f ) ? vr.body_conf : 0.0f;
+
+	if( conf > 0.0f )
+	{
+		vec3_t base, tang, Ft, Rt, Ut;
+		float side = ( hand_id == 0 ) ? -1.0f : 1.0f;
+
+		if( anchor_id == 1 )      VectorCopy( vr.anchor_shoulder[hand_id], base );
+		else if( anchor_id == 2 ) VectorCopy( vr.anchor_hip[hand_id], base );
+		else                      VectorCopy( vr.anchor_neck, base );
+
+		VectorSet( tang, 0.0f, vr.torso_yaw, 0.0f );
+		AngleVectors( tang, Ft, Rt, Ut );
+
+		VectorCopy( base, solved_spot );
+		VectorMA( solved_spot, joint_fou[0], Ft, solved_spot );
+		VectorMA( solved_spot, joint_fou[1] * side, Rt, solved_spot );
+		solved_spot[2] += joint_fou[2];
+
+		VectorLerp( legacy_spot, conf, solved_spot, spot );
+		radius = legacy_r + conf * ( joint_r - legacy_r );
+	}
+	else
+	{
+		VectorCopy( legacy_spot, spot );
+		radius = legacy_r;
+	}
+
+	VectorSubtract( hand_w, spot, d );
+	dist = VectorLength( d );
+
+	if( out_dist ) *out_dist = dist;
+
+	return ( dist < Q_max( 1.0f, radius )) ? true : false;
+}
+
+// The shoulder gestures, in the terms they were written in - now blended
+// toward the solved acromion, which sits 8.6 units BELOW the eye where this
+// asked for 2 above it. That is wrong by more than ten units and wrong in
+// sign; it only ever worked because the radius was large enough to hide it.
 static qboolean VR_HandInHeadSpot( int hand_id, float side )
 {
-	return VR_HandInBodySpot( hand_id, side, vr_shoulder_back.value,
-		vr_shoulder_up.value, vr_shoulder_radius.value );
+	vec3_t legacy_sbl, joint_fou;
+
+	VectorSet( legacy_sbl, side, vr_shoulder_back.value, vr_shoulder_up.value );
+	VectorSet( joint_fou, -vr_shoulder_grab_back.value, 0.0f, vr_shoulder_grab_up.value );
+
+	return VR_HandInGestureSpot( hand_id, 1, legacy_sbl, joint_fou,
+		vr_shoulder_radius.value, vr_shoulder_grab_radius.value * vr.k_arm, NULL );
 }
 
 /*
@@ -6628,15 +7418,22 @@ static void VR_UpdateReload( void )
 		return;
 
 	grip = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+	// The side flip stays only for the legacy path; the solved hip carries its
+	// own side, which is why the other two flips in this file are gone.
 	side = ( VR_OffHand() == 0 ) ? -vr_reload_side.value : vr_reload_side.value;
 
 	if( !vr.rl_holding )
 	{
 		// Closing the hand ON the pouch, not merely having it closed nearby -
 		// an edge, or walking past with a fist would keep loading rounds.
+		vec3_t legacy_sbl, joint_fou;
+
+		VectorSet( legacy_sbl, side, vr_reload_back.value, -vr_reload_down.value );
+		VectorSet( joint_fou, vr_pouch_fwd.value, vr_pouch_out.value, vr_pouch_up.value );
+
 		if( grip && !grip_prev
-			&& VR_HandInBodySpot( VR_OffHand(), side, vr_reload_back.value,
-				-vr_reload_down.value, vr_reload_radius.value ))
+			&& VR_HandInGestureSpot( VR_OffHand(), 2, legacy_sbl, joint_fou,
+				vr_reload_radius.value, vr_pouch_radius.value * vr.k_arm, NULL ))
 		{
 			vr.rl_holding = true;
 			VR_Haptic( VR_OffHand(), 0.05f, 0.0f, 0.7f );
@@ -7314,6 +8111,17 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_lefthand );
 	Cvar_RegisterVariable( &vr_height );
 	Cvar_RegisterVariable( &vr_height_offset );
+	Cvar_RegisterVariable( &vr_body );
+	Cvar_RegisterVariable( &vr_body_debug );
+	Cvar_RegisterVariable( &vr_torso_limit );
+	Cvar_RegisterVariable( &vr_neck_derive );
+	Cvar_RegisterVariable( &vr_shoulder_grab_back );
+	Cvar_RegisterVariable( &vr_shoulder_grab_up );
+	Cvar_RegisterVariable( &vr_shoulder_grab_radius );
+	Cvar_RegisterVariable( &vr_pouch_fwd );
+	Cvar_RegisterVariable( &vr_pouch_out );
+	Cvar_RegisterVariable( &vr_pouch_up );
+	Cvar_RegisterVariable( &vr_pouch_radius );
 	Cvar_RegisterVariable( &vr_seated );
 	Cvar_RegisterVariable( &vr_seated_lift );
 	Cvar_RegisterVariable( &vr_crouch );
@@ -7835,11 +8643,21 @@ qboolean VR_InitSession( void )
 	// Room-scale space. STAGE gives a floor-level origin, which is what we want
 	// for roomscale reconciliation later; fall back to LOCAL if unsupported.
 	rsci.poseInReferenceSpace.orientation.w = 1.0f;
+	// Assumed until the fallback below says otherwise, because STAGE is the
+	// only space in which play-space Z means height above the real floor.
+	vr.stage_is_floor = true;
 	rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
 	if( XR_FAILED( xrCreateReferenceSpace( vr.session, &rsci, &vr.stage_space )))
 	{
 		Con_Printf( "VR: STAGE space unavailable, falling back to LOCAL\n" );
 		rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+
+		// Under LOCAL, play-space Z is not height above the physical floor, so
+		// every stature estimate built on it is meaningless. Recorded here and
+		// refused outright rather than left to a value gate: a gate that happens
+		// to reject LOCAL today shrinks every player to the clamp the moment
+		// somebody relaxes it.
+		vr.stage_is_floor = false;
 		XR_CHECK( xrCreateReferenceSpace( vr.session, &rsci, &vr.stage_space ),
 			"xrCreateReferenceSpace(LOCAL)" );
 	}
@@ -8812,6 +9630,9 @@ qboolean VR_BeginFrame( void )
 	// is the one per-frame point common to the world path and the menu-only
 	// path - the main menu never reaches CL_CreateCmd at all.
 	VR_UpdateDeath();
+	// Before the gestures that test against it, and after this frame's poses
+	// were located, or every hotspot answers from last frame's body.
+	VR_BodyUpdate();
 	VR_UpdateShoulderMelee();
 	VR_UpdateReload();
 	VR_UpdateParts();
