@@ -1361,6 +1361,7 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		qboolean vr_vuser_sub = false;
 		vec3_t vr_eye;
 		float vr_saved_aim = 0.0f, vr_saved_allow_autoaim = 0.0f;
+		int vr_aim_logged = 0, vr_autoaim_logged = 0;
 		qboolean vr_aim_sub = false;
 
 		// The REAL eye, captured before any substitution - this is where the
@@ -1432,6 +1433,17 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		{
 			vr_saved_aim = sv_aim.value;
 			vr_saved_allow_autoaim = sv_allow_autoaim.value;
+
+			// SILENTLY. Both are FCVAR_SERVER, so every write is broadcast to the
+			// console - and this pair is turned off and straight back on around one
+			// call, every frame, which produced roughly three hundred lines a second
+			// of "sv_aim changed to 0" announcing a change that never outlives the
+			// function. Nothing is actually varying, so nothing should be announced;
+			// the flag is put back exactly as found.
+			vr_aim_logged = FBitSet( sv_aim.flags, FCVAR_UNLOGGED ) ? 0 : 1;
+			vr_autoaim_logged = FBitSet( sv_allow_autoaim.flags, FCVAR_UNLOGGED ) ? 0 : 1;
+			SetBits( sv_aim.flags, FCVAR_UNLOGGED );
+			SetBits( sv_allow_autoaim.flags, FCVAR_UNLOGGED );
 
 			if( vr_saved_aim != 0.0f )
 				Cvar_DirectSetValue( &sv_aim, 0.0f );
@@ -1568,6 +1580,9 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 		{
 			Cvar_DirectSetValue( &sv_aim, vr_saved_aim );
 			Cvar_DirectSetValue( &sv_allow_autoaim, vr_saved_allow_autoaim );
+
+			if( vr_aim_logged ) ClearBits( sv_aim.flags, FCVAR_UNLOGGED );
+			if( vr_autoaim_logged ) ClearBits( sv_allow_autoaim.flags, FCVAR_UNLOGGED );
 		}
 
 		if( vr_vuser_sub )
