@@ -9612,6 +9612,17 @@ static void VR_SyncInput( void )
 				// followed by a confirm and the select never survives the frame.
 				Cbuf_AddText( va( "%s\n", dir ));
 
+				// HALF-LIFE NEVER MADE A SOUND HERE.
+				//
+				// CHudAmmo::UserCmd_NextWeapon contains no PlaySound at all;
+				// wpn_moveselect belongs to the number-key path, so a desktop player
+				// cycling with the mouse wheel hears nothing either. In a headset,
+				// where the menu sits at the edge of vision and the hand is busy, a
+				// silent step is a step you cannot tell happened.
+				//
+				// The mod's own sounds, so it matches what the keyboard does.
+				S_StartLocalSound( "common/wpn_moveselect.wav", VOL_NORM, false );
+
 				if( !vr.select_open )
 				{
 					Cbuf_AddText( "+attack\n" );
@@ -9632,10 +9643,12 @@ static void VR_SyncInput( void )
 					vr.select_fastswitch = Cvar_VariableValue( "hud_fastswitch" );
 					Cbuf_AddText( "invnext\n" );
 					vr.select_open = true;
+					S_StartLocalSound( "common/wpn_hudon.wav", VOL_NORM, false );
 				}
 				else
 				{
 					Cbuf_AddText( "cancelselect\n" );
+			S_StartLocalSound( "common/wpn_hudoff.wav", VOL_NORM, false );
 					Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
 					vr.select_open = false;
 				}
@@ -9694,6 +9707,7 @@ static void VR_SyncInput( void )
 			Cbuf_AddText( "+attack\n" );
 			vr.select_confirm = 2;
 			vr.select_open = false;
+			S_StartLocalSound( "common/wpn_select.wav", VOL_NORM, false );
 			VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.6f );
 			VR_DiagPrintf( "SELTAKE released, weapon confirmed\n" );
 		}
