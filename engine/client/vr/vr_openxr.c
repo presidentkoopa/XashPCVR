@@ -9543,7 +9543,36 @@ static void VR_SyncInput( void )
 		// entirely and costs nothing: the grip modifier already reserves both
 		// sticks for this while it is held.
 		float stick_x = ( fabs( vr.turn_x ) >= fabs( vr.move_x )) ? vr.turn_x : vr.move_x;
-		qboolean cyc  = ( grip && fabs( stick_x ) > 0.6f );
+		// PUSH, AND HOLD TO KEEP GOING.
+		//
+		// One threshold did both jobs: it fired the step AND had to be fallen
+		// back under before another could fire. A stick resting anywhere above
+		// it therefore never re-armed, so pushing again did nothing at all -
+		// no move, no sound - which reads as the menu ignoring you at random.
+		//
+		// Separate thresholds to arm and to fire, and a repeat while held,
+		// because that is what every menu in the world does and a hand holding
+		// a stick over expects to keep moving.
+		static double cyc_next = 0.0;
+		qboolean cyc_on = ( grip && fabs( stick_x ) > 0.6f );
+		qboolean cyc;
+
+		if( !cyc_on || fabs( stick_x ) < 0.35f )
+		{
+			cyc_prev = false;
+			cyc_next = 0.0;
+		}
+
+		cyc = cyc_on;
+
+		if( cyc_on && cyc_prev && host.realtime >= cyc_next && cyc_next > 0.0 )
+		{
+			cyc_prev = false;          // let the edge below fire again
+		}
+		else if( cyc_on && cyc_prev )
+		{
+			cyc = cyc_prev = true;     // held, but not yet time to repeat
+		}
 	
 		if( grip )
 		{
@@ -9560,6 +9589,9 @@ static void VR_SyncInput( void )
 			// invnext already does in that state.
 			if( cyc && !cyc_prev )
 			{
+				// First step now, then a slower repeat, as a key would.
+				cyc_next = host.realtime + (( cyc_next > 0.0 ) ? 0.22 : 0.40 );
+
 				vr.select_idle = host.realtime + 3.0;
 
 				const char *dir = ( stick_x > 0.0f ) ? "invnext" : "invprev";
@@ -9567,10 +9599,24 @@ static void VR_SyncInput( void )
 				VR_DiagPrintf( "SELCYC dir=%s open=%d grip=%d turn_x=%.2f move_x=%.2f\n",
 					dir, vr.select_open ? 1 : 0, grip ? 1 : 0, vr.turn_x, vr.move_x );
 				
-				if( vr.select_open )
-					Cbuf_AddText( va( "%s\n", dir ));
-				else
-					Cbuf_AddText( va( "hud_fastswitch 1; %s\n", dir ));
+				// invnext DOES NOT SWITCH WEAPONS, and never did.
+				//
+				// CHudAmmo::UserCmd_NextWeapon sets gpActiveSel - the menu HIGHLIGHT -
+				// and returns. It does not read hud_fastswitch at all; fastswitch is
+				// only consulted by the number-key slot path. So "hud_fastswitch 1;
+				// invnext" could never switch outright, and every flick of the stick
+				// opened the select whether the player asked for one or not.
+				//
+				// Switching directly means doing what a desktop player does: move the
+				// highlight, then TAKE it. So with no menu asked for, the step is
+				// followed by a confirm and the select never survives the frame.
+				Cbuf_AddText( va( "%s\n", dir ));
+
+				if( !vr.select_open )
+				{
+					Cbuf_AddText( "+attack\n" );
+					vr.select_confirm = 2;
+				}
 			}
 	
 			if( click && !click_prev )
@@ -9581,8 +9627,9 @@ static void VR_SyncInput( void )
 				{
 					// The select HUD only appears with fast-switch OFF;
 					// with it on invnext just switches silently.
+					// Nothing to force: the select appears because invnext raises it,
+					// not because of a cvar. Left alone so the player keeps theirs.
 					vr.select_fastswitch = Cvar_VariableValue( "hud_fastswitch" );
-					Cvar_SetValue( "hud_fastswitch", 0.0f );
 					Cbuf_AddText( "invnext\n" );
 					vr.select_open = true;
 				}
