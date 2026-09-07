@@ -9660,12 +9660,17 @@ static void VR_SyncInput( void )
 		// player confirms with attack without firing.
 		if( vr.select_open )
 		{
-			// Either trigger press takes the weapon. VRA_ATTACK covers fire and
-			// grip+trigger alike, since alt-fire is the same physical trigger;
-			// VRA_ATTACK2 is added on its own EDGE so a grip that is merely being
-			// held to cycle cannot confirm, but a deliberate squeeze can.
-			if(( vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
-				|| ( vr.btn[VRA_ATTACK2] && !vr.btn_prev[VRA_ATTACK2] ))
+			// THE TRIGGER TAKES THE WEAPON. THE MODIFIER MUST NOT.
+			//
+			// VRA_ATTACK2 is the GRIP, and grip is what holds this whole layer
+			// open - so accepting its edge meant the very press that summons the
+			// menu also confirmed whatever happened to be highlighted. Reported as
+			// "attack confirms, alt attack also confirms", which is exactly this:
+			// alt attack and the modifier are the same physical button.
+			//
+			// A modifier can never also be a confirm for the thing it modifies.
+			// Releasing it is the confirm, handled above.
+			if( vr.btn[VRA_ATTACK] && !vr.btn_prev[VRA_ATTACK] )
 			{
 				Cbuf_AddText( "+attack\n" );
 				VR_DiagPrintf( "SELTAKE +attack issued\n" );
