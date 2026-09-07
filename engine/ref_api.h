@@ -161,6 +161,10 @@ typedef struct vr_part_s
 	vec3_t   origin;     // renderer -> engine: where it is in the world, this frame
 	vec3_t   axis;       // renderer -> engine: rest to full extent, world space
 	float    travel;     // renderer -> engine: how far it moves, world units
+	float    extent;     // renderer -> engine: how big it is, so "nearest part"
+	                     // can mean the one the hand is ON rather than the one
+	                     // with the closest middle - a small part beside a big
+	                     // one wins that on centres alone
 	float    value;      // engine -> renderer: 0 at rest, 1 at full extent
 	qboolean present;    // renderer -> engine: this weapon has this part
 } vr_part_t;

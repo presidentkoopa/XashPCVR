@@ -958,6 +958,7 @@ typedef struct
 	float    peak;                   // frame where it reaches full extent
 	float    travel;                 // how far that is, world units
 	vec3_t   probe;                  // middle of this part's geometry, bone-local
+	float    extent;                 // rms spread of that geometry about the probe
 	vec3_t   rest_pos, ext_pos;
 	vec4_t   rest_q,  ext_q;
 } vr_studio_part_t;
@@ -1122,6 +1123,49 @@ static qboolean R_StudioDerivePart( cl_entity_t *e, int bone,
 
 		if( count > 0 )
 			VectorScale( out->probe, 1.0f / (float)count, out->probe );
+
+		// HOW BIG THE PART IS, not just where its middle is.
+		//
+		// A part is found by distance to that middle, and on a weapon whose
+		// parts sit close together that picks the SMALL one: a pistol hammer
+		// is a couple of units across, so a hand resting on the slide is
+		// nearer the hammer's centre than the slide's. Measured, that is
+		// exactly what happened - the hand took the hammer every time and the
+		// slide, which is the part that works the action, was never held.
+		//
+		// The spread of the geometry about its own centre turns "near the
+		// middle of" into "on", which is the question actually being asked.
+		out->extent = 0.0f;
+
+		if( count > 0 )
+		{
+			float acc = 0.0f;
+
+			for( bp = 0; bp < m_pStudioHeader->numbodyparts; bp++ )
+			{
+				mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
+					+ pbp[bp].modelindex);
+
+				for( mi = 0; mi < pbp[bp].nummodels; mi++ )
+				{
+					byte  *pvb = ((byte *)m_pStudioHeader + pmod[mi].vertinfoindex);
+					vec3_t *pv = (vec3_t *)((byte *)m_pStudioHeader + pmod[mi].vertindex);
+
+					for( vi = 0; vi < pmod[mi].numverts; vi++ )
+					{
+						vec3_t dv;
+
+						if( pvb[vi] != bone )
+							continue;
+
+						VectorSubtract( pv[vi], out->probe, dv );
+						acc += DotProduct( dv, dv );
+					}
+				}
+			}
+
+			out->extent = sqrt( acc / (float)count );
+		}
 	}
 
 	// How far the part travels, measured on that probe so a rotation counts.
@@ -3485,6 +3529,7 @@ static void R_StudioApplyHandAction( void )
 			VectorSubtract( b, a, pub->axis );
 		}
 		pub->travel = sp->travel;
+		pub->extent = sp->extent;
 		pub->present = true;
 
 		gpGlobals->vrPartCount = i + 1;

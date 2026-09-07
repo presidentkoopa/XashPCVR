@@ -1547,7 +1547,7 @@ void SV_RunCmd( sv_client_t *cl, usercmd_t *ucmd, int random_seed )
 
 					if( cur > 1.0f )
 					{
-						Con_Reportf( "VR: throw %s %.0f -> %.0f u/s\n",
+						Con_Printf( "VR: throw %s %.0f -> %.0f u/s\n",
 							SV_ClassName( post[i] ), cur, throw_speed );
 
 						VectorScale( post[i]->v.velocity, throw_speed / cur,

@@ -5222,7 +5222,13 @@ static void VR_UpdateParts( void )
 			continue;
 
 		VectorSubtract( hand, refState.vrParts[i].origin, d );
-		dist = VectorLength( d );
+
+		// Distance to the PART, not to its centre. Subtracting its own spread
+		// stops a small part beside a big one winning simply by being compact:
+		// a hand flat on a pistol slide is nearer the hammer's centre than the
+		// slide's, and took the hammer every time.
+		dist = VectorLength( d ) - refState.vrParts[i].extent;
+		if( dist < 0.0f ) dist = 0.0f;
 
 		if( near_i < 0 || dist < near_d )
 		{
