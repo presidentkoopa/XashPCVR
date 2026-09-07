@@ -103,7 +103,10 @@ static CVAR_DEFINE_AUTO( vr_reload_port_fwd, "4", FCVAR_ARCHIVE, "port offset fo
 // states a fact about the player and nothing more.
 static CVAR_DEFINE_AUTO( vr_handload, "0", FCVAR_USERINFO, "this player loads weapons by hand, one round at a time" );
 static CVAR_DEFINE_AUTO( vr_pump, "1", FCVAR_ARCHIVE, "pump-action weapons must have the action worked between shots" );
-static CVAR_DEFINE_AUTO( vr_reload_model_scale, "0.35", FCVAR_ARCHIVE, "size of the round carried in the hand" );
+static CVAR_DEFINE_AUTO( vr_reload_model_pitch, "90", FCVAR_ARCHIVE, "carried round: pitch correction from the world model rest pose, degrees" );
+static CVAR_DEFINE_AUTO( vr_reload_model_yaw, "0", FCVAR_ARCHIVE, "carried round: yaw correction, degrees" );
+static CVAR_DEFINE_AUTO( vr_reload_model_roll, "0", FCVAR_ARCHIVE, "carried round: roll correction, degrees" );
+static CVAR_DEFINE_AUTO( vr_reload_model_scale, "0.0875", FCVAR_ARCHIVE, "size of the round carried in the hand" );
 static CVAR_DEFINE_AUTO( vr_reload_model_mag, "models/w_9mmclip.mdl", FCVAR_ARCHIVE, "what a carried magazine looks like" );
 static CVAR_DEFINE_AUTO( vr_slide_sound, "weapons/reload3.wav", FCVAR_ARCHIVE, "sound for working a slide rather than a pump" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
@@ -3620,9 +3623,23 @@ void VR_DrawHeldRound( void )
 	VectorCopy( org, vr_round_ent.origin );
 	VectorCopy( org, vr_round_ent.curstate.origin );
 	VectorCopy( org, vr_round_ent.latched.prevorigin );
-	VectorCopy( ang, vr_round_ent.angles );
-	VectorCopy( ang, vr_round_ent.curstate.angles );
-	VectorCopy( ang, vr_round_ent.latched.prevangles );
+	// A PICKUP LIES DOWN; A CARRIED ROUND DOES NOT.
+	//
+	// These are world models, authored to sit on a floor waiting to be walked
+	// over, so their rest pose has no relation to how a hand holds one. The
+	// correction is per-axis and adjustable because which axis it needs is a
+	// property of how each model was authored, not something to reason out.
+	{
+		vec3_t rang;
+
+		rang[PITCH] = ang[PITCH] + vr_reload_model_pitch.value;
+		rang[YAW]   = ang[YAW]   + vr_reload_model_yaw.value;
+		rang[ROLL]  = ang[ROLL]  + vr_reload_model_roll.value;
+
+		VectorCopy( rang, vr_round_ent.angles );
+		VectorCopy( rang, vr_round_ent.curstate.angles );
+		VectorCopy( rang, vr_round_ent.latched.prevangles );
+	}
 
 	CL_AddVisibleEntity( &vr_round_ent, ET_NORMAL );
 }
@@ -8540,6 +8557,9 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_reload_port_fwd );
 	Cvar_RegisterVariable( &vr_handload );
 	Cvar_RegisterVariable( &vr_pump );
+	Cvar_RegisterVariable( &vr_reload_model_pitch );
+	Cvar_RegisterVariable( &vr_reload_model_yaw );
+	Cvar_RegisterVariable( &vr_reload_model_roll );
 	Cvar_RegisterVariable( &vr_reload_model_scale );
 	Cvar_RegisterVariable( &vr_reload_model_mag );
 	Cvar_RegisterVariable( &vr_slide_sound );
