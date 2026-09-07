@@ -765,6 +765,7 @@ static struct
 	qboolean      act_needs;        // the action is spent and must be worked
 	qboolean      act_open;         // a slide locked back, resting open until racked
 	qboolean      act_rearm;        // hand must leave the weapon before a stroke can start
+	float         act_lo, act_hi;   // furthest the action has been this stroke
 	float         throw_peak;       // trailing peak hand speed, HL units/sec
 	int           part_held;        // which weapon part the hand has hold of, -1 none
 	vec3_t        part_grab_hand;   // where the hand was when it took hold
@@ -7062,7 +7063,12 @@ static void VR_UpdateAction( void )
 		return;
 	}
 
-	if( host.realtime < vr.act_settle )
+	// The settle window exists to stop the hand that just fed a round being
+	// read as working the action. With the action now GRABBED where it
+	// actually is, that confusion is gone - and the window was instead
+	// swallowing the player's first real stroke, which is the other half of
+	// pumping twice after a load.
+	if( host.realtime < vr.act_settle && refState.vrPartCount <= 0 )
 	{
 		vr.act_armed = false;
 		vr.act_pull = 0.0f;
@@ -7156,6 +7162,8 @@ static void VR_UpdateAction( void )
 		// Took hold of the fore-end.
 		vr.act_ref = proj;
 		vr.act_armed = true;
+		vr.act_lo = 1.0f;
+		vr.act_hi = 0.0f;
 		VR_Haptic( VR_OffHand(), 0.03f, 0.0f, 0.4f );
 	}
 	else if( !grip )
@@ -7183,6 +7191,8 @@ static void VR_UpdateAction( void )
 		vr.act_pull = 0.0f;
 		vr.act_sounded = false;
 		vr.act_back = false;
+		vr.act_lo = 1.0f;
+		vr.act_hi = 0.0f;
 	}
 	else if( vr.act_armed )
 	{
@@ -7265,6 +7275,22 @@ static void VR_UpdateAction( void )
 			}
 		}
 
+		// HOW FAR THE ACTION HAS ACTUALLY SWEPT, either way round.
+		//
+		// Requiring it to reach the back and then return assumes the action
+		// starts CLOSED, and a self-loader that has just run dry does not: its
+		// slide is already held open. Pulling that home is the whole rack, but
+		// the old test could not see it, so the player had to shove the slide
+		// shut first purely to satisfy a flag and then work it properly - two
+		// motions for one action, and the same reason a shotgun wanted pumping
+		// twice after loading.
+		//
+		// What matters mechanically is that the action traversed its travel and
+		// came to rest closed. Which end it set off from is the weapon's
+		// business, not the player's.
+		if( pull > vr.act_hi ) vr.act_hi = pull;
+		if( pull < vr.act_lo ) vr.act_lo = pull;
+
 		if( pull >= 1.0f )
 			vr.act_back = true;
 
@@ -7275,11 +7301,13 @@ static void VR_UpdateAction( void )
 		// of the travel, and with a short travel that became a return window
 		// under a millimetre wide - a stroke of exactly the right length that
 		// simply could not land in it.
-		if( vr.act_back && pull <= 0.5f )
+		if(( vr.act_hi - vr.act_lo ) >= 0.8f && pull <= 0.3f )
 		{
 			vr.act_needs = false;
 			vr.act_open = false;
 			vr.act_back = false;
+			vr.act_lo = 1.0f;
+			vr.act_hi = 0.0f;
 			vr.act_pull = 0.0f;
 			vr.act_sounded = false;
 		vr.act_sounded = false;

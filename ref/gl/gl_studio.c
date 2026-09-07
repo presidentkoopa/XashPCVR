@@ -143,8 +143,9 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // have never seen. Substring match, ';' separated, case insensitive.
 CVAR_DEFINE_AUTO( r_vr_hide_bone, "shell", FCVAR_ARCHIVE, "collapse this bone so its geometry vanishes; the model shell during reloads" );
 CVAR_DEFINE_AUTO( r_vr_action_bone,
-	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 2,Hands mesh 3;v_9mmar=clip;v_crossbow=Slide,Bolt;v_357=revolver,speed_loader;v_grenade=ring,spoon",
+	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 2;v_9mmar=clip;v_crossbow=Slide,Bolt;v_357=revolver,speed_loader;v_grenade=ring,spoon",
 	FCVAR_ARCHIVE, "per model: model=bone, semicolon separated - the part the hand works" );
+CVAR_DEFINE_AUTO( r_vr_flat_depth, "0", FCVAR_ARCHIVE, "squash the weapon into the near depth range as flatscreen does; breaks stereo depth on the weapon" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
 CVAR_DEFINE_AUTO( r_vr_arm_textures, "glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
@@ -4178,8 +4179,22 @@ void R_DrawViewModel( void )
 	if( !RI.currententity->model )
 		return;
 
-	// adjust the depth range to prevent view model from poking into walls
-	pglDepthRange( gldepthmin, gldepthmin + 0.3f * ( gldepthmax - gldepthmin ));
+	// THE WEAPON HAS TO BE AT THE DEPTH IT IS ACTUALLY AT.
+	//
+	// Squashing the viewmodel into the front 30% of the depth buffer stops it
+	// poking through walls on a monitor, where nobody can tell how far away it
+	// is anyway. In a headset they can: depth is what stereo MEASURES, so a
+	// weapon drawn at a false depth is a weapon the eyes place somewhere the
+	// hands are not.
+	//
+	// That is what breaks reaching for it. Hands are drawn in the ordinary
+	// range, so a hand resting on the slide renders at a different depth from
+	// the slide and there is no way to see where you are grabbing.
+	//
+	// The gun does then intersect walls, which in VR is the honest outcome -
+	// you really have put it through a wall.
+	if( r_vr_flat_depth.value != 0.0f )
+		pglDepthRange( gldepthmin, gldepthmin + 0.3f * ( gldepthmax - gldepthmin ));
 	RI.currentmodel = RI.currententity->model;
 
 	switch( RI.currententity->model->type )

@@ -1153,6 +1153,7 @@ static void GL_InitCommands( void )
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_hide_arms );
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_hide_bone );
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_action_bone );
+	gEngfuncs.Cvar_RegisterVariable( &r_vr_flat_depth );
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_action_debug );
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_arm_textures );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple );
