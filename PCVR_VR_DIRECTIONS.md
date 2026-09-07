@@ -112,3 +112,154 @@ on the server, with no protocol change.
 2. **Body solve** — retires a whole category of tuned constants, and tuned constants
    are what cost the most time in the weapon work.
 3. Everything else, by feel.
+
+---
+
+# A VR-forward Xash
+
+## The reframe
+
+Today's engine is a **flatscreen engine with VR substituted into it**. Every VR
+feature works by intercepting something the engine does for a monitor player and
+swapping in hand data — `view_ofs` around `PostThink`, `cmd.viewangles` around
+`PM_Move`, buttons synthesised from gestures. That pattern has carried the project
+a long way and it is why mod compatibility survived.
+
+But it is also why the same wall keeps appearing. The engine's defaults are all
+flatscreen defaults: a weapon is a viewmodel painted over the world, aim is a view
+angle, "use" is a trace down the nose, interaction is a keypress, the HUD is on
+the screen, and the player is a cylinder with one eye.
+
+**A VR-forward Xash inverts the defaults.** The player is a head and two hands in
+a room. The flatscreen player becomes the special case — a head with no hands,
+aiming along its nose — rather than the other way around.
+
+Concretely, the inversions:
+
+| Flatscreen default | VR-forward default |
+| --- | --- |
+| Weapon is a viewmodel | Weapon is a world object in a hand |
+| Aim is a view angle | Aim is a hand pose |
+| Use is a trace from the eye | Use is a hand touching something |
+| Interaction is a keypress | Interaction is a grab |
+| HUD is on the screen | HUD is on the body |
+| Recoil kicks the camera | Recoil kicks the weapon |
+| Weapon parts play animations | Weapon parts are moved by hands |
+
+Only the last one is done. It took a week and it was worth it.
+
+**The game DLL interface does not change.** That is the whole trick, and it is
+already proven: the engine can be VR-native internally while still speaking
+flatscreen to the mod. Substitute into engine-owned memory the DLL reads, restore
+afterwards. 1200 mods never find out.
+
+## Delete the viewmodel
+
+GoldSrc does not draw your weapon in the world. It draws a **viewmodel** — a
+separate pass with its own FOV, painted over everything at the end. It does not
+occlude, does not collide, casts no shadow, is not lit by the room, and no other
+player can see it. On a monitor that is a clever cheat. In VR it is a lie you can
+feel.
+
+Make the weapon a real world entity parented to the hand and every one of those
+breaks fixes at once: true scale, correct occlusion, real shadows, lit by the
+actual room, visible to other players.
+
+And then the consequence worth having: **the weapon can collide.** Push the barrel
+into a wall and it is pushed back. You cannot put it through a door and fire.
+That is not a feature to add; it falls out of the weapon becoming real.
+
+Neither Lambda1VR nor HLVR can do this. They do not own their renderers.
+
+## Delete weapon animations
+
+The logical end of the part work, and not a joke.
+
+If every moving part is driven by the hand, and the weapon's position IS the hand,
+what is the animation system still for? Idle, fire, reload, draw, holster — each
+is a canned performance of something the player now does themselves.
+
+The endpoint: the weapon's pose is the hands. Its parts are where they were left.
+Recoil is an impulse. **No canned animation anywhere in the weapon pipeline** — and
+every class of bug fought during the part work stops existing rather than being
+worked around: cycles that end where they start, recoil spikes inside the travel,
+animator noise on driven bones.
+
+## Fingers
+
+Every weapon viewmodel carries **30 finger bones** — five fingers, three joints,
+both hands — rigged by Valve, shipped in every model, driven by nothing.
+
+Grip and trigger are analog. Curl by grip pressure. Wrap the fingers around
+whatever part is actually held. And the detail VR players care about more than
+almost anything: **trigger discipline** — the index finger rests alongside the
+guard until the trigger is actually pulled. The rig is already there.
+
+## Recoil as force, weight as feel
+
+Stop kicking the camera. It is both nauseating and false — the gun moves, not the
+eyes.
+
+Apply an impulse to the weapon and let it settle. Two hands: less. Braced: less.
+A shotgun fired one-handed nearly leaves the grip.
+
+The same system carries **weight**: the weapon lags the hand by its mass, which can
+be derived from the model's own bounds rather than authored, so it works on mods
+nobody tuned.
+
+## Real acoustics
+
+The engine owns the sound system and the BSP, and GoldSrc has essentially no
+spatial audio — no occlusion, no reverb, no head-relative positioning.
+
+Room size from leaf data drives reverb. A wall between the player and a gunshot
+filters it rather than only attenuating. Sound is positioned from the **actual
+head**, which today it is not.
+
+Audio is the cheapest presence multiplier in VR, it is pure engine work, and it
+lands on every mod without any of them knowing.
+
+## Find the parts automatically
+
+The one that changes what the project is.
+
+Parts are named per model in a cvar today, which makes this a Half-Life feature.
+Auto-discovery makes it a **GoldSrc** feature — every mod, no configuration.
+
+An earlier attempt failed, but it failed on weak signals ("which bone moved most",
+which picked a fingertip). The signals available now are much sharper: a part is a
+bone that owns a coherent share of the mesh, travels along a single consistent axis
+during fire or reload, and returns to rest. Those three together are a far better
+filter than any one of them.
+
+## Synthetic travel
+
+Some models do not animate what the hand wants to move. Where that happens, the
+travel can be **declared** rather than derived — this bone, this axis, this many
+degrees — so a part exists even when the animator never made one.
+
+This is the answer to "the models were not made for this," and it is only available
+because the engine is ours to change.
+
+## Haptic detents
+
+A part's travel is known exactly, so the events along it are known too: the slide
+passing the catch, the cylinder clicking into each chamber, the pin clearing the
+grenade, the bolt stripping a round.
+
+Not rumble-on-fire. Mechanical texture generated from the model's own geometry.
+
+## The HUD goes on the arm
+
+The HEV suit is canonically a wearable computer, so put it on the arm — health and
+ammo read by looking. `v_hand_hevsuit` already exists. Then the floating HUD can be
+switched off entirely and the last non-diegetic thing in view is gone.
+
+## Make it a platform
+
+Expose the part table as **data a mod ships** — a small file beside the model —
+rather than engine cvars.
+
+Then a mod author VR-ifies their own mod without touching engine code, and this
+stops being a way to play Half-Life in VR and becomes the thing people build GoldSrc
+VR mods on. That is how it outlives its authors.
