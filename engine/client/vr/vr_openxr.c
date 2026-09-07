@@ -6320,7 +6320,22 @@ static void VR_UpdateBodyScale( float dt )
 	k = ( vr.span95 > 1.0f ) ? ( vr.span95 / VR_GRIP_SPAN_FRAC ) / VR_BODY_H0 : 1.0f;
 	vr.k_arm = bound( 0.76f, k, 1.24f );
 
-	vr.conf_h    = vr.stage_is_floor ? bound( 0.0f, (float)vr.eye_n / 180.0f, 1.0f ) : 0.0f;
+	// A REFUSED ESTIMATOR IS NOT AN ABSENT ONE.
+	//
+	// Seated, eye height measures the chair rather than the player, so the
+	// samples are refused - but the player still declared a height and it is
+	// still the best stature available. Leaving confidence at zero there made
+	// the whole solve inert for every seated player, permanently, because the
+	// single crossfade weight is a MINIMUM across the confidences.
+	//
+	// Under LOCAL space there is no floor to measure against and no reason to
+	// trust one either, so that case really does stay at zero.
+	if( !vr.stage_is_floor )
+		vr.conf_h = 0.0f;
+	else if( vr_seated.value != 0.0f )
+		vr.conf_h = 1.0f;   // declared rather than measured
+	else
+		vr.conf_h = bound( 0.0f, (float)vr.eye_n / 180.0f, 1.0f );
 	vr.conf_span = bound( 0.0f, (float)vr.span_n / 900.0f, 1.0f );
 
 	// Disagreement past ordinary human variation means one of them is broken,
@@ -6441,6 +6456,21 @@ static void VR_BodyReset( void )
 	VectorClear( vr.neck_v );
 	vr.neck_conf = 0.0f;
 	vr.ring_head = vr.ring_n = 0;
+
+	// SEEDED, NEVER STARTED FROM NOTHING.
+	//
+	// Both trackers move by a fraction of their own value, so one that starts
+	// near zero converges at nearly zero speed: seeded from the first sample
+	// the span estimator opened at 12 units - two hands on one weapon - and
+	// would have needed four minutes of held-wide arms to reach a real
+	// wingspan. And a player who never qualifies for a sample at all, which
+	// is every seated player, never leaves zero.
+	//
+	// vr_height is a number the player has already told us. Start there.
+	if( vr.eye95 <= 0.0f )
+		vr.eye95 = Q_max( 8.0f, vr_height.value );
+	if( vr.span95 <= 0.0f )
+		vr.span95 = VR_GRIP_SPAN_FRAC * ( Q_max( 8.0f, vr_height.value ) / 0.936f );
 
 	vr.torso_S = vr.torso_C = vr.torso_Z = 0.0f;
 	vr.torso_conf = 0.0f;
