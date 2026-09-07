@@ -751,6 +751,7 @@ static struct
 	float         turn_x, turn_y;   // -1..1 turn stick
 	qboolean      select_open;       // weapon select HUD up (grip + stick click)
 	double        select_idle;       // when an untouched select is assumed gone
+	int           select_confirm;    // frames left holding +attack for a confirm
 	qboolean      sh_inside;        // dominant hand is in the shoulder hotspot
 	qboolean      sh_light_inside;  // off hand is in the flashlight hotspot
 	qboolean      sh_swapped;       // we swapped to melee from the hotspot
@@ -9609,6 +9610,12 @@ static void VR_SyncInput( void )
 		// ends the layer. The idle timeout is a second, independent way down,
 		// because a flag with only one way down is how this stuck to begin
 		// with.
+		if( vr.select_confirm > 0 && --vr.select_confirm == 0 )
+		{
+			Cbuf_AddText( "-attack\n" );
+			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+		}
+
 		// LETTING GO TAKES THE WEAPON. It does not throw it away.
 		//
 		// Releasing the modifier used to issue cancelselect, so the player held
@@ -9627,8 +9634,18 @@ static void VR_SyncInput( void )
 		// does for a desktop player.
 		if( vr.select_open && !grip )
 		{
-			Cbuf_AddText( "+attack\n-attack\n" );
-			Cvar_SetValue( "hud_fastswitch", vr.select_fastswitch );
+			// HELD ACROSS FRAMES, not queued as a pair.
+			//
+			// Queueing both commands in one string executes them in the SAME buffer
+			// flush, so CL_ButtonBits sets the bit and clears it before the client
+			// DLL ever polls m_iKeyBits - the press never exists for the game, and
+			// the confirm silently does nothing. Measured: the confirm fired twice
+			// and the weapon never changed.
+			//
+			// A button press is a thing with duration. It has to span a frame the
+			// reader actually looks at.
+			Cbuf_AddText( "+attack\n" );
+			vr.select_confirm = 2;
 			vr.select_open = false;
 			VR_Haptic( VR_DominantHand(), 0.05f, 0.0f, 0.6f );
 			VR_DiagPrintf( "SELTAKE released, weapon confirmed\n" );
