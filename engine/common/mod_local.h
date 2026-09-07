@@ -154,6 +154,9 @@ void *Mod_CacheCheck( struct cache_user_s *c );
 void Mod_LoadCacheFile( const char *path, struct cache_user_s *cu );
 void *Mod_AliasExtradata( model_t *mod );
 void *Mod_StudioExtradata( model_t *mod );
+// Every bone of a studio model in MODEL space, at a sequence and frame. Any
+// subsystem may ask; the VR layer uses it to find where a hand holds a weapon.
+qboolean Mod_StudioBoneTransforms( model_t *mod, int sequence, float frame, matrix3x4 *out );
 model_t *Mod_FindName( const char *name, qboolean trackCRC );
 model_t *Mod_ForName( const char *name, qboolean crash, qboolean trackCRC );
 qboolean Mod_ValidateCRC( const char *name, uint32_t crc );

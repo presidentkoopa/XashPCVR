@@ -155,6 +155,20 @@ qboolean VR_GetButton( int btn );
 // Returns false if that controller is not currently tracked.
 qboolean VR_GetHandWorld( int hand, vec3_t out_org, vec3_t out_ang );
 
+// Centre of the closed fist in world space - the OpenXR GRIP pose, which is
+// defined as exactly that. Falls back to the aim pose, then to false.
+qboolean VR_GetPalmWorld( int hand, vec3_t out_org );
+
+// Where a hand holds this model, in model space, measured from its own rig.
+qboolean VR_ModelGripPoint( struct model_s *mod, int side, vec3_t out_g );
+
+// Put a model grip point at a world palm position. ang must be PHYSICAL angles.
+void     VR_SeatOnHand( const vec3_t palm_world, const vec3_t ang_physical,
+	 const vec3_t grip_model, float ysign, vec3_t out_org );
+
+// Seat the equipped weapon on the dominant hand; false means nothing changed.
+qboolean VR_SeatViewmodel( struct cl_entity_s *view, const vec3_t ang_physical );
+
 // World-space head pose for audio. The stereo loop must feed this to
 // S_UpdateFrame rather than the mod's flat camera, or head rotation,
 // room-scale walking and physical crouch are all inaudible.

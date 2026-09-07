@@ -725,6 +725,79 @@ static void SV_StudioSetupBones( model_t *pModel,	float frame, int sequence, con
 
 /*
 ====================
+Mod_StudioBoneTransforms
+
+Every bone of a studio model, in MODEL space, at a given sequence and frame.
+
+Deliberately not VR-named: it answers "where are this model's bones" and any
+subsystem may ask. The VR layer wants it to find where a hand holds a weapon,
+which is a question the model has always been able to answer and nobody has
+ever asked it.
+
+The bind pose in mstudiobone_t value[] is NOT that answer and is the trap here:
+it is a standing full-body biped with the root tens of units from where the
+weapon actually draws. It is the right answer only for a model with no
+sequences at all, where it genuinely is the render pose.
+
+Identity origin and angles, so the result needs no un-transforming.
+====================
+*/
+qboolean Mod_StudioBoneTransforms( model_t *mod, int sequence, float frame, matrix3x4 *out )
+{
+	static byte zero_controller[4] = { 0, 0, 0, 0 };
+	static byte zero_blending[2] = { 0, 0 };
+	studiohdr_t *hdr;
+	int i;
+
+	if( !mod || !out )
+		return false;
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( mod );
+	if( !hdr )
+		return false;
+
+	mod_studiohdr = hdr;
+
+	if( hdr->numseq <= 0 )
+	{
+		// No sequences, so the bind pose IS the render pose - and asking for
+		// sequence 0 below would index past the end of a table that has none.
+		mstudiobone_t *pbones = (mstudiobone_t *)((byte *)hdr + hdr->boneindex);
+
+		for( i = 0; i < hdr->numbones; i++ )
+		{
+			matrix3x4 local;
+			vec4_t q;
+			vec3_t ang;
+
+			VectorSet( ang, pbones[i].value[3], pbones[i].value[4], pbones[i].value[5] );
+			AngleQuaternion( ang, q, true );
+			Matrix3x4_FromOriginQuat( local, q, pbones[i].value );
+
+			if( pbones[i].parent >= 0 )
+				Matrix3x4_ConcatTransforms( out[i], out[pbones[i].parent], local );
+			else
+				Matrix3x4_Copy( out[i], local );
+		}
+
+		return true;
+	}
+
+	if( sequence < 0 || sequence >= hdr->numseq )
+		sequence = 0;
+
+	SV_StudioSetupBones( mod, frame, sequence, vec3_origin, vec3_origin,
+		zero_controller, zero_blending, -1, NULL );
+
+	for( i = 0; i < hdr->numbones; i++ )
+		Matrix3x4_Copy( out[i], studio_bones[i] );
+
+	return true;
+}
+
+
+/*
+====================
 StudioGetAttachment
 ====================
 */

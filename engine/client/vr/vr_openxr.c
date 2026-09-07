@@ -433,6 +433,8 @@ static CVAR_DEFINE_AUTO( vr_haptics, "1", FCVAR_ARCHIVE, "haptic feedback streng
 // Off-hand flashlight: 0 = stock head-mounted, 1 = off hand, 2 = weapon hand.
 static CVAR_DEFINE_AUTO( vr_flashlight_hand, "0", FCVAR_ARCHIVE, "flashlight mount: 0 head, 1 off hand, 2 weapon hand" );
 
+static CVAR_DEFINE_AUTO( vr_seat_pivot, "1", FCVAR_ARCHIVE, "seat the weapon on the hand's own grip point, measured from the model" );
+static CVAR_DEFINE_AUTO( vr_seat_grip_pose, "1", FCVAR_ARCHIVE, "seat on the GRIP pose (the palm) rather than the aim pose" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_fwd,  "-5.139", FCVAR_ARCHIVE, "hand mesh pivot point, model-space X (forward), HL units" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_left, "-1.059", FCVAR_ARCHIVE, "hand mesh pivot point, model-space Y (left), HL units" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_up,   "1.063",  FCVAR_ARCHIVE, "hand mesh pivot point, model-space Z (up), HL units" );
@@ -2763,6 +2765,338 @@ static int VR_FindHandSequence( const model_t *mod, const char *needle )
 	}
 
 	return -1;
+}
+
+/*
+=================================================================
+	seating a weapon on the hand
+
+A viewmodel is drawn as origin + rotation, so whatever point of the mesh sits
+at the entity origin is the point that stays put when the weapon is turned.
+Today that point is the model's own origin, which on a Half-Life weapon is out
+near the muzzle - so the gun pivots about a spot several inches from the hand
+and reads as floating rather than held.
+
+The fix is to put the HAND at the entity origin instead. Where a hand holds a
+given weapon is not a guess: the model was rigged by someone who posed a hand
+on it, and that pose is in the file. Measured across the stock arsenal the
+grip point runs from 2.9 to 5.7 units out, and from -2.2 to +1.6 vertically,
+so the single tuned vr_hand_pivot_* triple was necessarily wrong on almost
+every weapon it was not fitted to.
+=================================================================
+*/
+
+// Grip points are cached by model NAME, never by pointer. Mod_FreeUnused hands
+// a freed model_t slot straight to the next loader, so a pointer-keyed cache
+// does not dangle - it aliases a live mesh, and seats one gun on another gun's
+// grip. A crash would be the kinder failure.
+#define VR_GRIP_CACHE 16
+
+static struct
+{
+	string   name;
+	int      servercount;
+	int      side;
+	vec3_t   grip;
+	qboolean mover;      // hand travels within its own animations (crossbow)
+	qboolean valid;
+	qboolean used;
+} vr_grip_cache[VR_GRIP_CACHE];
+
+/*
+================
+VR_StudioFindHandBone
+
+Which bone is the hand, in three passes of decreasing faith in names.
+
+The last pass needs no name at all: every finger chain meets at the wrist, so
+the deepest bone common to all of them IS the wrist. That is true of any rig
+ever authored, which is what makes this work on a mod nobody has heard of.
+================
+*/
+static int VR_StudioFindHandBone( studiohdr_t *hdr, int side )
+{
+	mstudiobone_t *pbones;
+	const char *want = side ? "Bip01 R Hand" : "Bip01 L Hand";
+	const char *mark = side ? "right" : "left";
+	const char *suff = side ? "_r" : "_l";
+	int i, j, best = -1;
+
+	if( !hdr || hdr->numbones <= 0 )
+		return -1;
+
+	pbones = (mstudiobone_t *)((byte *)hdr + hdr->boneindex);
+
+	for( i = 0; i < hdr->numbones; i++ )
+		if( !Q_stricmp( pbones[i].name, want ))
+			return i;
+
+	for( i = 0; i < hdr->numbones; i++ )
+	{
+		if( !Q_stristr( pbones[i].name, "wrist" ))
+			continue;
+
+		if( Q_stristr( pbones[i].name, mark ) || Q_stristr( pbones[i].name, suff ))
+			return i;
+	}
+
+	// Deepest common ancestor of the finger roots.
+	for( i = 0; i < hdr->numbones; i++ )
+	{
+		int depth_i = 0, p;
+		qboolean all = true;
+
+		if( !Q_stristr( pbones[i].name, "finger" ))
+			continue;
+
+		// candidate: this finger's parent chain, tested against every other
+		for( p = pbones[i].parent; p >= 0; p = pbones[p].parent )
+		{
+			all = true;
+
+			for( j = 0; j < hdr->numbones; j++ )
+			{
+				int q;
+				qboolean found = false;
+
+				if( j == i || !Q_stristr( pbones[j].name, "finger" ))
+					continue;
+
+				if(( Q_stristr( pbones[j].name, mark ) || Q_stristr( pbones[j].name, suff ))
+					!= ( Q_stristr( pbones[i].name, mark ) || Q_stristr( pbones[i].name, suff )))
+					continue;
+
+				for( q = j; q >= 0; q = pbones[q].parent )
+					if( q == p ) { found = true; break; }
+
+				if( !found ) { all = false; break; }
+			}
+
+			if( all )
+			{
+				// deepest wins, and depth is how far it is from the root
+				for( depth_i = 0, j = p; j >= 0; j = pbones[j].parent )
+					depth_i++;
+
+				if( best < 0 )
+					best = p;
+				else
+				{
+					int depth_b = 0;
+
+					for( j = best; j >= 0; j = pbones[j].parent )
+						depth_b++;
+
+					if( depth_i > depth_b )
+						best = p;
+				}
+				break;
+			}
+		}
+	}
+
+	return best;
+}
+
+/*
+================
+VR_ModelGripPoint
+
+Where a hand holds this weapon, in model space: the mean of the hand bone and
+its finger roots - the centre of the closed fist.
+
+Metacarpal joints, deliberately, not fingertips: the joints do not move when
+the fingers curl, so the anchor is the same whatever the animation is doing.
+Fingertips would make the gun breathe in and out of the hand.
+
+Children whose names do not say "finger" are excluded, and that is not
+cosmetic - on the shotgun the receiver and on the rifle the carbine body are
+themselves children of a hand-chain bone, carrying large baked offsets. An
+unfiltered average lands inside the gun.
+================
+*/
+qboolean VR_ModelGripPoint( model_t *mod, int side, vec3_t out_g )
+{
+	static matrix3x4 bones[MAXSTUDIOBONES];
+	studiohdr_t *hdr;
+	mstudiobone_t *pbones;
+	int slot, free_slot = -1, i, hand, n = 0;
+	vec3_t acc;
+
+	if( !mod || !out_g )
+		return false;
+
+	for( slot = 0; slot < VR_GRIP_CACHE; slot++ )
+	{
+		if( vr_grip_cache[slot].used
+			&& vr_grip_cache[slot].side == side
+			&& vr_grip_cache[slot].servercount == cl.servercount
+			&& !Q_stricmp( vr_grip_cache[slot].name, mod->name ))
+		{
+			VectorCopy( vr_grip_cache[slot].grip, out_g );
+			return vr_grip_cache[slot].valid;
+		}
+
+		if( !vr_grip_cache[slot].used && free_slot < 0 )
+			free_slot = slot;
+	}
+
+	if( free_slot < 0 )
+	{
+		// Nothing clever: an arsenal is smaller than the table, and a wrong
+		// eviction only costs one recompute.
+		free_slot = 0;
+		memset( vr_grip_cache, 0, sizeof( vr_grip_cache ));
+	}
+
+	slot = free_slot;
+	Q_strncpy( vr_grip_cache[slot].name, mod->name, sizeof( vr_grip_cache[slot].name ));
+	vr_grip_cache[slot].servercount = cl.servercount;
+	vr_grip_cache[slot].side = side;
+	vr_grip_cache[slot].used = true;
+	vr_grip_cache[slot].valid = false;
+	VectorClear( vr_grip_cache[slot].grip );
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( mod );
+
+	if( !hdr || !Mod_StudioBoneTransforms( mod, 0, 0.0f, bones ))
+	{
+		VectorClear( out_g );
+		return false;
+	}
+
+	hand = VR_StudioFindHandBone( hdr, side );
+
+	if( hand < 0 )
+	{
+		VectorClear( out_g );
+		return false;   // no hand in this rig - the caller keeps today's behaviour
+	}
+
+	pbones = (mstudiobone_t *)((byte *)hdr + hdr->boneindex);
+
+	acc[0] = bones[hand][0][3];
+	acc[1] = bones[hand][1][3];
+	acc[2] = bones[hand][2][3];
+	n = 1;
+
+	for( i = 0; i < hdr->numbones; i++ )
+	{
+		if( pbones[i].parent != hand || !Q_stristr( pbones[i].name, "finger" ))
+			continue;
+
+		acc[0] += bones[i][0][3];
+		acc[1] += bones[i][1][3];
+		acc[2] += bones[i][2][3];
+		n++;
+	}
+
+	VectorScale( acc, 1.0f / (float)n, vr_grip_cache[slot].grip );
+	vr_grip_cache[slot].valid = true;
+
+	VectorCopy( vr_grip_cache[slot].grip, out_g );
+	return true;
+}
+
+/*
+================
+VR_GetPalmWorld
+
+The centre of the player's closed fist, in world space.
+
+The GRIP pose, which OpenXR defines as exactly that, and which this file has
+located every frame since hands were added - the weapon path simply never read
+it and used the AIM pose instead. Aim is a point out along the pointing ray and
+is not in the hand at all, which is most of why the gun never sat right.
+================
+*/
+qboolean VR_GetPalmWorld( int hand, vec3_t out_org )
+{
+	vec3_t ang;
+
+	if( !VR_IsActive() || !out_org )
+		return false;
+
+	if( vr_seat_grip_pose.value != 0.0f && VR_GetHandGripWorld( hand, out_org, ang ))
+		return true;
+
+	return VR_GetHandWorld( hand, out_org, ang );
+}
+
+/*
+================
+VR_SeatOnHand
+
+Put the model's grip point at the palm.
+
+The renderer draws w = E + R(a)*m, so choosing E = P - R(a)*G makes the fist
+land on the palm for EVERY orientation a. The hand becomes the fixed point of
+the transform instead of the muzzle, which is the whole difference between a
+weapon that is held and one that swings about a point in front of you.
+
+ang must be the PHYSICAL angles - before cl_view's pitch negation - because
+the renderer negates again on the way in and the two cancel.
+================
+*/
+void VR_SeatOnHand( const vec3_t palm_world, const vec3_t ang_physical,
+	const vec3_t grip_model, float ysign, vec3_t out_org )
+{
+	vec3_t fwd, right, up;
+
+	AngleVectors( ang_physical, fwd, right, up );
+
+	VectorCopy( palm_world, out_org );
+	VectorMA( out_org, -grip_model[0], fwd, out_org );
+	VectorMA( out_org, grip_model[1] * ysign, right, out_org );
+	VectorMA( out_org, -grip_model[2], up, out_org );
+}
+
+/*
+================
+VR_SeatViewmodel
+
+Seat the equipped weapon on the dominant hand. Returns false if it could not,
+in which case the caller keeps doing exactly what it did before.
+================
+*/
+qboolean VR_SeatViewmodel( cl_entity_t *view, const vec3_t ang_physical )
+{
+	vec3_t grip, palm, org;
+	float ysign;
+
+	if( !view || !view->model || vr_seat_pivot.value == 0.0f )
+		return false;
+
+	if( !VR_ModelGripPoint( view->model, VR_DominantHand(), grip ))
+		return false;
+
+	if( !VR_GetPalmWorld( VR_DominantHand(), palm ))
+		return false;
+
+	ysign = ( view->curstate.scale < 0.0f ) ? -1.0f : 1.0f;
+
+	VR_SeatOnHand( palm, ang_physical, grip, ysign, org );
+
+	VectorCopy( org, view->origin );
+	VectorCopy( org, view->curstate.origin );
+	VectorCopy( org, view->latched.prevorigin );
+
+	if( vr_diag.value != 0.0f )
+	{
+		static double next = 0.0;
+		static string last;
+
+		if( host.realtime >= next || Q_stricmp( last, view->model->name ))
+		{
+			next = host.realtime + 2.0;
+			Q_strncpy( last, view->model->name, sizeof( last ));
+			VR_DiagPrintf( "SEAT %s grip=(%.2f %.2f %.2f) |g|=%.2f ysign=%.0f\n",
+				view->model->name, grip[0], grip[1], grip[2],
+				VectorLength( grip ), ysign );
+		}
+	}
+
+	return true;
 }
 
 void VR_DrawHands( qboolean draw_right )
@@ -8211,6 +8545,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_weapon_pitch_offset );
 	Cvar_RegisterVariable( &vr_weapon_yaw_offset );
 	Cvar_RegisterVariable( &vr_weapon_roll_offset );
+	Cvar_RegisterVariable( &vr_seat_pivot );
+	Cvar_RegisterVariable( &vr_seat_grip_pose );
 	Cvar_RegisterVariable( &vr_hand_pivot_fwd );
 	Cvar_RegisterVariable( &vr_hand_pivot_left );
 	Cvar_RegisterVariable( &vr_hand_pivot_up );
@@ -10163,6 +10499,10 @@ void     VR_UpdateTeleport( void ) { }
 qboolean VR_TeleportAiming( void ) { return false; }
 qboolean VR_ConsumeTeleport( vec3_t out_dest ) { return false; }
 void     VR_DrawHands( qboolean draw_right ) { }
+qboolean VR_GetPalmWorld( int hand, vec3_t out_org ) { return false; }
+qboolean VR_ModelGripPoint( model_t *mod, int side, vec3_t out_g ) { return false; }
+void     VR_SeatOnHand( const vec3_t p, const vec3_t a, const vec3_t g, float y, vec3_t o ) { }
+qboolean VR_SeatViewmodel( cl_entity_t *view, const vec3_t ang ) { return false; }
 qboolean VR_AlignModelToFireRay( vec3_t ang ) { return false; }
 void     VR_ResetModelAlign( void ) { }
 void     VR_CalibrateWeaponAngles( vec3_t ang ) { }

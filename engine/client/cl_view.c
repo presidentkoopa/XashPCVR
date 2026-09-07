@@ -495,6 +495,7 @@ void V_RenderView( void )
 			{
 				vec3_t hand_org, hand_ang;
 
+				vec3_t seat_ang;
 				if( VR_GetHandWorld( VR_DominantHand(), hand_org, hand_ang ))
 				{
 					vec3_t dbg_raw, dbg_cal, dbg_align;
@@ -602,14 +603,32 @@ void V_RenderView( void )
 					// The bare hands got this fix; THIS path was missed, so the
 					// equipped weapon stayed net inverted - raising the hand
 					// pitched the gun down and eventually behind the player.
+					// Kept before the negation, because the renderer negates again on the
+					// way in and the seating algebra has to match what it will actually do.
+					VectorCopy( hand_ang, seat_ang );
+
 					hand_ang[PITCH] = -hand_ang[PITCH];
 
 					VR_DiagModelAngles( dbg_raw, dbg_cal, dbg_align, hand_ang );
 
 					view->curstate.movetype = MOVETYPE_NONE; // UNVERIFIED hypothesis: avoid stale interpolation blend in R_StudioSetUpTransform if viewent's movetype happens to be MOVETYPE_STEP
-					VectorCopy( hand_org, view->origin );
-					VectorCopy( hand_org, view->curstate.origin );
-					VectorCopy( hand_org, view->latched.prevorigin );
+					// SEATED ON THE HAND, not hung off the aim point.
+					//
+					// A viewmodel turns about whatever part of it sits at the entity
+					// origin, and on a Half-Life weapon the model origin is out near the
+					// muzzle - so the gun pivoted about a point several inches from the
+					// hand and read as floating rather than held. Putting the model's own
+					// grip point on the palm makes the hand the fixed point instead.
+					//
+					// PHYSICAL angles, so this must run before the pitch negation above -
+					// and it does, because hand_ang is already negated by then, so the
+					// call passes the pre-negation copy.
+					if( !VR_SeatViewmodel( view, seat_ang ))
+					{
+						VectorCopy( hand_org, view->origin );
+						VectorCopy( hand_org, view->curstate.origin );
+						VectorCopy( hand_org, view->latched.prevorigin );
+					}
 					VectorCopy( hand_ang, view->angles );
 					VectorCopy( hand_ang, view->curstate.angles );
 					VectorCopy( hand_ang, view->latched.prevangles );
