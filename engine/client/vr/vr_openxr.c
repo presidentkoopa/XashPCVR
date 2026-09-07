@@ -3217,6 +3217,28 @@ qboolean VR_SeatViewmodel( cl_entity_t *view, const vec3_t ang_physical )
 			VR_DiagPrintf( "SEAT %s grip=(%.2f %.2f %.2f) |g|=%.2f ysign=%.0f\n",
 				view->model->name, grip[0], grip[1], grip[2],
 				VectorLength( grip ), ysign );
+
+			// Which parts of the mesh are actually asked for. A weapon draws its own
+			// hands as a bodypart - which is why the bare hand model is suppressed
+			// while one is equipped - so a gun with no hand on it is either a body
+			// value selecting the wrong submodel or a bodypart not being drawn, and
+			// those are different bugs with different fixes.
+			{
+				studiohdr_t *dh = (studiohdr_t *)Mod_StudioExtradata( view->model );
+
+				if( dh )
+				{
+					mstudiobodyparts_t *bp = (mstudiobodyparts_t *)((byte *)dh + dh->bodypartindex);
+					int b;
+
+					VR_DiagPrintf( "SEAT   body=%d parts=%d skin=%d\n",
+						view->curstate.body, dh->numbodyparts, view->curstate.skin );
+
+					for( b = 0; b < dh->numbodyparts && b < 8; b++ )
+						VR_DiagPrintf( "SEAT   [%d] %s nummodels=%d base=%d\n",
+							b, bp[b].name, bp[b].nummodels, bp[b].base );
+				}
+			}
 		}
 	}
 
