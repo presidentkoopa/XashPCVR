@@ -120,7 +120,7 @@ static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
 static CVAR_DEFINE_AUTO( vr_cylinder, "1", FCVAR_ARCHIVE, "the reload control swings a revolver cylinder out and back" );
-static CVAR_DEFINE_AUTO( vr_cylinder_flick, "220", FCVAR_ARCHIVE, "wrist roll speed that flicks an open cylinder shut, degrees/sec; 0 off" );
+static CVAR_DEFINE_AUTO( vr_cylinder_flick, "500", FCVAR_ARCHIVE, "wrist roll speed that flicks an open cylinder shut, degrees/sec; 0 off" );
 static CVAR_DEFINE_AUTO( vr_cylinder_dump, "50", FCVAR_ARCHIVE, "muzzle pitch above which an open cylinder empties itself, degrees" );
 static CVAR_DEFINE_AUTO( vr_part_kick, "0.11", FCVAR_ARCHIVE, "seconds a self-loading action takes to cycle when fired; 0 never cycles itself" );
 static CVAR_DEFINE_AUTO( vr_part_reach, "12", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
