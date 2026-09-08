@@ -117,6 +117,7 @@ static CVAR_DEFINE_AUTO( vr_pump_giveup, "1.5", FCVAR_ARCHIVE, "seconds of holdi
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
 static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapon a hand must be to work its action, units" );
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
+static CVAR_DEFINE_AUTO( vr_mute_mod_action, "1", FCVAR_ARCHIVE, "silence the mod's own action sound on a weapon whose action the player works by hand" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
 static CVAR_DEFINE_AUTO( vr_cylinder, "1", FCVAR_ARCHIVE, "the reload control swings a revolver cylinder out and back" );
@@ -9202,6 +9203,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
 	Cvar_RegisterVariable( &vr_action_sound );
+	Cvar_RegisterVariable( &vr_mute_mod_action );
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_parts );
 	Cvar_RegisterVariable( &vr_part_reach );
@@ -11337,6 +11339,49 @@ void VR_Shutdown( void )
 
 /*
 ================
+VR_MuteModActionSound
+
+Should this sound from the server be dropped because the mod is working an
+action the player is holding in their hand?
+
+A pump does not cycle itself. The mod plays its cocking sound anyway - after
+every shot, and again the moment the last shell goes into the tube - because
+at a keyboard the gun really did do all of that by itself. In a headset the
+player is the mechanism, so those are the gun claiming credit for work that
+has not happened yet, and the shotgun announced a pump nobody had pulled.
+
+Only for a weapon with a PUMP. A self-loader genuinely does throw its own
+action every shot, so its sounds are honest and are left alone; the whole
+difference is whether the weapon or the player is supposed to be doing it.
+
+Only for the local player, and only for the sound the action map itself names,
+so nothing else in the world goes quiet. The engine plays that sound when the
+hand actually works the action, which is the only time it is true.
+================
+*/
+qboolean VR_MuteModActionSound( const char *name, int entnum )
+{
+	const vr_wprofile_t *wp;
+
+	if( !VR_IsActive() || vr_mute_mod_action.value == 0.0f )
+		return false;
+
+	if( vr_pump.value == 0.0f || !name || !name[0] )
+		return false;
+
+	if( !vr_action_sound.string[0] || Q_stricmp( name, vr_action_sound.string ))
+		return false;
+
+	if( entnum != cl.playernum + 1 )
+		return false;
+
+	wp = VR_GetWeaponProfile();
+
+	return ( wp && wp->valid && wp->pump );
+}
+
+/*
+================
 VR_SetMenuFrame
 
 Marks the current frame as the menu-only path (no world rendered). Used to
@@ -11354,6 +11399,7 @@ void VR_SetMenuFrame( qboolean on )
 // Stubs so callers need no #ifdef. VR is Win32-client-only for now.
 CVAR_DEFINE_AUTO( vr_enable, "0", FCVAR_ARCHIVE, "enable OpenXR VR rendering" );
 
+qboolean VR_MuteModActionSound( const char *name, int entnum ) { return false; }
 qboolean VR_Init( void )        { return false; }
 qboolean VR_InitSession( void ) { return false; }
 void     VR_Shutdown( void )    { }

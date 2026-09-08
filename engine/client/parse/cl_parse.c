@@ -114,6 +114,16 @@ static void CL_ParseSoundPacket( sizebuf_t *msg, qboolean restore )
 	if( !cl.audio_prepped )
 		return; // too early
 
+	// THE GUN DOES NOT GET TO SAY IT PUMPED ITSELF.
+	//
+	// A mod cycles a pump action in its own code and plays the sound to match,
+	// which is right at a keyboard and wrong in a headset where a hand is on
+	// the fore-end. Dropped here rather than in the mod, so it holds for every
+	// mod rather than the few whose game code we have rebuilt.
+	if( !FBitSet( flags, SND_SENTENCE ) && sound < MAX_SOUNDS
+		&& VR_MuteModActionSound( cl.sound_precache[sound], entnum ))
+		return;
+
 	if( restore )
 		S_RestoreSound( pos, entnum, chan, handle, volume, attn, pitch, flags, samplePos, forcedEnd, wordIndex );
 	else if( chan == CHAN_STATIC )

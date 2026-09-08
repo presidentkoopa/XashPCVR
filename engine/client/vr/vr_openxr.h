@@ -337,6 +337,10 @@ int      VR_GetDropMagImpulse( void );
 
 // One-shot: an open cylinder has been tipped up and its cases have fallen out.
 int      VR_GetCylinderImpulse( void );
+
+// True when a sound from the server is the mod working an action the player is
+// meant to work themselves, and should not be heard.
+qboolean VR_MuteModActionSound( const char *name, int entnum );
 void     VR_DrawHeldRound( void );
 
 // Off-hand flashlight source. Returns false to use the stock head mount.
