@@ -8122,6 +8122,18 @@ happens and the mod never sees a pull it would have to explain.
 */
 qboolean VR_ActionBlocked( void )
 {
+	// AN OPEN GUN DOES NOT FIRE.
+	//
+	// A revolver with its cylinder swung out has nothing lined up with the
+	// barrel, so pulling the trigger does nothing at all - it certainly does
+	// not empty the gun into a wall, which is what happened.
+	//
+	// Blocked here rather than in the mod, so it holds on any game DLL: this
+	// is the engine refusing to send the shot, not a weapon declining to
+	// take it.
+	if( VR_IsActive() && vr.cyl_open )
+		return true;
+
 	return ( VR_IsActive() && vr.act_needs ) ? true : false;
 }
 
