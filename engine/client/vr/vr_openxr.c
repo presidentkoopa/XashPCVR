@@ -439,7 +439,7 @@ static CVAR_DEFINE_AUTO( vr_haptics, "1", FCVAR_ARCHIVE, "haptic feedback streng
 // Off-hand flashlight: 0 = stock head-mounted, 1 = off hand, 2 = weapon hand.
 static CVAR_DEFINE_AUTO( vr_flashlight_hand, "0", FCVAR_ARCHIVE, "flashlight mount: 0 head, 1 off hand, 2 weapon hand" );
 
-static CVAR_DEFINE_AUTO( vr_seat_rotate, "1", FCVAR_ARCHIVE, "orient boreless models (thrown things) from their own hand bone instead of a gun calibration" );
+static CVAR_DEFINE_AUTO( vr_seat_rotate, "0", FCVAR_ARCHIVE, "orient boreless models (thrown things) from their own hand bone instead of a gun calibration" );
 static CVAR_DEFINE_AUTO( vr_seat_pivot, "1", FCVAR_ARCHIVE, "seat the weapon on the hand's own grip point, measured from the model" );
 static CVAR_DEFINE_AUTO( vr_seat_grip_pose, "1", FCVAR_ARCHIVE, "seat on the GRIP pose (the palm) rather than the aim pose" );
 static CVAR_DEFINE_AUTO( vr_hand_pivot_fwd,  "-5.139", FCVAR_ARCHIVE, "hand mesh pivot point, model-space X (forward), HL units" );
@@ -5951,6 +5951,8 @@ static void VR_UpdateParts( void )
 				vr.cyl_open = false;
 				vr.cyl_dumped = false;
 				vr.part_value[0] = 0.0f;
+
+				VR_DiagPrintf( "CYL shut by flick, %.0f deg/sec\n", rate );
 				refState.vrParts[0].value = 0.0f;
 
 				S_StartLocalSound( "weapons/357_cock1.wav", VOL_NORM, false );
@@ -5975,15 +5977,41 @@ static void VR_UpdateParts( void )
 	// rounds vanishing the instant the cylinder swings.
 	if( vr.cyl_open && !vr.cyl_dumped )
 	{
-		vec3_t worg, wang;
+		vec3_t worg, wang, mfwd;
 
 		if( VR_GetWeaponAim( worg, wang ))
 		{
 			// AngleVectors is pitch-DOWN, so a raised muzzle is negative.
-			if( -wang[PITCH] > Q_max( 5.0f, vr_cylinder_dump.value ))
+			{
+				static double nxt = 0.0;
+
+				if( host.realtime >= nxt )
+				{
+					nxt = host.realtime + 1.0;
+					VR_DiagPrintf( "CYL open, muzzle up %.0f deg, need %.0f\n",
+						RAD2DEG( asinf( bound( -1.0f, mfwd[2], 1.0f ))), vr_cylinder_dump.value );
+				}
+			}
+
+			// MEASURED FROM THE BARREL, not from an euler angle.
+			//
+			// Pitch changes sign twice on its way here - AngleVectors is pitch-down,
+			// the viewmodel path negates, and the renderer negates again - so a
+			// threshold on the raw number emptied the gun the instant it opened,
+			// while the muzzle was still level.
+			//
+			// Where the barrel actually points has no convention to get wrong: its
+			// Z is 1 straight up and -1 straight down, whatever anyone did to the
+			// angles on the way.
+			AngleVectors( wang, mfwd, NULL, NULL );
+
+			if( mfwd[2] > sinf( DEG2RAD( bound( 5.0f, vr_cylinder_dump.value, 89.0f ))))
 			{
 				vr.cyl_dumped = true;
 				vr.cyl_eject = true;
+
+				VR_DiagPrintf( "CYL dumped, muzzle up %.0f deg\n",
+					RAD2DEG( asinf( bound( -1.0f, mfwd[2], 1.0f ))));
 
 				S_StartLocalSound( "weapons/357_reload3.wav", VOL_NORM, false );
 				VR_Haptic( VR_DominantHand(), 0.10f, 0.0f, 0.8f );
@@ -8071,6 +8099,8 @@ int VR_GetDropMagImpulse( void )
 		{
 			vr.cyl_open = !vr.cyl_open;
 			vr.cyl_dumped = false;
+
+			VR_DiagPrintf( "CYL %s by reload\n", vr.cyl_open ? "OPEN" : "shut" );
 
 			S_StartLocalSound( vr.cyl_open ? "weapons/357_reload1.wav"
 				: "weapons/357_cock1.wav", VOL_NORM, false );
