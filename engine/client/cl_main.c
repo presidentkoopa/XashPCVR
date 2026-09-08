@@ -1138,6 +1138,9 @@ static void CL_CreateCmd( void )
 			if( !imp )
 				imp = VR_GetDropMagImpulse();
 
+			if( !imp )
+				imp = VR_GetCylinderImpulse();
+
 			if( imp && !cmd->impulse )
 				cmd->impulse = imp;
 		}

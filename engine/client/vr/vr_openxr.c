@@ -119,6 +119,8 @@ static CVAR_DEFINE_AUTO( vr_pump_reach, "44", FCVAR_ARCHIVE, "how near the weapo
 static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "sound played when the action is worked; empty for none" );
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
+static CVAR_DEFINE_AUTO( vr_cylinder, "1", FCVAR_ARCHIVE, "the reload control swings a revolver cylinder out and back" );
+static CVAR_DEFINE_AUTO( vr_cylinder_dump, "50", FCVAR_ARCHIVE, "muzzle pitch above which an open cylinder empties itself, degrees" );
 static CVAR_DEFINE_AUTO( vr_part_kick, "0.11", FCVAR_ARCHIVE, "seconds a self-loading action takes to cycle when fired; 0 never cycles itself" );
 static CVAR_DEFINE_AUTO( vr_part_reach, "12", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
 static CVAR_DEFINE_AUTO( vr_slide_travel, "0.30", FCVAR_ARCHIVE, "how far a SLIDE must be pulled back, units; a shorter stroke than a fore-end" );
@@ -778,6 +780,9 @@ static struct
 	vec3_t        part_grab_hand;   // where the hand was when it took hold
 	float         part_grab_value;  // where the part was when it was taken hold of
 	qboolean      part_off_catch;   // an open action has been tugged off its stop
+	qboolean      cyl_open;         // a swing-out cylinder is hanging open
+	qboolean      cyl_dumped;       // and its cases have already been tipped out
+	qboolean      cyl_eject;        // one-shot: tell the game to spill them
 	float         part_value[VR_MAX_PARTS];
 	double        part_fired;       // when the action was last cycled by firing
 	int           part_clip;        // clip count the cycle detector last saw
@@ -5711,7 +5716,10 @@ static void VR_UpdateParts( void )
 			qboolean is_action = ( i == 0 && pwp && pwp->valid
 				&& ( pwp->pump || pwp->slide ));
 
-			ours = ( vr.part_held == i ) || is_action;
+			// An open cylinder is ours too - it is being held out by a catch, not
+			// by an animation, so nothing else is going to keep it there.
+			ours = ( vr.part_held == i ) || is_action
+				|| ( i == 0 && vr.cyl_open );
 		}
 
 		refState.vrParts[i].value = ours ? vr.part_value[i] : -1.0f;
@@ -5904,6 +5912,39 @@ static void VR_UpdateParts( void )
 			}
 
 			refState.vrParts[0].value = vr.part_value[0];
+		}
+	}
+
+	// THE CYLINDER SITS WHERE THE CATCH HOLDS IT.
+	//
+	// Open is its full travel; the hand can still move it from there, which
+	// is what lets it be flicked shut.
+	if( vr.cyl_open && vr.part_held != 0 )
+	{
+		vr.part_value[0] = 1.0f;
+		refState.vrParts[0].value = 1.0f;
+	}
+
+	// AND THE CASES FALL OUT WHEN THE MUZZLE COMES UP.
+	//
+	// Which is how it is actually done: break it open, tip it back, and let
+	// gravity do the work. Reported as wanting exactly that rather than the
+	// rounds vanishing the instant the cylinder swings.
+	if( vr.cyl_open && !vr.cyl_dumped )
+	{
+		vec3_t worg, wang;
+
+		if( VR_GetWeaponAim( worg, wang ))
+		{
+			// AngleVectors is pitch-DOWN, so a raised muzzle is negative.
+			if( -wang[PITCH] > Q_max( 5.0f, vr_cylinder_dump.value ))
+			{
+				vr.cyl_dumped = true;
+				vr.cyl_eject = true;
+
+				S_StartLocalSound( "weapons/357_reload3.wav", VOL_NORM, false );
+				VR_Haptic( VR_DominantHand(), 0.10f, 0.0f, 0.8f );
+			}
 		}
 	}
 
@@ -7970,10 +8011,53 @@ int VR_GetDropMagImpulse( void )
 	// magazine out of the magwell. No new content, no hiding geometry: the
 	// model already contains the pose, it was only ever reachable by playing
 	// the reload animation.
+	// A REVOLVER HAS NO MAGAZINE, SO THE SAME CONTROL SWINGS ITS CYLINDER.
+	//
+	// Nothing falls out of a gun that has nowhere for it to fall from, so on
+	// a weapon with neither a magazine nor an action to work, the reload
+	// control opens the cylinder instead - and pressing it again closes it.
+	// One control, two mechanisms, chosen by what the weapon actually is.
+	{
+		const vr_wprofile_t *iwp = VR_GetWeaponProfile();
+		qboolean swings = ( iwp && iwp->valid && !iwp->pump && !iwp->slide
+			&& refState.vrPartCount > 0 && vr_cylinder.value != 0.0f );
+
+		if( edge && swings )
+		{
+			vr.cyl_open = !vr.cyl_open;
+			vr.cyl_dumped = false;
+
+			S_StartLocalSound( vr.cyl_open ? "weapons/357_reload1.wav"
+				: "weapons/357_cock1.wav", VOL_NORM, false );
+			VR_Haptic( VR_DominantHand(), 0.06f, 0.0f, 0.7f );
+
+			return 0;   // the control swung the cylinder; it did not drop anything
+		}
+	}
+
 	if( edge )
 		vr.mag_out = true;
 
 	return edge ? 211 : 0;
+}
+
+/*
+================
+VR_GetCylinderImpulse
+
+The cases have been tipped out of an open cylinder.
+
+Sent once, on the edge, because the mod has to be the one that actually
+empties the gun - the engine only saw the muzzle come up.
+================
+*/
+int VR_GetCylinderImpulse( void )
+{
+	if( !VR_IsActive() || !vr.cyl_eject )
+		return 0;
+
+	vr.cyl_eject = false;
+	return 212;
 }
 
 int VR_GetActionImpulse( void )
@@ -8665,6 +8749,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_pump_travel );
 	Cvar_RegisterVariable( &vr_parts );
 	Cvar_RegisterVariable( &vr_part_reach );
+	Cvar_RegisterVariable( &vr_cylinder );
+	Cvar_RegisterVariable( &vr_cylinder_dump );
 	Cvar_RegisterVariable( &vr_part_kick );
 	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
@@ -10889,6 +10975,7 @@ qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_ActionBlocked( void ) { return false; }
 int      VR_GetActionImpulse( void ) { return 0; }
 int      VR_GetDropMagImpulse( void ) { return 0; }
+int      VR_GetCylinderImpulse( void ) { return 0; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }
