@@ -167,6 +167,10 @@ typedef struct vr_part_s
 	                     // one wins that on centres alone
 	float    value;      // engine -> renderer: 0 at rest, 1 at full extent
 	qboolean present;    // renderer -> engine: this weapon has this part
+	float    dissolve;   // engine -> renderer: 0 fully drawn, 1 gone. A magazine
+						// taken out by hand shrinks away over a moment instead of
+						// popping. Zero is "fully there" so a caller that never
+						// heard of this draws exactly as it always did.
 	qboolean is_action;  // renderer -> engine: this part is the weapon's ACTION -
 	                     // the thing that is worked, locks back, and cycles when
 	                     // the weapon fires. A magazine, a rocket or a grenade pin

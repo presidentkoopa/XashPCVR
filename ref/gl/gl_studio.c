@@ -3499,6 +3499,39 @@ static void R_StudioPartAxis( const vr_studio_part_t *sp, int parent, vec3_t out
 	VectorSubtract( b, a, out );
 }
 
+/*
+====================
+R_StudioPartShrink
+
+Take a part part-way out of existence, in place.
+
+Studio geometry has no per-bone alpha to fade - vertices are transformed by
+bone matrices and drawn in whatever mode the mesh asks for - so the way to
+remove one part of a model and not the rest is to collapse it. Scaling the
+bone's rotation while keeping its translation shrinks everything weighted to
+it toward where it sits, which at a fifth of a second reads as the magazine
+going away rather than the magazine being switched off.
+
+Anything parented to the part inherits this, which is correct: a magazine
+with a follower or a baseplate on its own bone goes with it.
+====================
+*/
+static void R_StudioPartShrink( int bone, float dissolve )
+{
+	float s = 1.0f - bound( 0.0f, dissolve, 1.0f );
+	int r;
+
+	if( s >= 1.0f )
+		return;
+
+	for( r = 0; r < 3; r++ )
+	{
+		g_studio.bonestransform[bone][r][0] *= s;
+		g_studio.bonestransform[bone][r][1] *= s;
+		g_studio.bonestransform[bone][r][2] *= s;
+	}
+}
+
 static void R_StudioApplyHandAction( void )
 {
 	mstudiobone_t *pbones;
@@ -3526,13 +3559,16 @@ static void R_StudioApplyHandAction( void )
 		vec4_t q;
 		vec3_t pos;
 
-		// BELOW -1 MEANS IT IS NOT THERE AT ALL.
+		// FULLY DISSOLVED MEANS IT IS NOT THERE AT ALL.
 		//
-		// A magazine that has been dropped is on the floor as its own entity, so
-		// the one in the weapon mesh has to stop existing rather than hang in
-		// the air near the magwell. Zeroing the bone collapses everything
+		// A magazine taken out of the weapon has to stop existing rather than hang
+		// in the air near the magwell. Zeroing the bone collapses everything
 		// weighted to it, which is exactly the geometry in question.
-		if( p < -1.5f )
+		//
+		// Below -1 does the same thing and is kept for anything still asking for
+		// it that way, since a caller that wants a part gone immediately should
+		// not have to know about a ramp.
+		if( p < -1.5f || pub->dissolve >= 0.999f )
 		{
 			memset( g_studio.bonestransform[sp->bone], 0, sizeof( matrix3x4 ));
 			memset( g_studio.lighttransform[sp->bone], 0, sizeof( matrix3x4 ));
@@ -3561,6 +3597,11 @@ static void R_StudioApplyHandAction( void )
 			pub->travel = sp->travel;
 			pub->extent = sp->extent;
 			pub->present = true;
+
+			// After the position is published, so a part reports where it is
+			// rather than creeping toward its own bone origin as it goes.
+			R_StudioPartShrink( sp->bone, pub->dissolve );
+
 			gpGlobals->vrPartCount = i + 1;
 			continue;
 		}
@@ -3607,6 +3648,8 @@ static void R_StudioApplyHandAction( void )
 		pub->travel = sp->travel;
 		pub->extent = sp->extent;
 		pub->present = true;
+
+		R_StudioPartShrink( sp->bone, pub->dissolve );
 
 		gpGlobals->vrPartCount = i + 1;
 	}

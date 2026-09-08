@@ -123,6 +123,7 @@ static CVAR_DEFINE_AUTO( vr_cylinder, "1", FCVAR_ARCHIVE, "the reload control sw
 static CVAR_DEFINE_AUTO( vr_cylinder_flick, "500", FCVAR_ARCHIVE, "wrist roll speed that flicks an open cylinder shut, degrees/sec; 0 off" );
 static CVAR_DEFINE_AUTO( vr_cylinder_dump, "50", FCVAR_ARCHIVE, "muzzle pitch above which an open cylinder empties itself, degrees" );
 static CVAR_DEFINE_AUTO( vr_part_kick, "0.11", FCVAR_ARCHIVE, "seconds a self-loading action takes to cycle when fired; 0 never cycles itself" );
+static CVAR_DEFINE_AUTO( vr_mag_fade, "0.22", FCVAR_ARCHIVE, "seconds a magazine takes to shrink away when removed by hand, and to come back when replaced; 0 is instant" );
 static CVAR_DEFINE_AUTO( vr_part_reach, "12", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
 static CVAR_DEFINE_AUTO( vr_slide_travel, "0.30", FCVAR_ARCHIVE, "how far a SLIDE must be pulled back, units; a shorter stroke than a fore-end" );
 static CVAR_DEFINE_AUTO( vr_reload_hold, "1.0", FCVAR_ARCHIVE, "seconds on the reload button to force an ordinary reload" );
@@ -796,8 +797,9 @@ static struct
 	int           part_clip;        // clip count the cycle detector last saw
 	int           part_clip_prev;   // and the count before that, for the magazine
 	qboolean      mag_out;          // the magazine has been dropped and not replaced
-	qboolean      mag_pulled;       // one-shot: a hand pulled the magazine out, and
-									// the mod has not been told about it yet
+
+	float         mag_fade;         // how far gone the magazine in the mesh is,
+									// 0 seated and solid, 1 not there at all
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
@@ -5983,11 +5985,24 @@ static void VR_UpdateParts( void )
 			// The travel comes from the model, so "far enough" is however far this
 			// weapon's own reload animation carries its magazine, and no distance
 			// is dialled in here.
-			if( t > 1.05f && !vr.mag_out && !vr.mag_pulled
-				&& vr.part_held != act
+			// AND IT TELLS THE MOD NOTHING AT ALL.
+			//
+			// The obvious wiring is to send this to the game DLL as a magazine
+			// drop, so the weapon goes empty the moment the magazine leaves it.
+			// That is more faithful and it is the wrong trade: only a mod whose
+			// DLL we have rebuilt has anything to receive it, so the honest
+			// version of this would work on a handful of mods and the purely
+			// visual version works on all of them.
+			//
+			// What is lost is that a weapon whose magazine is lying on the ground
+			// will still fire the rounds it had. What is kept is that this needs
+			// no game code, no new network message, and no entity on the server
+			// for a desktop player to have to hear about. Seating the next
+			// magazine reloads through the mod's own path, which is where the
+			// ammunition was always going to be counted.
+			if( t > 1.05f && !vr.mag_out && vr.part_held != act
 				&& VR_PartIsAmmo( refState.vrParts[vr.part_held].name ))
 			{
-				vr.mag_pulled = true;
 				vr.mag_out = true;
 
 				VR_DiagPrintf( "MAG pulled out by hand (%s)\n",
@@ -6219,24 +6234,54 @@ static void VR_UpdateParts( void )
 
 		for( m = 0; m < n; m++ )
 		{
-			if( !Q_stristr( refState.vrParts[m].name, "clip" )
-				&& !Q_stristr( refState.vrParts[m].name, "mag" ))
+			float rate;
+
+			if( !VR_PartIsAmmo( refState.vrParts[m].name ))
 				continue;
 
-			// OUT MEANS GONE, not parked a few inches away.
+			// TAKEN OUT, NOT SWITCHED OFF - AND PUT BACK THE SAME WAY.
 			//
 			// The far end of the magazine travel is where the reload animation
-			// holds it while a hand is still on it - which is a magazine being
-			// carried, not one that has been dropped. Driving it there left a clip
-			// hanging in mid air beside the gun.
+			// holds it while a hand is still on it, so simply driving it there left
+			// a clip hanging in mid air beside the gun. Hiding it the instant the
+			// magazine came out fixed that and read as a bug of its own: the thing
+			// in your hand blinked out of existence.
 			//
-			// A dropped magazine is on the floor, as a real entity, so the one in
-			// the mesh should not be anywhere at all.
-			if( vr.part_held != m && vr.mag_out )
+			// So it goes the way it arrived. Pulled clear of the weapon it shrinks
+			// away over a moment; when a fresh one is seated it comes back the same
+			// way, at rest, which is the magazine in the magwell. Nothing is
+			// spawned on the floor for either - the magazine you are holding IS
+			// the magazine, and a second one bouncing around your feet was only
+			// ever telling you something you had just done with your hands.
+			rate = ( vr_mag_fade.value > 0.01f )
+				? (float)host.frametime / vr_mag_fade.value : 1.0f;
+
+			if( vr.mag_out && vr.part_held != m )
 			{
-				vr.part_value[m] = -2.0f;
-				refState.vrParts[m].value = -2.0f;
+				vr.mag_fade += rate;
+				if( vr.mag_fade > 1.0f ) vr.mag_fade = 1.0f;
+
+				// Held clear of the magwell while it goes, rather than snapping back
+				// to a seated pose it is on its way out of.
+				vr.part_value[m] = 1.0f;
+				refState.vrParts[m].value = 1.0f;
 			}
+			else
+			{
+				vr.mag_fade -= rate;
+				if( vr.mag_fade < 0.0f ) vr.mag_fade = 0.0f;
+
+				// Coming back in, it is coming back SEATED. Once it is fully there
+				// the pose goes back to the mod, which is what draws a magazine
+				// moving during a reload animation.
+				if( vr.mag_fade > 0.0f && vr.part_held != m )
+				{
+					vr.part_value[m] = 0.0f;
+					refState.vrParts[m].value = 0.0f;
+				}
+			}
+
+			refState.vrParts[m].dissolve = vr.mag_fade;
 			break;
 		}
 	}
@@ -7873,7 +7918,7 @@ static void VR_UpdateAction( void )
 		vr.cyl_dumped = false;
 		vr.cyl_eject = false;
 		vr.mag_out = false;
-		vr.mag_pulled = false;
+		vr.mag_fade = 0.0f;
 		vr.part_off_catch = false;
 
 		vr.act_id = vr_wlist.cur_id;
@@ -8312,7 +8357,6 @@ int VR_GetDropMagImpulse( void )
 	if( !VR_IsActive() || vr_reload.value == 0.0f )
 	{
 		prev = false;
-		vr.mag_pulled = false;
 		return 0;
 	}
 
@@ -8363,13 +8407,6 @@ int VR_GetDropMagImpulse( void )
 
 			return 0;   // the control swung the cylinder; it did not drop anything
 		}
-	}
-
-	// EITHER THE BUTTON OR THE HAND, and the mod is told the same thing by both.
-	if( vr.mag_pulled )
-	{
-		vr.mag_pulled = false;
-		return 211;
 	}
 
 	if( edge )
@@ -9099,6 +9136,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_slide_sound );
 	Cvar_RegisterVariable( &vr_reload_model );
 	Cvar_RegisterVariable( &vr_reload_model_map );
+	Cvar_RegisterVariable( &vr_mag_fade );
 	Cvar_RegisterVariable( &vr_pump_giveup );
 	Cvar_RegisterVariable( &vr_pump_recoil );
 	Cvar_RegisterVariable( &vr_pump_reach );
