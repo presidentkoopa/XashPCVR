@@ -5689,10 +5689,33 @@ static void VR_UpdateParts( void )
 	n = refState.vrPartCount;
 	if( n > VR_MAX_PARTS ) n = VR_MAX_PARTS;
 
-	// Answered every frame, ahead of any exit, or the renderer reads a stale
-	// value on every frame this function happens to leave early.
+	// A PART IS ONLY OURS WHILE WE ARE ACTUALLY MOVING IT.
+	//
+	// Pinning every mapped part every frame froze them at rest, so a revolver
+	// cylinder never turned - not when grabbed, and not when FIRED either,
+	// because the override sat on top of the firing animation as well.
+	//
+	// That pinning is the whole point for an action the player must work: a
+	// pump has to sit still until a hand moves it. It is wrong for every
+	// other part, which should animate exactly as the mod intended until a
+	// hand takes hold.
+	//
+	// A negative value means "not ours", and the renderer leaves those alone.
 	for( i = 0; i < VR_MAX_PARTS; i++ )
-		refState.vrParts[i].value = ( i < n ) ? vr.part_value[i] : 0.0f;
+	{
+		qboolean ours = false;
+
+		if( i < n )
+		{
+			const vr_wprofile_t *pwp = VR_GetWeaponProfile();
+			qboolean is_action = ( i == 0 && pwp && pwp->valid
+				&& ( pwp->pump || pwp->slide ));
+
+			ours = ( vr.part_held == i ) || is_action;
+		}
+
+		refState.vrParts[i].value = ours ? vr.part_value[i] : -1.0f;
+	}
 
 	if( !VR_IsActive() || vr_parts.value == 0.0f || n <= 0
 		|| !VR_GetHandWorld( VR_OffHand(), hand, hang ))

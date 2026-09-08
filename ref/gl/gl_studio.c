@@ -3470,7 +3470,23 @@ static void R_StudioApplyHandAction( void )
 		vec4_t q;
 		vec3_t pos;
 
-		if( p < 0.0f ) p = 0.0f;
+		// NEGATIVE MEANS THE HAND IS NOT ON IT.
+		//
+		// Overriding a part nobody is touching froze it at rest through its own
+		// animations too, so a revolver cylinder would not turn even when the
+		// weapon fired. Its position is still published for reaching; only the
+		// pose is left to the mod.
+		if( p < 0.0f )
+		{
+			Q_strncpy( pub->name, sp->name, sizeof( pub->name ));
+			Matrix3x4_VectorTransform( g_studio.bonestransform[sp->bone],
+				sp->probe, pub->origin );
+			pub->travel = sp->travel;
+			pub->extent = sp->extent;
+			pub->present = true;
+			gpGlobals->vrPartCount = i + 1;
+			continue;
+		}
 		if( p > 1.0f ) p = 1.0f;
 
 		// DRIVEN, NOT SCRUBBED.
