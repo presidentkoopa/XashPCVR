@@ -6049,10 +6049,19 @@ static void VR_UpdateParts( void )
 				&& !Q_stristr( refState.vrParts[m].name, "mag" ))
 				continue;
 
+			// OUT MEANS GONE, not parked a few inches away.
+			//
+			// The far end of the magazine travel is where the reload animation
+			// holds it while a hand is still on it - which is a magazine being
+			// carried, not one that has been dropped. Driving it there left a clip
+			// hanging in mid air beside the gun.
+			//
+			// A dropped magazine is on the floor, as a real entity, so the one in
+			// the mesh should not be anywhere at all.
 			if( vr.part_held != m && vr.mag_out )
 			{
-				vr.part_value[m] = 1.0f;
-				refState.vrParts[m].value = 1.0f;
+				vr.part_value[m] = -2.0f;
+				refState.vrParts[m].value = -2.0f;
 			}
 			break;
 		}
@@ -7641,6 +7650,18 @@ static void VR_UpdateAction( void )
 	// says nothing about this one, and comparing them would read as a shot.
 	if( vr_wlist.cur_id != vr.act_id )
 	{
+		// A STATE THAT REFUSES THE TRIGGER MUST NOT SURVIVE A WEAPON CHANGE.
+		//
+		// Open the revolver, switch to the crowbar, and the crowbar would not
+		// swing - because the cylinder was still recorded as hanging open and
+		// the fire block is asked before anything looks at which weapon is even
+		// in your hands. Every one of these belongs to the weapon that set it.
+		vr.cyl_open = false;
+		vr.cyl_dumped = false;
+		vr.cyl_eject = false;
+		vr.mag_out = false;
+		vr.part_off_catch = false;
+
 		vr.act_id = vr_wlist.cur_id;
 		vr.act_have_clip = false;
 		vr.act_fired = false;

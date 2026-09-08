@@ -3470,6 +3470,21 @@ static void R_StudioApplyHandAction( void )
 		vec4_t q;
 		vec3_t pos;
 
+		// BELOW -1 MEANS IT IS NOT THERE AT ALL.
+		//
+		// A magazine that has been dropped is on the floor as its own entity, so
+		// the one in the weapon mesh has to stop existing rather than hang in
+		// the air near the magwell. Zeroing the bone collapses everything
+		// weighted to it, which is exactly the geometry in question.
+		if( p < -1.5f )
+		{
+			memset( g_studio.bonestransform[sp->bone], 0, sizeof( matrix3x4 ));
+			memset( g_studio.lighttransform[sp->bone], 0, sizeof( matrix3x4 ));
+			pub->present = true;
+			gpGlobals->vrPartCount = i + 1;
+			continue;
+		}
+
 		// NEGATIVE MEANS THE HAND IS NOT ON IT.
 		//
 		// Overriding a part nobody is touching froze it at rest through its own
