@@ -784,7 +784,9 @@ static struct
 									// part 0 is the magazine and on the RPG it is the
 									// rocket, and driving those as an action threw
 									// the magazine out of the gun on every shot.
-	vec3_t        part_grab_hand;   // where the hand was when it took hold
+	vec3_t        part_grab_hand;   // where the hand was when it took hold, world
+	vec3_t        part_grab_local;  // and the same thing in the WEAPON's frame, which
+									// is the one that matters - see VR_PartHandLocal
 	float         part_grab_value;  // where the part was when it was taken hold of
 	qboolean      part_off_catch;   // an open action has been tugged off its stop
 	qboolean      cyl_open;         // a swing-out cylinder is hanging open
@@ -5764,6 +5766,45 @@ static int VR_FindActionPart( int n )
 	return -1;
 }
 
+/*
+====================
+VR_PartHandLocal
+
+Where the off hand is, expressed in the frame of the weapon it is working.
+
+Parts were driven by projecting the hand's WORLD displacement onto the part's
+world axis, and the axis turns with the weapon. So tilting the gun swung the
+off hand through world space and rotated the axis under it at the same time,
+and the two produced a displacement out of nothing: point the MP5 at the floor
+with a hand on the magazine and the magazine slid out of the gun on its own.
+
+Working a mechanism is a motion RELATIVE to the thing it is part of. A hand
+that holds still against a gun has not pumped anything, however the gun is
+waved about, and this is the frame in which that is true.
+
+Taken from the dominant hand rather than the weapon's own angles, because the
+gun is seated in that hand and its pose has never been wrong. Any frame that
+turns with the weapon would do - what cancels here is the rotation, so even a
+basis pointing somewhere unexpected gives the same answer.
+====================
+*/
+static qboolean VR_PartHandLocal( const vec3_t hand, vec3_t out )
+{
+	vec3_t dorg, dang, f, r, u, rel;
+
+	if( !VR_GetHandWorld( VR_DominantHand(), dorg, dang ))
+		return false;
+
+	AngleVectors( dang, f, r, u );
+	VectorSubtract( hand, dorg, rel );
+
+	out[0] = DotProduct( rel, f );
+	out[1] = DotProduct( rel, r );
+	out[2] = DotProduct( rel, u );
+
+	return true;
+}
+
 static void VR_UpdateParts( void )
 {
 	static qboolean grip_prev = false;
@@ -5904,6 +5945,8 @@ static void VR_UpdateParts( void )
 		{
 			vr.part_held = near_i;
 			VectorCopy( hand, vr.part_grab_hand );
+			if( !VR_PartHandLocal( hand, vr.part_grab_local ))
+				VectorClear( vr.part_grab_local );
 			vr.part_grab_value = vr.part_value[near_i];
 			vr.part_off_catch = false;
 			VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.5f );
@@ -5958,9 +6001,27 @@ static void VR_UpdateParts( void )
 		if( len2 > 0.000001f )
 		{
 			float t;
+			vec3_t nowl, axl, dorg, dang, f, r, u;
 
-			VectorSubtract( hand, vr.part_grab_hand, d );
-			t = vr.part_grab_value + DotProduct( d, pp->axis ) / len2;
+			// IN THE WEAPON'S FRAME, so waving the gun about moves nothing.
+			if( VR_PartHandLocal( hand, nowl ) && VR_GetHandWorld( VR_DominantHand(), dorg, dang ))
+			{
+				AngleVectors( dang, f, r, u );
+
+				axl[0] = DotProduct( pp->axis, f );
+				axl[1] = DotProduct( pp->axis, r );
+				axl[2] = DotProduct( pp->axis, u );
+
+				VectorSubtract( nowl, vr.part_grab_local, d );
+				t = vr.part_grab_value + DotProduct( d, axl ) / len2;
+			}
+			else
+			{
+				// No hand pose to build a frame from - better to drive it in world
+				// space than not at all.
+				VectorSubtract( hand, vr.part_grab_hand, d );
+				t = vr.part_grab_value + DotProduct( d, pp->axis ) / len2;
+			}
 
 			// PULLED PAST THE STOP - which is how a slide is actually released.
 			//
