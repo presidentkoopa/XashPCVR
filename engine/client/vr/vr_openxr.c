@@ -778,6 +778,11 @@ static struct
 	float         act_lo, act_hi;   // furthest the action has been this stroke
 	float         throw_peak;       // trailing peak hand speed, HL units/sec
 	int           part_held;        // which weapon part the hand has hold of, -1 none
+	int           part_action;      // which part is this weapon's working action, -1
+									// if it has none. NOT always part 0: on the MP5
+									// part 0 is the magazine and on the RPG it is the
+									// rocket, and driving those as an action threw
+									// the magazine out of the gun on every shot.
 	vec3_t        part_grab_hand;   // where the hand was when it took hold
 	float         part_grab_value;  // where the part was when it was taken hold of
 	qboolean      part_off_catch;   // an open action has been tugged off its stop
@@ -791,6 +796,8 @@ static struct
 	int           part_clip;        // clip count the cycle detector last saw
 	int           part_clip_prev;   // and the count before that, for the magazine
 	qboolean      mag_out;          // the magazine has been dropped and not replaced
+	qboolean      mag_pulled;       // one-shot: a hand pulled the magazine out, and
+									// the mod has not been told about it yet
 	qboolean      act_armed;        // a hand has taken hold of it
 	float         act_ref;          // where along the weapon it took hold
 	int           act_clip;         // clip last frame, to notice a shot
@@ -5686,17 +5693,134 @@ Positions are a frame old, on a hand that moves in centimetres per frame -
 far inside the reach radius, and not worth ordering surgery to remove.
 ====================
 */
+/*
+====================
+VR_PartIsAmmo
+
+Is this part something the weapon SHOOTS rather than something it works?
+
+Only consulted when the part map for a weapon marks nothing with '*'. Every
+map written before the marker existed is unmarked - including the one saved
+in the player's own config - so the old rule has to keep holding for the
+weapons it was right about while the new one takes over where it was wrong.
+
+The old rule was "part 0 is the action", which is true of a shotgun's fore-end
+and a pistol's slide and false of an MP5's magazine and an RPG's rocket. This
+narrows it to "part 0 is the action unless it is plainly ammunition", which
+covers every weapon shipped in the default map. It is a fallback and it is
+allowed to be imperfect; '*' is the answer for anything it gets wrong.
+====================
+*/
+static qboolean VR_PartIsAmmo( const char *name )
+{
+	static const char *ammo[] =
+	{
+		"clip", "mag", "rocket", "missile", "shell", "round", "cartridge",
+		"bullet", "loader", "ammo", "dart", "arrow", "ring", "spoon", "pin",
+	};
+	size_t i;
+
+	if( !name || !name[0] )
+		return false;
+
+	for( i = 0; i < sizeof( ammo ) / sizeof( ammo[0] ); i++ )
+	{
+		if( Q_stristr( name, ammo[i] ))
+			return true;
+	}
+
+	return false;
+}
+
+/*
+====================
+VR_FindActionPart
+
+Which of this weapon's parts is the one that gets worked.
+
+Everything that treats an action as an action - locking back, being racked,
+being thrown by the weapon firing, being held open by a catch - used to say
+"part 0" and mean it literally. That was never a statement about the weapon,
+only about the order somebody happened to list its bones in.
+====================
+*/
+static int VR_FindActionPart( int n )
+{
+	int i;
+
+	for( i = 0; i < n; i++ )
+	{
+		if( refState.vrParts[i].present && refState.vrParts[i].is_action )
+			return i;
+	}
+
+	// Nothing marked, so fall back to the old rule, minus the case it got wrong.
+	if( n > 0 && refState.vrParts[0].present
+		&& !VR_PartIsAmmo( refState.vrParts[0].name ))
+		return 0;
+
+	return -1;
+}
+
 static void VR_UpdateParts( void )
 {
 	static qboolean grip_prev = false;
 	vec3_t hand, hang, d;
 	qboolean grip;
-	int i, n, near_i = -1;
+	int i, n, near_i = -1, act;
 	float near_d = 0.0f;
 	qboolean in_reach = false;
 
 	n = refState.vrPartCount;
 	if( n > VR_MAX_PARTS ) n = VR_MAX_PARTS;
+
+	vr.part_action = VR_FindActionPart( n );
+	act = vr.part_action;
+
+	// AHEAD OF EVERY EXIT BELOW, because the case that most needs reporting is
+	// the one where this function does nothing: a weapon whose bones were never
+	// found leaves through the early return with n == 0, and used to log exactly
+	// as much as a weapon that is working perfectly.
+	if( vr_diag.value != 0.0f )
+	{
+		static const model_t *dumped = NULL;
+		static double due = 0.0;
+		const model_t *mod = clgame.viewent.model;
+
+		// Not on the frame the weapon changes: the renderer derives parts on its
+		// next draw, so asking now reports every weapon as having none.
+		if( mod != dumped && due == 0.0 )
+			due = host.realtime + 0.5;
+
+		if( due != 0.0 && host.realtime >= due )
+		{
+			const vr_wprofile_t *dwp = VR_GetWeaponProfile();
+
+			dumped = mod;
+			due = 0.0;
+
+			VR_DiagPrintf( "PARTS %s  n=%d action=%d  profile[pump=%d slide=%d melee=%d throw=%d]\n",
+				mod ? mod->name : "(none)", n, act,
+				( dwp && dwp->pump ) ? 1 : 0, ( dwp && dwp->slide ) ? 1 : 0,
+				( dwp && dwp->melee ) ? 1 : 0, ( dwp && dwp->throwable ) ? 1 : 0 );
+
+			for( i = 0; i < n; i++ )
+			{
+				const vr_part_t *p = &refState.vrParts[i];
+
+				VR_DiagPrintf( "PARTS   [%d] %-16s present=%d travel=%5.1fu extent=%5.1fu axis=(%5.1f %5.1f %5.1f)%s\n",
+					i, p->name[0] ? p->name : "(unnamed)", p->present ? 1 : 0,
+					p->travel, p->extent, p->axis[0], p->axis[1], p->axis[2],
+					( i == act ) ? "  <- ACTION" : "" );
+			}
+
+			if( n <= 0 )
+				VR_DiagPrintf( "PARTS   nothing derived - no r_vr_action_bone entry for this model,"
+					" or the bones it names are not in it\n" );
+			else if( act < 0 )
+				VR_DiagPrintf( "PARTS   no action on this weapon - nothing here gets racked\n" );
+		}
+	}
 
 	// A PART IS ONLY OURS WHILE WE ARE ACTUALLY MOVING IT.
 	//
@@ -5717,13 +5841,13 @@ static void VR_UpdateParts( void )
 		if( i < n )
 		{
 			const vr_wprofile_t *pwp = VR_GetWeaponProfile();
-			qboolean is_action = ( i == 0 && pwp && pwp->valid
+			qboolean is_action = ( i == act && act >= 0 && pwp && pwp->valid
 				&& ( pwp->pump || pwp->slide ));
 
 			// An open cylinder is ours too - it is being held out by a catch, not
 			// by an animation, so nothing else is going to keep it there.
 			ours = ( vr.part_held == i ) || is_action
-				|| ( i == 0 && vr.cyl_open );
+				|| ( i == act && act >= 0 && vr.cyl_open );
 		}
 
 		refState.vrParts[i].value = ours ? vr.part_value[i] : -1.0f;
@@ -5791,10 +5915,10 @@ static void VR_UpdateParts( void )
 		// rather than on the hand travelling the whole way forward - and the
 		// part snaps shut instead of following a hand that has stopped
 		// touching it.
-		if( vr.part_held == 0 && vr.part_off_catch && vr.act_open )
+		if( vr.part_held == act && act >= 0 && vr.part_off_catch && vr.act_open )
 		{
-			vr.part_value[0] = 0.0f;
-			refState.vrParts[0].value = 0.0f;
+			vr.part_value[act] = 0.0f;
+			refState.vrParts[act].value = 0.0f;
 
 			vr.act_open = false;
 			vr.act_needs = false;
@@ -5848,6 +5972,30 @@ static void VR_UpdateParts( void )
 			if( vr.act_open && t > 1.05f )
 				vr.part_off_catch = true;
 
+			// AND A MAGAZINE PULLED OFF THE END OF ITS TRAVEL IS OUT OF THE GUN.
+			//
+			// This is the shotgun's pump applied to the one weapon it was never
+			// offered to. A magazine on its own bone can be taken hold of and moved
+			// exactly like a fore-end - it was only ever the reload BUTTON that
+			// could release it, so the hand could slide the magazine up and down
+			// the magwell all day and the weapon stayed loaded.
+			//
+			// The travel comes from the model, so "far enough" is however far this
+			// weapon's own reload animation carries its magazine, and no distance
+			// is dialled in here.
+			if( t > 1.05f && !vr.mag_out && !vr.mag_pulled
+				&& vr.part_held != act
+				&& VR_PartIsAmmo( refState.vrParts[vr.part_held].name ))
+			{
+				vr.mag_pulled = true;
+				vr.mag_out = true;
+
+				VR_DiagPrintf( "MAG pulled out by hand (%s)\n",
+					refState.vrParts[vr.part_held].name );
+
+				VR_Haptic( VR_OffHand(), 0.08f, 0.0f, 0.9f );
+			}
+
 			if( t < 0.0f ) t = 0.0f;
 			if( t > 1.0f ) t = 1.0f;
 
@@ -5898,24 +6046,24 @@ static void VR_UpdateParts( void )
 		const vr_wprofile_t *kwp = VR_GetWeaponProfile();
 		qboolean self_loading = ( kwp && kwp->valid && kwp->slide && !kwp->pump );
 
-		if( self_loading && vr.part_held != 0
+		if( self_loading && act >= 0 && vr.part_held != act
 			&& vr_part_kick.value > 0.0f && vr.part_fired > 0.0 )
-	{
+		{
 			double age = host.realtime - vr.part_fired;
 			float out = (float)vr_part_kick.value * 0.3f;
 			float back = (float)vr_part_kick.value * 0.7f;
 
 			if( age < out )
-				vr.part_value[0] = (float)( age / out );
+				vr.part_value[act] = (float)( age / out );
 			else if( age < out + back )
-				vr.part_value[0] = 1.0f - (float)(( age - out ) / back );
-		else
-		{
-				vr.part_value[0] = 0.0f;
+				vr.part_value[act] = 1.0f - (float)(( age - out ) / back );
+			else
+			{
+				vr.part_value[act] = 0.0f;
 				vr.part_fired = 0.0;
 			}
 
-			refState.vrParts[0].value = vr.part_value[0];
+			refState.vrParts[act].value = vr.part_value[act];
 		}
 	}
 
@@ -5923,10 +6071,10 @@ static void VR_UpdateParts( void )
 	//
 	// Open is its full travel; the hand can still move it from there, which
 	// is what lets it be flicked shut.
-	if( vr.cyl_open && vr.part_held != 0 )
+	if( vr.cyl_open && act >= 0 && vr.part_held != act )
 	{
-		vr.part_value[0] = 1.0f;
-		refState.vrParts[0].value = 1.0f;
+		vr.part_value[act] = 1.0f;
+		refState.vrParts[act].value = 1.0f;
 	}
 
 	// A FLICK OF THE WRIST SHUTS IT.
@@ -5959,10 +6107,14 @@ static void VR_UpdateParts( void )
 			{
 				vr.cyl_open = false;
 				vr.cyl_dumped = false;
-				vr.part_value[0] = 0.0f;
+
+				if( act >= 0 )
+				{
+					vr.part_value[act] = 0.0f;
+					refState.vrParts[act].value = 0.0f;
+				}
 
 				VR_DiagPrintf( "CYL shut by flick, %.0f deg/sec\n", rate );
-				refState.vrParts[0].value = 0.0f;
 
 				S_StartLocalSound( "weapons/357_cock1.wav", VOL_NORM, false );
 				VR_Haptic( VR_DominantHand(), 0.09f, 0.0f, 0.9f );
@@ -6089,23 +6241,62 @@ static void VR_UpdateParts( void )
 		}
 	}
 
-	if( vr.part_held != 0 && vr.act_open )
+	if( act >= 0 && vr.part_held != act && vr.act_open )
 	{
-		vr.part_value[0] = 1.0f;
+		vr.part_value[act] = 1.0f;
 		vr.part_fired = 0.0;
-		refState.vrParts[0].value = 1.0f;
+		refState.vrParts[act].value = 1.0f;
 	}
 
+	// WHAT THIS WEAPON HAS, ONCE, AND WHERE ITS PARTS ARE, CONTINUOUSLY.
+	//
+	// The old trace said "n=1 near=0 v0=0.42" and nothing else, which cannot
+	// tell a magazine from a slide, a part twelve units from the hand from one
+	// twelve units from the floor, or a weapon whose bones were never found
+	// from one whose bones were found and are simply not moving. Every one of
+	// those was mistaken for another at least once.
 	if( vr_diag.value != 0.0f )
 	{
 		static double next = 0.0;
 
 		if( host.realtime >= next )
 		{
+			vec3_t dorg, dang;
+			qboolean have_dom = VR_GetHandWorld( VR_DominantHand(), dorg, dang );
+
 			next = host.realtime + 0.25;
-			VR_DiagPrintf( "PART n=%d near=%d(%.1fu%s) reach=%.0f held=%d v0=%.2f v1=%.2f\n",
-				n, near_i, near_d, in_reach ? "" : " OUT", vr_part_reach.value,
-				vr.part_held, vr.part_value[0], vr.part_value[1] );
+
+			VR_DiagPrintf( "PART off=(%.0f %.0f %.0f) grip=%d  dom=(%.0f %.0f %.0f)  reach=%.0f held=%d"
+				" clip=%d mag_out=%d carrying=%d\n",
+				hand[0], hand[1], hand[2], grip ? 1 : 0,
+				have_dom ? dorg[0] : 0.0f, have_dom ? dorg[1] : 0.0f, have_dom ? dorg[2] : 0.0f,
+				vr_part_reach.value, vr.part_held, vr.rl_clip,
+				vr.mag_out ? 1 : 0, vr.rl_holding ? 1 : 0 );
+
+			// Per part, both hands, because a part the off hand cannot reach is a
+			// different problem from a part that is nowhere near the weapon at all -
+			// and the distance to the DOMINANT hand is what says which of those it is.
+			for( i = 0; i < n; i++ )
+			{
+				const vr_part_t *p = &refState.vrParts[i];
+				vec3_t dd;
+				float doff, ddom = -1.0f;
+
+				VectorSubtract( hand, p->origin, dd );
+				doff = Q_max( 0.0f, VectorLength( dd ) - p->extent );
+
+				if( have_dom )
+				{
+					VectorSubtract( dorg, p->origin, dd );
+					ddom = Q_max( 0.0f, VectorLength( dd ) - p->extent );
+				}
+
+				VR_DiagPrintf( "PART   [%d] %-16s v=%5.2f at=(%.0f %.0f %.0f) off=%5.1fu dom=%5.1fu%s%s\n",
+					i, p->name[0] ? p->name : "(unnamed)", vr.part_value[i],
+					p->origin[0], p->origin[1], p->origin[2], doff, ddom,
+					( vr.part_held == i ) ? " HELD" : "",
+					( i == near_i ) ? ( in_reach ? " <-nearest" : " <-nearest,OUT OF REACH" ) : "" );
+			}
 		}
 	}
 }
@@ -7682,6 +7873,7 @@ static void VR_UpdateAction( void )
 		vr.cyl_dumped = false;
 		vr.cyl_eject = false;
 		vr.mag_out = false;
+		vr.mag_pulled = false;
 		vr.part_off_catch = false;
 
 		vr.act_id = vr_wlist.cur_id;
@@ -7975,8 +8167,8 @@ static void VR_UpdateAction( void )
 		// is the weaker measure: it reads the hand against the weapon forward
 		// axis over a distance dialled in by feel, where the part knows its
 		// own axis and its own travel exactly.
-		float pull = ( vr_parts.value != 0.0f && refState.vrPartCount > 0 )
-			? vr.part_value[0]
+		float pull = ( vr_parts.value != 0.0f && vr.part_action >= 0 )
+			? vr.part_value[vr.part_action]
 			: ( vr.act_ref - proj ) / travel;
 
 		if( pull < 0.0f ) pull = 0.0f;
@@ -8120,6 +8312,7 @@ int VR_GetDropMagImpulse( void )
 	if( !VR_IsActive() || vr_reload.value == 0.0f )
 	{
 		prev = false;
+		vr.mag_pulled = false;
 		return 0;
 	}
 
@@ -8141,9 +8334,19 @@ int VR_GetDropMagImpulse( void )
 	// control opens the cylinder instead - and pressing it again closes it.
 	// One control, two mechanisms, chosen by what the weapon actually is.
 	{
+		// A CYLINDER IS A MECHANISM. A MAGAZINE IS NOT.
+		//
+		// "Has parts and no action" caught far more than revolvers: the MP5, the
+		// RPG and the hand grenade all have exactly one part and no action to
+		// work, so the reload control opened an imaginary cylinder on all three
+		// instead of dropping the magazine, ejecting the rocket, or pulling the
+		// pin. That is the rifle reloading itself.
+		//
+		// What actually separates them is whether the part is a mechanism at all,
+		// which is now a question the part map answers.
 		const vr_wprofile_t *iwp = VR_GetWeaponProfile();
 		qboolean swings = ( iwp && iwp->valid && !iwp->pump && !iwp->slide
-			&& refState.vrPartCount > 0 && vr_cylinder.value != 0.0f );
+			&& vr.part_action >= 0 && vr_cylinder.value != 0.0f );
 
 		vr.cyl_swings = swings;
 
@@ -8160,6 +8363,13 @@ int VR_GetDropMagImpulse( void )
 
 			return 0;   // the control swung the cylinder; it did not drop anything
 		}
+	}
+
+	// EITHER THE BUTTON OR THE HAND, and the mod is told the same thing by both.
+	if( vr.mag_pulled )
+	{
+		vr.mag_pulled = false;
+		return 211;
 	}
 
 	if( edge )

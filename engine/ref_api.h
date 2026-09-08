@@ -167,6 +167,12 @@ typedef struct vr_part_s
 	                     // one wins that on centres alone
 	float    value;      // engine -> renderer: 0 at rest, 1 at full extent
 	qboolean present;    // renderer -> engine: this weapon has this part
+	qboolean is_action;  // renderer -> engine: this part is the weapon's ACTION -
+	                     // the thing that is worked, locks back, and cycles when
+	                     // the weapon fires. A magazine, a rocket or a grenade pin
+	                     // is a part you can move; it is not an action, and driving
+	                     // it as one throws the magazine out of an MP5 every shot.
+	                     // Marked in r_vr_action_bone with a leading '*'.
 } vr_part_t;
 
 typedef struct ref_globals_s

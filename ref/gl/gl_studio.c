@@ -143,7 +143,7 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // have never seen. Substring match, ';' separated, case insensitive.
 CVAR_DEFINE_AUTO( r_vr_hide_bone, "shell", FCVAR_ARCHIVE, "collapse this bone so its geometry vanishes; the model shell during reloads" );
 CVAR_DEFINE_AUTO( r_vr_action_bone,
-	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 2;v_9mmar=clip;v_crossbow=Slide,Bolt;v_357=revolver,speed_loader;v_rpg=Rocket;v_grenade=ring,spoon",
+	"v_shotgun=*Charger;v_9mmhandgun=*Hands mesh 2;v_9mmar=clip;v_crossbow=*Slide,Bolt;v_357=*revolver,speed_loader;v_rpg=Rocket;v_grenade=ring,spoon",
 	FCVAR_ARCHIVE, "per model: model=bone, semicolon separated - the part the hand works" );
 CVAR_DEFINE_AUTO( r_vr_flat_depth, "0", FCVAR_ARCHIVE, "squash the weapon into the near depth range as flatscreen does; breaks stereo depth on the weapon" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
@@ -962,6 +962,8 @@ typedef struct
 	float    extent;                 // rms spread of that geometry about the probe
 	vec3_t   rest_pos, ext_pos;
 	vec4_t   rest_q,  ext_q;
+	qboolean is_action;              // marked '*' in the map: this is the mechanism
+	                                 // that is worked, not a magazine or a rocket
 } vr_studio_part_t;
 
 static vr_studio_part_t vr_parts[VR_MAX_PARTS];
@@ -1195,6 +1197,13 @@ Work out which parts of this weapon the player can take hold of, and how far
 each one travels. Derived from the model once and cached per studio header.
 
 The bones are NAMED, per model, in r_vr_action_bone - "model=bone,bone".
+A bone marked with a leading '*' is that weapon's ACTION: the mechanism worked
+by hand, which locks back and cycles when the weapon fires. Everything else is
+simply a part that moves - a magazine, a rocket, a grenade pin. That
+distinction cannot be measured and cannot reliably be guessed either, because
+"bolt" is the action on a rifle and the ammunition on a crossbow, and only
+whoever wrote the map knows which one this is.
+
 Measuring cannot find them: on one shotgun the hand out-swings the fore-end
 during firing, and scoring by motion picked a fingertip however it was
 weighted. Nor can the names be guessed - this pistol calls its slide "Hands
@@ -1278,7 +1287,19 @@ static int R_StudioFindParts( cl_entity_t *e )
 			char bname[64];
 			int b = 0, bone = -1;
 
+			qboolean marked = false;
+
 			while( *tok == ' ' ) tok++;
+
+			// Read ahead of the name, so it survives bone names that contain
+			// spaces of their own ("Hands mesh 2").
+			if( *tok == '*' )
+			{
+				marked = true;
+				tok++;
+				while( *tok == ' ' ) tok++;
+			}
+
 			while( *tok && *tok != ',' && b < 63 )
 				bname[b++] = *tok++;
 			while( b > 0 && bname[b-1] == ' ' ) b--;
@@ -1302,6 +1323,7 @@ static int R_StudioFindParts( cl_entity_t *e )
 			{
 				Q_strncpy( vr_parts[vr_nparts].name, bname,
 					sizeof( vr_parts[vr_nparts].name ));
+				vr_parts[vr_nparts].is_action = marked;
 				vr_nparts++;
 			}
 		}
@@ -1310,9 +1332,9 @@ static int R_StudioFindParts( cl_entity_t *e )
 	if( r_vr_action_debug.value != 0.0f )
 	{
 		for( i = 0; i < vr_nparts; i++ )
-			gEngfuncs.Con_Printf( "VRPART %s: bone=%d seq=%d peak=%.0f travel=%.2f %s\n",
+			gEngfuncs.Con_Printf( "VRPART %s: bone=%d seq=%d peak=%.0f travel=%.2f action=%d %s\n",
 				vr_parts[i].name, vr_parts[i].bone, vr_parts[i].seq,
-				vr_parts[i].peak, vr_parts[i].travel,
+				vr_parts[i].peak, vr_parts[i].travel, vr_parts[i].is_action ? 1 : 0,
 				RI.currentmodel ? RI.currentmodel->name : "?" );
 	}
 
@@ -3443,6 +3465,40 @@ because the bone a pump lives on is a leaf - Half-Life's "Bone01" owns the
 fore-end and parents nothing - so no other bone inherits the change.
 ====================
 */
+/*
+====================
+R_StudioPartAxis
+
+Rest to full extent, in world space - which way this part travels and how far.
+
+Split out of the drive path because it was only ever computed on frames where
+a hand was actually moving the part. Every other frame published a stale or
+zero axis, so a magazine nobody had touched yet reported that it travelled
+nowhere, and the first frame of a grab could not move it at all.
+====================
+*/
+static void R_StudioPartAxis( const vr_studio_part_t *sp, int parent, vec3_t out )
+{
+	matrix3x4 m, w;
+	vec3_t a, b;
+
+	Matrix3x4_FromOriginQuat( m, sp->rest_q, sp->rest_pos );
+	if( parent >= 0 )
+		Matrix3x4_ConcatTransforms( w, g_studio.bonestransform[parent], m );
+	else
+		Matrix3x4_ConcatTransforms( w, g_studio.rotationmatrix, m );
+	Matrix3x4_VectorTransform( w, sp->probe, a );
+
+	Matrix3x4_FromOriginQuat( m, sp->ext_q, sp->ext_pos );
+	if( parent >= 0 )
+		Matrix3x4_ConcatTransforms( w, g_studio.bonestransform[parent], m );
+	else
+		Matrix3x4_ConcatTransforms( w, g_studio.rotationmatrix, m );
+	Matrix3x4_VectorTransform( w, sp->probe, b );
+
+	VectorSubtract( b, a, out );
+}
+
 static void R_StudioApplyHandAction( void )
 {
 	mstudiobone_t *pbones;
@@ -3480,6 +3536,10 @@ static void R_StudioApplyHandAction( void )
 		{
 			memset( g_studio.bonestransform[sp->bone], 0, sizeof( matrix3x4 ));
 			memset( g_studio.lighttransform[sp->bone], 0, sizeof( matrix3x4 ));
+			Q_strncpy( pub->name, sp->name, sizeof( pub->name ));
+			pub->is_action = sp->is_action;
+			pub->travel = sp->travel;
+			pub->extent = sp->extent;
 			pub->present = true;
 			gpGlobals->vrPartCount = i + 1;
 			continue;
@@ -3496,6 +3556,8 @@ static void R_StudioApplyHandAction( void )
 			Q_strncpy( pub->name, sp->name, sizeof( pub->name ));
 			Matrix3x4_VectorTransform( g_studio.bonestransform[sp->bone],
 				sp->probe, pub->origin );
+			R_StudioPartAxis( sp, parent, pub->axis );
+			pub->is_action = sp->is_action;
 			pub->travel = sp->travel;
 			pub->extent = sp->extent;
 			pub->present = true;
@@ -3540,26 +3602,8 @@ static void R_StudioApplyHandAction( void )
 		// distance at all. The model already knows how far its own slide goes;
 		// asking the player for that exact distance is strictly better than a
 		// constant dialled in by feel on a different weapon.
-		{
-			matrix3x4 m, w;
-			vec3_t a, b;
-
-			Matrix3x4_FromOriginQuat( m, sp->rest_q, sp->rest_pos );
-			if( parent >= 0 )
-				Matrix3x4_ConcatTransforms( w, g_studio.bonestransform[parent], m );
-			else
-				Matrix3x4_ConcatTransforms( w, g_studio.rotationmatrix, m );
-			Matrix3x4_VectorTransform( w, sp->probe, a );
-
-			Matrix3x4_FromOriginQuat( m, sp->ext_q, sp->ext_pos );
-			if( parent >= 0 )
-				Matrix3x4_ConcatTransforms( w, g_studio.bonestransform[parent], m );
-			else
-				Matrix3x4_ConcatTransforms( w, g_studio.rotationmatrix, m );
-			Matrix3x4_VectorTransform( w, sp->probe, b );
-
-			VectorSubtract( b, a, pub->axis );
-		}
+		R_StudioPartAxis( sp, parent, pub->axis );
+		pub->is_action = sp->is_action;
 		pub->travel = sp->travel;
 		pub->extent = sp->extent;
 		pub->present = true;
