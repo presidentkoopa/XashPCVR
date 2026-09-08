@@ -120,6 +120,7 @@ static CVAR_DEFINE_AUTO( vr_action_sound, "weapons/scock1.wav", FCVAR_ARCHIVE, "
 static CVAR_DEFINE_AUTO( vr_pump_travel, "0.45", FCVAR_ARCHIVE, "how far the action must be pulled back, units" );
 static CVAR_DEFINE_AUTO( vr_parts, "1", FCVAR_ARCHIVE, "take hold of weapon parts where they actually are" );
 static CVAR_DEFINE_AUTO( vr_cylinder, "1", FCVAR_ARCHIVE, "the reload control swings a revolver cylinder out and back" );
+static CVAR_DEFINE_AUTO( vr_cylinder_flick, "220", FCVAR_ARCHIVE, "wrist roll speed that flicks an open cylinder shut, degrees/sec; 0 off" );
 static CVAR_DEFINE_AUTO( vr_cylinder_dump, "50", FCVAR_ARCHIVE, "muzzle pitch above which an open cylinder empties itself, degrees" );
 static CVAR_DEFINE_AUTO( vr_part_kick, "0.11", FCVAR_ARCHIVE, "seconds a self-loading action takes to cycle when fired; 0 never cycles itself" );
 static CVAR_DEFINE_AUTO( vr_part_reach, "12", FCVAR_ARCHIVE, "how near a weapon part the hand must be to take hold of it, units" );
@@ -783,6 +784,8 @@ static struct
 	qboolean      cyl_open;         // a swing-out cylinder is hanging open
 	qboolean      cyl_dumped;       // and its cases have already been tipped out
 	qboolean      cyl_eject;        // one-shot: tell the game to spill them
+	qboolean      cyl_swings;       // this weapon opens rather than being worked
+	float         cyl_roll_prev;    // last wrist roll, for the flick
 	float         part_value[VR_MAX_PARTS];
 	double        part_fired;       // when the action was last cycled by firing
 	int           part_clip;        // clip count the cycle detector last saw
@@ -965,6 +968,7 @@ Periodic snapshot of everything that matters, plus anomaly tracking.
 // which needs these before their real definitions later in this file.
 static qboolean VR_GetHandGripWorld( int hand, vec3_t out_org, vec3_t out_ang );
 static void VR_BodyReset( void );
+static float VR_WrapAngle180( float a );
 static model_t   *vr_hand_model_suit;
 static model_t   *vr_hand_model_labcoat;
 static cl_entity_t vr_hand_ent[2];		// 0 = left, 1 = right (when unarmed)
@@ -5925,6 +5929,45 @@ static void VR_UpdateParts( void )
 		refState.vrParts[0].value = 1.0f;
 	}
 
+	// A FLICK OF THE WRIST SHUTS IT.
+	//
+	// The other half of how a revolver is actually handled: the cylinder is
+	// swung home with a turn of the hand, not pushed. Measured as roll speed
+	// on the hand holding the gun, so it cannot be confused with aiming -
+	// pointing somewhere changes pitch and yaw, and closing one changes roll.
+	if( vr.cyl_open && vr_cylinder_flick.value > 0.0f )
+	{
+		vec3_t horg, hang;
+
+		if( VR_GetHandWorld( VR_DominantHand(), horg, hang ) && host.frametime > 0.0 )
+		{
+			float d = VR_WrapAngle180( hang[ROLL] - vr.cyl_roll_prev );
+			float rate = fabs( d ) / (float)host.frametime;
+
+			vr.cyl_roll_prev = hang[ROLL];
+
+			if( rate > vr_cylinder_flick.value )
+			{
+				vr.cyl_open = false;
+				vr.cyl_dumped = false;
+				vr.part_value[0] = 0.0f;
+				refState.vrParts[0].value = 0.0f;
+
+				S_StartLocalSound( "weapons/357_cock1.wav", VOL_NORM, false );
+				VR_Haptic( VR_DominantHand(), 0.09f, 0.0f, 0.9f );
+			}
+		}
+	}
+	else
+	{
+		vec3_t horg, hang;
+
+		// Tracked while shut as well, or the first frame after opening reads as
+		// an enormous roll and slams it straight closed again.
+		if( VR_GetHandWorld( VR_DominantHand(), horg, hang ))
+			vr.cyl_roll_prev = hang[ROLL];
+	}
+
 	// AND THE CASES FALL OUT WHEN THE MUZZLE COMES UP.
 	//
 	// Which is how it is actually done: break it open, tip it back, and let
@@ -8022,6 +8065,8 @@ int VR_GetDropMagImpulse( void )
 		qboolean swings = ( iwp && iwp->valid && !iwp->pump && !iwp->slide
 			&& refState.vrPartCount > 0 && vr_cylinder.value != 0.0f );
 
+		vr.cyl_swings = swings;
+
 		if( edge && swings )
 		{
 			vr.cyl_open = !vr.cyl_open;
@@ -8181,6 +8226,14 @@ static void VR_UpdateReload( void )
 			VectorSubtract( hand, port, d );
 			at_port = ( VectorLength( d ) < Q_max( 1.0f, vr_reload_port.value ));
 		}
+
+		// A CLOSED CYLINDER HAS NOWHERE TO PUT A ROUND.
+		//
+		// On a weapon that swings open, the port only exists while it IS open -
+		// otherwise the ammo box could be pressed against a shut gun and the
+		// rounds would arrive through the frame.
+		if( at_port && vr.cyl_swings && !vr.cyl_open )
+			at_port = false;
 
 		if( at_port )
 		{
@@ -8750,6 +8803,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_parts );
 	Cvar_RegisterVariable( &vr_part_reach );
 	Cvar_RegisterVariable( &vr_cylinder );
+	Cvar_RegisterVariable( &vr_cylinder_flick );
 	Cvar_RegisterVariable( &vr_cylinder_dump );
 	Cvar_RegisterVariable( &vr_part_kick );
 	Cvar_RegisterVariable( &vr_slide_travel );
