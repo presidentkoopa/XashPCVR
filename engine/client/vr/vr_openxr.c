@@ -5997,8 +5997,19 @@ static void VR_UpdateParts( void )
 				if( host.realtime >= nxt )
 				{
 					nxt = host.realtime + 1.0;
-					VR_DiagPrintf( "CYL open, muzzle up %.0f deg, need %.0f\n",
-						RAD2DEG( asinf( bound( -1.0f, mfwd[2], 1.0f ))), vr_cylinder_dump.value );
+					{
+						vec3_t ho, ha, hf, wf;
+
+						AngleVectors( wang, wf, NULL, NULL );
+						VectorClear( hf );
+						if( VR_GetHandWorld( VR_DominantHand(), ho, ha ))
+							AngleVectors( ha, hf, NULL, NULL );
+
+						VR_DiagPrintf( "CYL open  hand up %.0f  aim up %.0f  need %.0f\n",
+							RAD2DEG( asinf( bound( -1.0f, hf[2], 1.0f ))),
+							RAD2DEG( asinf( bound( -1.0f, wf[2], 1.0f ))),
+							vr_cylinder_dump.value );
+					}
 				}
 			}
 
@@ -6012,7 +6023,18 @@ static void VR_UpdateParts( void )
 			// Where the barrel actually points has no convention to get wrong: its
 			// Z is 1 straight up and -1 straight down, whatever anyone did to the
 			// angles on the way.
-			AngleVectors( wang, mfwd, NULL, NULL );
+			// FROM THE HAND, because the weapon aim angles are not in this
+			// convention and reported the muzzle 90 degrees down while the gun was
+			// held level. The hand pose is what every other gesture in this file
+			// measures against, and it has never been wrong.
+			{
+				vec3_t horg, hang2;
+
+				if( VR_GetHandWorld( VR_DominantHand(), horg, hang2 ))
+					AngleVectors( hang2, mfwd, NULL, NULL );
+				else
+					AngleVectors( wang, mfwd, NULL, NULL );
+			}
 
 			if( mfwd[2] > sinf( DEG2RAD( bound( 5.0f, vr_cylinder_dump.value, 89.0f ))))
 			{
