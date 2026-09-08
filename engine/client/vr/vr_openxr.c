@@ -5935,7 +5935,16 @@ static void VR_UpdateParts( void )
 	// swung home with a turn of the hand, not pushed. Measured as roll speed
 	// on the hand holding the gun, so it cannot be confused with aiming -
 	// pointing somewhere changes pitch and yaw, and closing one changes roll.
-	if( vr.cyl_open && vr_cylinder_flick.value > 0.0f )
+	// NOT WHILE A ROUND IS ON ITS WAY IN.
+	//
+	// Turning the gun to meet the ammo box IS a roll of the hand holding it,
+	// so the close gesture fired during the exact motion that sets up the
+	// load - the cylinder shut itself just before the rounds arrived.
+	//
+	// A threshold cannot separate those two, because they are the same
+	// movement. What separates them is intent, and a hand carrying ammo to
+	// the gun is not trying to close it.
+	if( vr.cyl_open && vr_cylinder_flick.value > 0.0f && !vr.rl_holding )
 	{
 		vec3_t horg, hang;
 
