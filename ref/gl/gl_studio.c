@@ -143,7 +143,7 @@ CVAR_DEFINE_AUTO( r_studio_builtin_renderer, "0", 0, "use built-in studio model 
 // have never seen. Substring match, ';' separated, case insensitive.
 CVAR_DEFINE_AUTO( r_vr_hide_bone, "shell", FCVAR_ARCHIVE, "collapse this bone so its geometry vanishes; the model shell during reloads" );
 CVAR_DEFINE_AUTO( r_vr_action_bone,
-	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 2;v_9mmar=clip;v_crossbow=Slide,Bolt;v_357=revolver,speed_loader;v_grenade=ring,spoon",
+	"v_shotgun=Charger;v_9mmhandgun=Hands mesh 2;v_9mmar=clip;v_crossbow=Slide,Bolt;v_357=revolver,speed_loader;v_rpg=Rocket;v_grenade=ring,spoon",
 	FCVAR_ARCHIVE, "per model: model=bone, semicolon separated - the part the hand works" );
 CVAR_DEFINE_AUTO( r_vr_flat_depth, "0", FCVAR_ARCHIVE, "squash the weapon into the near depth range as flatscreen does; breaks stereo depth on the weapon" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );

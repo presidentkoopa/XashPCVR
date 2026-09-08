@@ -111,7 +111,7 @@ static CVAR_DEFINE_AUTO( vr_reload_model_mag, "models/w_9mmclip.mdl", FCVAR_ARCH
 static CVAR_DEFINE_AUTO( vr_slide_sound, "weapons/reload3.wav", FCVAR_ARCHIVE, "sound for working a slide rather than a pump" );
 static CVAR_DEFINE_AUTO( vr_reload_model, "models/shotgunshell.mdl", FCVAR_ARCHIVE, "what a carried round looks like; empty to draw nothing" );
 static CVAR_DEFINE_AUTO( vr_reload_model_map,
-	"v_9mmar=models/w_9mmarclip.mdl;v_357=models/w_357ammobox.mdl;v_crossbow=models/w_crossbow_clip.mdl",
+	"v_9mmar=models/w_9mmarclip.mdl;v_357=models/w_357ammobox.mdl;v_crossbow=models/w_crossbow_clip.mdl;v_rpg=models/w_rpgammo.mdl",
 	FCVAR_ARCHIVE, "per model: viewmodel=round model, semicolon separated" );
 static CVAR_DEFINE_AUTO( vr_pump_giveup, "1.5", FCVAR_ARCHIVE, "seconds of holding the trigger that releases a stuck action; 0 never gives up" );
 static CVAR_DEFINE_AUTO( vr_pump_recoil, "0.35", FCVAR_ARCHIVE, "seconds of firing animation to play before the action takes over" );
