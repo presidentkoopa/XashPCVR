@@ -777,6 +777,7 @@ static struct
 	int           part_held;        // which weapon part the hand has hold of, -1 none
 	vec3_t        part_grab_hand;   // where the hand was when it took hold
 	float         part_grab_value;  // where the part was when it was taken hold of
+	qboolean      part_off_catch;   // an open action has been tugged off its stop
 	float         part_value[VR_MAX_PARTS];
 	double        part_fired;       // when the action was last cycled by firing
 	int           part_clip;        // clip count the cycle detector last saw
@@ -5743,11 +5744,46 @@ static void VR_UpdateParts( void )
 			vr.part_held = near_i;
 			VectorCopy( hand, vr.part_grab_hand );
 			vr.part_grab_value = vr.part_value[near_i];
+			vr.part_off_catch = false;
 			VR_Haptic( VR_OffHand(), 0.04f, 0.0f, 0.5f );
 		}
 	}
 	else if( !grip )
 	{
+		// LETTING GO OF A CLEARED CATCH SENDS IT HOME.
+		//
+		// The spring does the closing, so the stroke completes on release
+		// rather than on the hand travelling the whole way forward - and the
+		// part snaps shut instead of following a hand that has stopped
+		// touching it.
+		if( vr.part_held == 0 && vr.part_off_catch && vr.act_open )
+		{
+			vr.part_value[0] = 0.0f;
+			refState.vrParts[0].value = 0.0f;
+
+			vr.act_open = false;
+			vr.act_needs = false;
+			vr.act_back = false;
+			vr.act_pull = 0.0f;
+			vr.act_lo = 1.0f;
+			vr.act_hi = 0.0f;
+			vr.act_armed = false;
+			vr.act_worked = true;
+
+			{
+				const vr_wprofile_t *rwp = VR_GetWeaponProfile();
+				const char *snd = ( rwp && rwp->pump )
+					? vr_action_sound.string : vr_slide_sound.string;
+
+				if( snd && snd[0] )
+					S_StartLocalSound( snd, VOL_NORM, false );
+			}
+
+			VR_Haptic( VR_OffHand(), 0.09f, 0.0f, 1.0f );
+			VR_Haptic( VR_DominantHand(), 0.09f, 0.0f, 0.9f );
+		}
+
+		vr.part_off_catch = false;
 		vr.part_held = -1;
 	}
 	else
@@ -5764,6 +5800,18 @@ static void VR_UpdateParts( void )
 
 			VectorSubtract( hand, vr.part_grab_hand, d );
 			t = vr.part_grab_value + DotProduct( d, pp->axis ) / len2;
+
+			// PULLED PAST THE STOP - which is how a slide is actually released.
+			//
+			// With the action locked open, the real motion is a short tug backwards
+			// to clear the catch, then letting go so it slams home under its own
+			// spring. Requiring the hand to PUSH it closed instead is a thing no
+			// pistol has ever asked of anyone.
+			//
+			// Read before the clamp, because past full extent is exactly the signal
+			// and the clamped value cannot express it.
+			if( vr.act_open && t > 1.05f )
+				vr.part_off_catch = true;
 
 			if( t < 0.0f ) t = 0.0f;
 			if( t > 1.0f ) t = 1.0f;
