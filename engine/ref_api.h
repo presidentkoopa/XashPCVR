@@ -78,7 +78,11 @@ GNU General Public License for more details.
 //     <= 255 bytes, dropping per-allocation filename/fileline tracking.
 // 18. PARM_GET_{LIGHT,SCREEN,LINEAR}GAMMATABLE_PTR now point to uint16_t arrays instead of uint.
 //     Their entries never exceed 1023, so the narrowing is lossless.
-#define REF_API_VERSION 18
+// 19. vr_part_t gained `driven`, and `value` is read only when it is set.
+//     The VR part fields were added to this struct without ever bumping the
+//     version, so a renderer and an engine built apart could already disagree
+//     about its layout in silence; this bump makes the mismatch loud.
+#define REF_API_VERSION 19
 
 #define TF_SKY		(TF_SKYSIDE|TF_NOMIPMAP|TF_ALLOW_NEAREST)
 #define TF_FONT		(TF_NOMIPMAP|TF_CLAMP|TF_ALLOW_NEAREST)
@@ -165,7 +169,18 @@ typedef struct vr_part_s
 	                     // can mean the one the hand is ON rather than the one
 	                     // with the closest middle - a small part beside a big
 	                     // one wins that on centres alone
-	float    value;      // engine -> renderer: 0 at rest, 1 at full extent
+	qboolean driven;     // engine -> renderer: a hand is posing this part, so
+	                     // `value` means something. FALSE IS THE DEFAULT AND IT
+	                     // MATTERS: this struct is zeroed for everyone, and a
+	                     // player with no headset never writes to it at all.
+	                     // Ownership used to be carried by a negative `value`,
+	                     // which meant "nobody wrote anything" and "drive this
+	                     // to rest" were the same state - so on a desktop
+	                     // client every bone named in r_vr_action_bone sat
+	                     // pinned at rest and the pump, slide and cylinder
+	                     // never moved through their own animations.
+	float    value;      // engine -> renderer: 0 at rest, 1 at full extent.
+	                     // Read only when `driven` is set.
 	qboolean present;    // renderer -> engine: this weapon has this part
 	float    dissolve;   // engine -> renderer: 0 fully drawn, 1 gone. A magazine
 						// taken out by hand shrinks away over a moment instead of

@@ -1228,18 +1228,13 @@ out-swing it: which sequence moves that bone furthest, where in that sequence
 it reaches its extent, and the two poses that bracket the travel.
 ====================
 */
-static int R_StudioFindParts( cl_entity_t *e )
+static int R_StudioDeriveParts( cl_entity_t *e )
 {
-	static studiohdr_t *cached_hdr = NULL;
 	mstudioseqdesc_t *pseqdesc;
 	mstudiobone_t *pbones;
 	char want[256];
 	int i;
 
-	if( cached_hdr == m_pStudioHeader )
-		return vr_nparts;
-
-	cached_hdr = m_pStudioHeader;
 	vr_nparts = 0;
 	want[0] = 0;
 
@@ -1354,9 +1349,68 @@ static int R_StudioFindParts( cl_entity_t *e )
 	return vr_nparts;
 }
 
+/*
+====================
+R_StudioFindParts
 
+The measurement above, remembered per model.
 
+It used to remember exactly one header, which any other studio model drawn in
+between threw away - so the weapon's travel was re-derived from its sequences,
+nine samples each, on the following frame, and again on the one after that.
+Four slots is comfortably more than the viewmodels in flight at once: the
+weapon, and a hand model between weapons.
 
+vr_studio_part_t holds no pointers, so a slot is just a copy.
+====================
+*/
+#define VR_PART_CACHE 4
+
+static int R_StudioFindParts( cl_entity_t *e )
+{
+	static struct
+	{
+		studiohdr_t      *hdr;
+		vr_studio_part_t  parts[VR_MAX_PARTS];
+		int               n;
+		unsigned int      used;
+	} cache[VR_PART_CACHE];
+	static unsigned int clock = 0;
+	int i, slot = 0;
+
+	if( !m_pStudioHeader )
+	{
+		vr_nparts = 0;
+		return 0;
+	}
+
+	for( i = 0; i < VR_PART_CACHE; i++ )
+	{
+		if( cache[i].hdr != m_pStudioHeader )
+			continue;
+
+		memcpy( vr_parts, cache[i].parts, sizeof( vr_parts ));
+		vr_nparts = cache[i].n;
+		cache[i].used = ++clock;
+		return vr_nparts;
+	}
+
+	// Least recently used slot. An unused slot has used == 0 and wins outright.
+	for( i = 1; i < VR_PART_CACHE; i++ )
+	{
+		if( cache[i].used < cache[slot].used )
+			slot = i;
+	}
+
+	R_StudioDeriveParts( e );
+
+	cache[slot].hdr = m_pStudioHeader;
+	cache[slot].n = vr_nparts;
+	cache[slot].used = ++clock;
+	memcpy( cache[slot].parts, vr_parts, sizeof( vr_parts ));
+
+	return vr_nparts;
+}
 
 static void R_StudioSetupBones( cl_entity_t *e )
 {
@@ -3434,7 +3488,17 @@ static void R_StudioSetupRenderer( int rendermode )
 	// before it draws, with the weapon bones already in the engine buffer.
 	// Half-Life supplies its own studio renderer, so this is the only place
 	// the engine sees the viewmodel at all.
-	R_StudioApplyHandAction();
+	//
+	// THE VIEWMODEL, AND ONLY THE VIEWMODEL.
+	//
+	// This runs for every studio model drawn, and the weapon's parts are the
+	// only ones anybody can reach. Running it on the rest cost twice over:
+	// R_StudioFindParts remembers one header, so a scientist drawn between two
+	// eyes threw the weapon's measurements away and they were derived again
+	// from the sequences - and the published part list was whatever model
+	// happened to be drawn last, since each call clears vrPartCount first.
+	if( RI.currententity == tr.viewent )
+		R_StudioApplyHandAction();
 
 	// THE MODEL BRINGS ITS OWN SHELL and the player is already holding one.
 	//
@@ -3861,13 +3925,20 @@ static void R_StudioApplyHandAction( void )
 			continue;
 		}
 
-		// NEGATIVE MEANS THE HAND IS NOT ON IT.
+		// NOBODY IS POSING THIS PART, SO LEAVE IT TO ITS ANIMATION.
 		//
 		// Overriding a part nobody is touching froze it at rest through its own
 		// animations too, so a revolver cylinder would not turn even when the
 		// weapon fired. Its position is still published for reaching; only the
 		// pose is left to the mod.
-		if( p < 0.0f )
+		//
+		// The `driven` flag is the test, not the sign of `value`. A negative
+		// value used to carry the same meaning, which made "no hand on it" and
+		// "nothing ever wrote here" indistinguishable - and nothing ever writes
+		// here for a player with no headset, so on the desktop every configured
+		// bone was pinned at rest: no pump, no slide, no cylinder, no pin. The
+		// sign is still honoured for anything built against the old meaning.
+		if( !pub->driven || p < 0.0f )
 		{
 			Q_strncpy( pub->name, sp->name, sizeof( pub->name ));
 			Matrix3x4_VectorTransform( g_studio.bonestransform[sp->bone],

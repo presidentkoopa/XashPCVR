@@ -5716,6 +5716,27 @@ covers every weapon shipped in the default map. It is a fallback and it is
 allowed to be imperfect; '*' is the answer for anything it gets wrong.
 ====================
 */
+/*
+====================
+VR_PartDrive
+
+Pose a part from the hand.
+
+Every drive goes through here so that setting a value and claiming the part
+cannot come apart: the renderer ignores `value` unless `driven` is set, and
+eight separate assignments each remembering to set both is eight chances to
+forget one.
+====================
+*/
+static void VR_PartDrive( int i, float v )
+{
+	if( i < 0 || i >= VR_MAX_PARTS )
+		return;
+
+	refState.vrParts[i].value = v;
+	refState.vrParts[i].driven = true;
+}
+
 static qboolean VR_PartIsAmmo( const char *name )
 {
 	static const char *ammo[] =
@@ -5894,6 +5915,9 @@ static void VR_UpdateParts( void )
 				|| ( i == act && act >= 0 && vr.cyl_open );
 		}
 
+		// The flag, not the sign, is what the renderer reads now. The value
+		// still goes negative for anything built against the old meaning.
+		refState.vrParts[i].driven = ours;
 		refState.vrParts[i].value = ours ? vr.part_value[i] : -1.0f;
 	}
 
@@ -5964,7 +5988,7 @@ static void VR_UpdateParts( void )
 		if( vr.part_held == act && act >= 0 && vr.part_off_catch && vr.act_open )
 		{
 			vr.part_value[act] = 0.0f;
-			refState.vrParts[act].value = 0.0f;
+			VR_PartDrive( act, 0.0f );
 
 			vr.act_open = false;
 			vr.act_needs = false;
@@ -6077,7 +6101,7 @@ static void VR_UpdateParts( void )
 			if( t > 1.0f ) t = 1.0f;
 
 			vr.part_value[vr.part_held] = t;
-			refState.vrParts[vr.part_held].value = t;
+			VR_PartDrive( vr.part_held, t );
 		}
 	}
 
@@ -6140,7 +6164,7 @@ static void VR_UpdateParts( void )
 				vr.part_fired = 0.0;
 			}
 
-			refState.vrParts[act].value = vr.part_value[act];
+			VR_PartDrive( act, vr.part_value[act] );
 		}
 	}
 
@@ -6151,7 +6175,7 @@ static void VR_UpdateParts( void )
 	if( vr.cyl_open && act >= 0 && vr.part_held != act )
 	{
 		vr.part_value[act] = 1.0f;
-		refState.vrParts[act].value = 1.0f;
+		VR_PartDrive( act, 1.0f );
 	}
 
 	// A FLICK OF THE WRIST SHUTS IT.
@@ -6188,7 +6212,7 @@ static void VR_UpdateParts( void )
 				if( act >= 0 )
 				{
 					vr.part_value[act] = 0.0f;
-					refState.vrParts[act].value = 0.0f;
+					VR_PartDrive( act, 0.0f );
 				}
 
 				VR_DiagPrintf( "CYL shut by flick, %.0f deg/sec\n", rate );
@@ -6326,7 +6350,7 @@ static void VR_UpdateParts( void )
 				// Held clear of the magwell while it goes, rather than snapping back
 				// to a seated pose it is on its way out of.
 				vr.part_value[m] = 1.0f;
-				refState.vrParts[m].value = 1.0f;
+				VR_PartDrive( m, 1.0f );
 			}
 			else
 			{
@@ -6339,7 +6363,7 @@ static void VR_UpdateParts( void )
 				if( vr.mag_fade > 0.0f && vr.part_held != m )
 				{
 					vr.part_value[m] = 0.0f;
-					refState.vrParts[m].value = 0.0f;
+					VR_PartDrive( m, 0.0f );
 				}
 			}
 
@@ -6352,7 +6376,7 @@ static void VR_UpdateParts( void )
 	{
 		vr.part_value[act] = 1.0f;
 		vr.part_fired = 0.0;
-		refState.vrParts[act].value = 1.0f;
+		VR_PartDrive( act, 1.0f );
 	}
 
 	// WHAT THIS WEAPON HAS, ONCE, AND WHERE ITS PARTS ARE, CONTINUOUSLY.
