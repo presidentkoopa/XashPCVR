@@ -307,8 +307,11 @@ def build(bld):
 		# add client files
 		# NOTE: this glob is recursive, so PCVR sources in client/vr/ are picked
 		# up automatically - no source list edit needed when adding VR files.
+		#
+		# EXCEPT client/vr, which is compiled as its own objects group below so
+		# it can be held to stricter warnings than the rest of the engine.
 		if not bld.env.DEDICATED:
-			source += bld.path.ant_glob('client/**/*.c')
+			source += bld.path.ant_glob('client/**/*.c', excl=['client/vr/**/*.c'])
 			libs += ['bzip2', 'MultiEmulator', 'opus', 'opusfile', 'vorbis', 'vorbisfile']
 
 			# PCVR fork: OpenXR loader + headers
@@ -347,11 +350,43 @@ def build(bld):
 				bld.fatal('Put game data into rodir folder in source tree root')
 			linkflags += ['--preload-file', '%s@/rodir' % node.path_from(bld.bldnode)]
 
+		# PCVR fork: the VR layer, compiled with pointer-truncation warnings as
+		# ERRORS.
+		#
+		# The 64-bit plan asserts this code is architecture-clean. That is a
+		# claim, and a claim about pointer width is one the compiler can settle
+		# for free - so it does, on every build, rather than being re-argued.
+		# The rest of the engine is NOT held to this: hpak.c and crash_win.c
+		# both warn today, and fixing upstream files is not this fork's job.
+		vr_use = []
+
+		if not bld.env.DEDICATED and bld.env.OPENXR:
+			vr_source = bld.path.ant_glob('client/vr/**/*.c')
+
+			if vr_source:
+				if bld.env.COMPILER_CC == 'msvc':
+					# C4311/C4312 pointer truncation, C4302 truncation,
+					# C4826 sign-extending conversion.
+					vr_strict = ['/we4311', '/we4312', '/we4302', '/we4826']
+				else:
+					vr_strict = ['-Werror=pointer-to-int-cast',
+						'-Werror=int-to-pointer-cast']
+
+				bld.objects(source = vr_source,
+					target = 'xash_vr',
+					includes = includes,
+					features = 'c',
+					use = libs,
+					defines = defines,
+					cflags = bld.env.CFLAGS + vr_strict)
+
+				vr_use = ['xash_vr']
+
 		f(source = source,
 			target = 'xash',
 			includes = includes,
 			features = 'cxx c',
-			use = libs,
+			use = libs + vr_use,
 			defines = defines,
 			install_path = install_path,
 			special_install_path = bld.env.BINDIR,
