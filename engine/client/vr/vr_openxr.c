@@ -5718,6 +5718,71 @@ allowed to be imperfect; '*' is the answer for anything it gets wrong.
 */
 /*
 ====================
+VR_ResetWeaponState
+
+Forget everything that belonged to the weapon just put away.
+
+One function, called from one place, because the reset that used to live
+inline in VR_UpdateAction cleared the cylinder, magazine and action flags and
+left the rest: the part the hand was holding, where it was holding it, how far
+along its travel it had got, and the two timers that keep a stroke from
+re-arming. Take hold of a slide, switch weapons, and the new gun arrived with
+the old one's part index and value already applied to it.
+
+Deliberately NOT reset here: the sh_* fields, which are the weapon-selection
+machinery driving this change and would be cut off mid-walk, and throw_peak,
+which is a property of the hand rather than of the gun.
+====================
+*/
+static void VR_ResetWeaponState( void )
+{
+	int i;
+
+	vr.rl_holding = false;
+	vr.rl_insert = false;
+	vr.rl_clip = 0;
+
+	vr.act_needs = false;
+	vr.act_open = false;
+	vr.act_rearm = false;
+	vr.act_armed = false;
+	vr.act_fired = false;
+	vr.act_have_clip = false;
+	vr.act_worked = false;
+	vr.act_back = false;
+	vr.act_sounded = false;
+	vr.act_lo = 0.0f;
+	vr.act_hi = 0.0f;
+	vr.act_pull = 0.0f;
+	vr.act_ref = 0.0f;
+	vr.act_clip = 0;
+	vr.act_settle = 0.0;
+
+	vr.part_held = -1;
+	vr.part_action = -1;
+	vr.part_grab_value = 0.0f;
+	vr.part_off_catch = false;
+	vr.part_fired = 0.0;
+	vr.part_clip = 0;
+	vr.part_clip_prev = 0;
+	VectorClear( vr.part_grab_hand );
+	VectorClear( vr.part_grab_local );
+
+	for( i = 0; i < VR_MAX_PARTS; i++ )
+		vr.part_value[i] = 0.0f;
+
+	vr.cyl_open = false;
+	vr.cyl_dumped = false;
+	vr.cyl_eject = false;
+	vr.cyl_swings = false;
+	vr.cyl_roll_prev = 0.0f;
+
+	vr.mag_out = false;
+	vr.mag_fade = 0.0f;
+}
+
+/*
+====================
 VR_PartDrive
 
 Pose a part from the hand.
@@ -7969,7 +8034,10 @@ static void VR_UpdateAction( void )
 		return;
 	}
 
-	vr.act_worked = false;
+	// act_worked is NOT cleared here any more. It is cleared in
+	// VR_GetActionImpulse, where it is consumed - this function runs after the
+	// VR_UpdateParts branch that sets it, so clearing it here threw away the
+	// one frame that flag exists for.
 
 	wp = VR_GetWeaponProfile();
 
@@ -8000,19 +8068,9 @@ static void VR_UpdateAction( void )
 		// swing - because the cylinder was still recorded as hanging open and
 		// the fire block is asked before anything looks at which weapon is even
 		// in your hands. Every one of these belongs to the weapon that set it.
-		vr.cyl_open = false;
-		vr.cyl_dumped = false;
-		vr.cyl_eject = false;
-		vr.mag_out = false;
-		vr.mag_fade = 0.0f;
-		vr.part_off_catch = false;
+		VR_ResetWeaponState();
 
 		vr.act_id = vr_wlist.cur_id;
-		vr.act_have_clip = false;
-		vr.act_fired = false;
-		vr.act_needs = false;
-		vr.act_open = false;
-		vr.act_armed = false;
 		return;
 	}
 
@@ -8522,7 +8580,19 @@ int VR_GetCylinderImpulse( void )
 
 int VR_GetActionImpulse( void )
 {
-	return ( VR_IsActive() && vr.act_worked ) ? 210 : 0;
+	if( !VR_IsActive() || !vr.act_worked )
+		return 0;
+
+	// CLEARED WHERE IT IS CONSUMED, as the cylinder's flag above is.
+	//
+	// It used to be cleared at the top of VR_UpdateAction instead, which runs
+	// in the same frame as - and after - the VR_UpdateParts branch that sets
+	// it for a slide released off its catch. So that path set the flag and had
+	// it wiped before any command was built, and impulse 210 was never sent
+	// for it. Harmless on Half-Life's pistol, which ignores 210, and wrong
+	// everywhere it would not be.
+	vr.act_worked = false;
+	return 210;
 }
 
 
