@@ -1384,7 +1384,11 @@ static void CL_WritePacket( void )
 		//
 		// Same commands, same order, same count as the loop below, so the two
 		// are read back in step without carrying sequence numbers of their own.
-		if( FBitSet( cls.extensions, NET_EXT_VRCMD ))
+		// Only a client that actually has hands. The capability says the
+		// server would accept one; VR_IsActive says there is something to put
+		// in it. A desktop player on this build would otherwise spend a
+		// message per packet describing hands they do not have.
+		if( FBitSet( cls.extensions, NET_EXT_VRCMD ) && VR_IsActive( ))
 		{
 			vrcmd_t nullvr = { 0 };
 			const vrcmd_t *vfrom = &nullvr;

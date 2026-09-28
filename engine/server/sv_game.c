@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include "common.h"
 #include "server.h"
+#include "vr_gameapi.h"   // PCVR fork: optional VR interface to the game DLL
 #include "net_encode.h"
 #include "event_flags.h"
 #include "library.h"
@@ -5112,6 +5113,94 @@ static void SV_LoadFromFile( const char *mapname, char *entities )
 }
 
 /*
+=============
+SV_GetVRCmd
+
+The hand state for the command this player is having run right now.
+
+False, with the block zeroed, whenever there is nothing to report: a desktop
+player, a client that negotiated no hand channel, a command filled in for a
+drop, or a call made outside a command entirely. A caller that ignores the
+return value still sees no hands and nothing held, which is the right answer
+rather than stale hands from three commands ago.
+=============
+*/
+static qboolean SV_GetVRCmd( edict_t *player, vrcmd_t *out )
+{
+	sv_client_t *cl;
+
+	if( !out )
+		return false;
+
+	memset( out, 0, sizeof( *out ));
+
+	cl = SV_ClientFromEdict( player, true );
+
+	if( !cl || cl->vr_index < 0 || cl->vr_index >= cl->vr_numcmds )
+		return false;
+
+	*out = cl->vr_cmds[cl->vr_index];
+	return true;
+}
+
+static qboolean SV_VRPlayerHandLoads( edict_t *player )
+{
+	sv_client_t *cl = SV_ClientFromEdict( player, true );
+	const char *val;
+
+	if( !cl )
+		return false;
+
+	val = Info_ValueForKey( cl->userinfo, "vr_handload" );
+	return ( val && val[0] == '1' );
+}
+
+static const vr_engine_funcs_t gVREngineFuncs =
+{
+	SV_GetVRCmd,
+	SV_VRPlayerHandLoads,
+};
+
+/*
+=============
+SV_InitVRGameAPI
+
+Offer the VR interface to the game DLL, if it wants it.
+
+Looked up exactly as GetEntityAPI2 and GetNewDLLFunctions are, and absent
+exactly as harmlessly: a DLL without this export gets the engine-side
+behaviour it always had. Nothing is added to enginefuncs_t, which is the ABI
+every GoldSrc game DLL was compiled against and the one thing this fork must
+not grow.
+=============
+*/
+static void SV_InitVRGameAPI( void )
+{
+	VR_GAMEAPI_FN GetVRWeaponAPI;
+	vr_game_funcs_t game = { 0 };
+	int ret;
+
+	svgame.vr_api = false;
+
+	GetVRWeaponAPI = (VR_GAMEAPI_FN)COM_GetProcAddress( svgame.hInstance, VR_GAMEAPI_EXPORT );
+
+	if( !GetVRWeaponAPI )
+		return;
+
+	ret = GetVRWeaponAPI( VR_GAMEAPI_VERSION, &gVREngineFuncs, &game );
+
+	if( ret != VR_GAMEAPI_VERSION )
+	{
+		Con_Printf( S_WARN "game DLL declined the VR weapon API (wanted %i, got %i)\n",
+			VR_GAMEAPI_VERSION, ret );
+		return;
+	}
+
+	svgame.vr_api = true;
+	Con_Reportf( "VR weapon API: game DLL speaks version %i\n", VR_GAMEAPI_VERSION );
+}
+
+/*
 ==============
 SpawnEntities
 
@@ -5265,6 +5354,9 @@ qboolean SV_LoadProgs( const char *name )
 	}
 
 	GiveFnptrsToDll( &gpEngfuncs, svgame.globals );
+
+	// PCVR fork: and offer the VR interface, which most DLLs will not want.
+	SV_InitVRGameAPI();
 
 	// get extended callbacks
 	if( GiveNewDllFuncs )

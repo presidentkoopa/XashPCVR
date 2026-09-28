@@ -3245,6 +3245,8 @@ anything, an unknown layout version is refused rather than guessed at, and the
 read is checked for overflow before any of it is believed.
 ==================
 */
+CVAR_DEFINE_AUTO( sv_vrcmd_debug, "0", 0, "log hand-state blocks as they arrive" );
+
 static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
 {
 	vrcmd_t nullvr = { 0 };
@@ -3308,6 +3310,18 @@ static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
 		return;
 
 	cl->vr_numcmds = count;
+
+	// Observable, because the wire is the half that cannot be tested on one
+	// machine any other way: extensions are not negotiated over loopback, so
+	// only a real connection ever carries one of these.
+	if( sv_vrcmd_debug.value && count > 0 )
+	{
+		const vrcmd_t *v = &cl->vr_cmds[0];
+
+		Con_Printf( "vrcmd from %s: %i cmds, held=%02x flags=%02x carried=%i parts=%i %i%s",
+			cl->name, count, v->part_held, v->flags, v->carried,
+			v->part_value[0], v->part_value[1], "\n" );
+	}
 }
 
 /*
@@ -3406,6 +3420,7 @@ static void SV_ParseClientMove( sv_client_t *cl, sizebuf_t *msg )
 	{
 		while( net_drop > numbackup )
 		{
+			cl->vr_index = -1;   // a filled-in drop has no hands of its own
 			SV_RunCmd( cl, &cl->lastcmd, 0 );
 			net_drop--;
 		}
@@ -3413,6 +3428,7 @@ static void SV_ParseClientMove( sv_client_t *cl, sizebuf_t *msg )
 		while( net_drop > 0 )
 		{
 			i = numcmds + net_drop - 1;
+			cl->vr_index = i;
 			SV_RunCmd( cl, &cmds[i], cl->netchan.incoming_sequence - i );
 			net_drop--;
 		}
@@ -3420,8 +3436,14 @@ static void SV_ParseClientMove( sv_client_t *cl, sizebuf_t *msg )
 
 	for( i = numcmds - 1; i >= 0; i-- )
 	{
+		// PCVR fork: this command's hands, indexed as the command is. The
+		// block and the usercmd were written together by the client and are
+		// read back in the same order, so i selects both.
+		cl->vr_index = i;
 		SV_RunCmd( cl, &cmds[i], cl->netchan.incoming_sequence - i );
 	}
+
+	cl->vr_index = -1;
 
 	// was player kicked? stop here
 	if( cl->state <= cs_zombie )

@@ -863,6 +863,7 @@ void SV_Init( void )
 	Cvar_Get( "servercfgfile", "server.cfg", 0, "name of dedicated server configuration file" );
 	Cvar_Get( "lservercfgfile", "listenserver.cfg", 0, "name of listen server configuration file" );
 
+	Cvar_RegisterVariable( &sv_vrcmd_debug );
 	Cvar_RegisterVariable( &sv_zmax );
 	Cvar_RegisterVariable( &sv_wateramp );
 	Cvar_RegisterVariable( &sv_skycolor_r );

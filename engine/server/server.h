@@ -343,6 +343,11 @@ typedef struct
 	NEW_DLL_FUNCTIONS	dllFuncs2;		// new dll exported funcs (may be NULL)
 	physics_interface_t	physFuncs;		// physics interface functions (Xash3D extension)
 
+	// PCVR fork: the game DLL exported GetVRWeaponAPI and accepted our
+	// version, so weapon code inside it can read per-command hand state.
+	// False for every DLL that has never heard of VR, which is most of them.
+	qboolean	vr_api;
+
 	poolhandle_t mempool;			// server premamnent pool: edicts etc
 	poolhandle_t stringspool;		// for engine strings
 } svgame_static_t;
@@ -415,6 +420,7 @@ extern convar_t		sv_friction;
 extern convar_t		sv_gravity;
 extern convar_t		sv_stopspeed;
 extern convar_t		sv_wateralpha;
+extern convar_t		sv_vrcmd_debug;	// PCVR fork: log hand-state blocks as they arrive
 extern convar_t		sv_wateramp;
 extern convar_t		sv_voiceenable;
 extern convar_t		sv_voicequality;
