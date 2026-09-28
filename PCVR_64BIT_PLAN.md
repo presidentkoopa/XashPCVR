@@ -7,8 +7,17 @@ Modern standalone Xash titles ship **amd64-only** game binaries. Diffusion
 x86-64) cannot be loaded by a 32-bit engine at any price — wrong architecture,
 and `LoadLibraryW` simply fails.
 
-This is **additive, not a migration.** 32-bit stays the default and stays the
-build that plays the legacy catalogue, because `COM_GenerateServerLibraryPath()`
+> **Superseded, September 2026.** This document was written when the 64-bit work
+> was additive. The owner has since made **64-bit the primary build**: it is what
+> gets tested, and what the Half-Life, Opposing Force and Blue Shift campaigns run
+> on. 32-bit keeps compiling as a fallback and is built alongside on every change
+> so it does not rot. Open mods are rebuilt as 64-bit DLLs from `hlsdk-portable`;
+> closed 32-bit mods are the price, and are why the fallback stays. Everything
+> below about *how* the 64-bit build was made to work still holds — only its
+> status as an optional extra has changed.
+
+This was **additive, not a migration.** 32-bit was the default and the
+build that played the legacy catalogue, because `COM_GenerateServerLibraryPath()`
 uses a mod's declared DLL filename verbatim only on `XASH_X86 && XASH_WIN32`
 (`engine/common/lib_common.c`). Every other architecture rewrites it with an
 `_amd64` suffix, which no legacy mod ships. Losing that would cost ~1200 mods to
@@ -94,4 +103,5 @@ certainly identical, but rebuilding `vr/probe` as 64-bit would settle it.
 - **vgui2.** Ruled out. Counter-Strike 1.6, Condition Zero and Day of Defeat stay
   unsupported. Where those matter, the route is a recreated client DLL, never
   implementing vgui2 in the engine.
-- **Migrating to 64-bit.** 32-bit remains the default.
+- ~~**Migrating to 64-bit.** 32-bit remains the default.~~ **No longer out of
+  scope:** 64-bit is now the primary build. See the note at the top.

@@ -18,7 +18,8 @@ HUD, and a desktop mirror.
 | **Blue Shift** | Playable, via rebuilt DLLs at `bshift/` [(why)](#mod-compatibility) — the Steam release ships vgui2, which Xash cannot load |
 
 Most legacy mods need nothing done to them at all. They ship 32-bit game DLLs, and a 32-bit
-engine loads those verbatim — which is the whole reason this fork stays 32-bit. FWGS's own
+engine loads those verbatim — which is why the 32-bit build is kept as a fallback rather than
+retired. A mod whose source is available is instead rebuilt as a 64-bit DLL we compile. FWGS's own
 [`supported-mod-list.md`](Documentation/supported-mod-list.md) runs to ~1200 entries and is the
 real compatibility list.
 
@@ -37,17 +38,26 @@ Full target list, tiered by what's needed to run each one, is
 * **Ruled out** — anything requiring vgui2 (Counter-Strike 1.6, Condition Zero, Day of Defeat),
   Sven Co-op (own engine), Half-Life: Extended (long-term, once released).
 
-## Architecture: 32-bit and 64-bit, both
+## Architecture: 64-bit primary, 32-bit fallback
 
-`COM_GenerateServerLibraryPath()` uses a mod's declared DLL filename **verbatim**
-only on 32-bit Windows. Every other architecture rewrites it with an `_amd64`
-suffix. Legacy GoldSrc mods ship 32-bit DLLs exclusively, so a 64-bit engine
-cannot load any of them — which is why **32-bit is the default** and is the build
-that plays the ~1200-mod catalogue.
+**64-bit is the primary build.** It is the one that gets tested, and the one the
+flagship campaigns — Half-Life, Opposing Force, Blue Shift — are being taken
+through. The 32-bit configuration keeps compiling as a fallback and is built
+alongside on every change so it does not rot, but it is no longer the default.
 
-But modern standalone Xash titles ship **amd64-only** binaries and are unreachable
-from a 32-bit engine. So the fork builds both. Same VR layer either side; it is
-architecture-agnostic C.
+That reverses what this document said until September 2026, and the reason is
+worth keeping. `COM_GenerateServerLibraryPath()` uses a mod's declared DLL
+filename **verbatim** only on 32-bit Windows; every other architecture rewrites
+it with an `_amd64` suffix. Legacy GoldSrc mods ship 32-bit DLLs exclusively, so
+a 64-bit engine cannot load a closed one at all. What changed is not that
+limitation but what we do about it: open mods are rebuilt from `hlsdk-portable`
+as 64-bit DLLs we compile ourselves, which is also what lets shared weapon code
+run inside them. Closed 32-bit mods are the price, and they are why the 32-bit
+fallback stays alive.
+
+Modern standalone Xash titles ship **amd64-only** binaries and were unreachable
+from a 32-bit engine, which is the other half of the reason. Same VR layer
+either side; it is architecture-agnostic C.
 
 **64-bit status:** the engine builds, loads 64-bit game DLLs (`hl_amd64.dll`,
 `client_amd64.dll`), spawns a map, and the VR layer reaches the OpenXR runtime and
@@ -66,16 +76,27 @@ Plan and detail: [`PCVR_64BIT_PLAN.md`](PCVR_64BIT_PLAN.md).
 
 The VR work was built to survive multiplayer rather than assume single player, so:
 
-* **Nothing is added to the network protocol.** Vanilla clients still connect.
+* **Protocol changes between our own builds are allowed.** Each goes behind a
+  capability bit in the existing `ext` handshake, and a mismatched build is
+  refused at connect with a message naming both versions — never allowed to
+  connect and quietly disagree. Compatibility with stock GoldSrc and vanilla
+  Xash is kept where it costs nothing, and is no longer a requirement. What is
+  described below was built without a protocol break; that is a property of
+  that particular change, not a rule binding the next one.
 * **Every VR substitution is scoped to the local player** via `NET_IsLocalAddress`, so on a
   listen server remote players are untouched by it.
 * **A dedicated-server build contains no VR code at all** — it is all behind `#if !XASH_DEDICATED`.
 
 One honest limit — and one that used to be listed here and no longer is:
 
-**Hosting and joining both work.** This was previously a hard limit, on the grounds that
-`usercmd_t`'s four `reserved` fields were already spent and carrying pose would be a protocol
-break. That was wrong — see **VR-to-VR crossplay** below.
+**Hosting and joining are written, and have never been run.** The code is there, and the
+reasoning below holds, but no session has ever been played between two machines — there is one
+PC and one tester. Treat it as untested until a two-client test on localhost passes. This
+previously read "both work", which the code justified and the testing did not.
+
+It was also once listed as a hard limit, on the grounds that `usercmd_t`'s four `reserved`
+fields were spent and carrying pose would be a protocol break. That part was wrong — see
+**VR-to-VR crossplay** below.
 
 **Co-op content is the real blocker, not the engine.** Vanilla Half-Life has no co-op and Sven
 Co-op ships its own engine. The promising route needs no game DLL at all: the engine forces
@@ -92,7 +113,9 @@ Detail in [`PCVR_LOG.md`](PCVR_LOG.md) → **FINDING 018**.
 
 ## VR-to-VR crossplay
 
-**Built.** A joining VR player's shots leave their own muzzle, and it cost no protocol break.
+**Written, never run.** The mechanism below is implemented and costs no protocol break, but it
+has never been exercised between two clients. A joining VR player's shots *should* leave their
+own muzzle; nobody has watched it happen.
 
 The earlier plan assumed one was unavoidable, because `usercmd_t`'s four `reserved` fields looked
 spent. They are not. `net_encode.c` binds them to `impact_index` / `impact_position`, and that

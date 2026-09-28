@@ -16,7 +16,7 @@ the status column.
 |---|---|
 | **vgui2** | Xash3D does not implement it. Counter-Strike 1.6, Condition Zero, Day of Defeat stay out — ruled out, see README. |
 | **Custom engine** | Sven Co-op 5.0+ ships its own engine fork, not a Xash mod. |
-| **Architecture** | A mod's own DLL only loads if it matches the engine's bitness. We now build both: 32-bit for the legacy catalogue (which ships 32-bit DLLs), 64-bit for standalone Xash titles that ship amd64-only. |
+| **Architecture** | A mod's own DLL only loads if it matches the engine's bitness. **64-bit is the primary build**, so a mod reaches it one of two ways: its source is open and we rebuild it as a 64-bit DLL, or it ships amd64 binaries already. A mod that ships only a closed 32-bit DLL runs on the 32-bit fallback build, which is kept compiling for exactly that reason. |
 
 ## Working today
 

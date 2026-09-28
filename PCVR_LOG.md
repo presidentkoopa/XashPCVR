@@ -554,7 +554,14 @@ mod. This is likely reusable for other "the game DLL decides this" problems.
 7. VR-native UI (Nuklear laser-pointer menu)
 8. Wishlist — dual wield, weapon hand-swapping, physical reload, articulated weapons,
    throwable grenades **with arc indicator**
-9. Networking — **explicitly low priority**, neither reference project solved it
+9. ~~Networking — **explicitly low priority**, neither reference project solved it~~
+
+> **Superseded, September 2026.** This ordering is from the project's first week and no
+> longer reflects the owner's priorities. Netplay is now **critical and designed in from
+> the start**: nothing built today may need a rewrite to go online, even though the
+> build-out itself comes after the single-player campaign. The current ordering is the
+> work order in the platform brief (steps 0-8), not this list. Items 1-8 above are almost
+> all done; they are kept as a record of what was asked for first.
 
 ## FINDING 018 — Co-op and netplay: what is reachable, and what the protocol forbids
 
@@ -632,6 +639,9 @@ This is static analysis only.
 
 ## FINDING 019 — Where the project actually stands against the Half-Life campaign
 
+> **Partly superseded, September 2026.** Gaps 2 and 3 below were closed and are struck
+> through in place. The rest of the finding stands.
+
 An honest assessment after an adversarial audit of the whole VR layer (42 agents,
 every finding put to independent skeptics before being believed).
 
@@ -650,10 +660,12 @@ What is missing or unproven, in the order it would block a playthrough:
    isolation, on one map, usually for a minute. The campaign has set pieces —
    trains, tank turrets, the Xen jumps, the tentacle sequence — that nobody has
    attempted in VR at all.
-2. **Weapon selection is cycle-only.** No direct slot access and no working menu
-   navigation with the controllers.
-3. **No teleport locomotion.** Smooth-only is a comfort problem for some players
-   and there is no alternative.
+2. ~~**Weapon selection is cycle-only.** No direct slot access and no working menu
+   navigation with the controllers.~~ **Superseded.** Headset weapon selection works;
+   see the Project Review.
+3. ~~**No teleport locomotion.** Smooth-only is a comfort problem for some players
+   and there is no alternative.~~ **Superseded.** `vr_teleport` exists, off by default,
+   and is recorded under *Also added* further down this same finding.
 4. **Train and tank controls are untested**, and are the one campaign-critical
    interaction the reference ports both needed game-DLL work for.
 5. **Long jump** is likely unusable, and Xen requires it.
