@@ -281,6 +281,24 @@ V_GetRefParams
 */
 static void V_GetRefParams( ref_params_t *fd, ref_viewpass_t *rvp )
 {
+	// ZERO IT FIRST. THE VR FIELDS ARE NOT OPTIONAL TO INITIALISE.
+	//
+	// ref_viewpass_t is a stack local at every call site, and this function
+	// sets only the fields the flatscreen engine has always had. The VR fields
+	// appended to the end of the struct - vr_active, vr_eye and the four
+	// frustum tangents - were left holding whatever was on the stack.
+	//
+	// gl_rmain.c reads vr_active to choose the asymmetric-frustum projection.
+	// Garbage there builds the projection from junk tangents, and the world
+	// comes out stretched into vertical smears with only the 2D HUD legible.
+	// In a headset it never showed, because the VR layer sets all of these
+	// deliberately - so this only ever broke the flatscreen path, which is
+	// exactly the one nobody on a VR fork runs.
+	//
+	// cl_gameui.c already guards the menu's call against the same hazard and
+	// says so in a comment. This is the same bug on the game's path.
+	memset( rvp, 0, sizeof( *rvp ));
+
 	// part1: deniable updates
 	VectorCopy( fd->simvel, cl.simvel );
 	VectorCopy( fd->simorg, cl.simorg );
