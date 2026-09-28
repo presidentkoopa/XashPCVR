@@ -24,6 +24,7 @@ GNU General Public License for more details.
 #include "pmove.h"
 #include "pm_defs.h"
 #include "entity_state.h"
+#include "vrcmd.h"   // PCVR fork: per-command hand state
 #include "protocol.h"
 #include "netchan.h"
 #include "custom.h"
@@ -235,6 +236,14 @@ typedef struct sv_client_s
 	resource_t      resourcesonhand;
 	resource_t      resourcesneeded; // <mapname.res> from client (server downloading)
 	usercmd_t       lastcmd;         // for filling in big drops
+
+	// PCVR fork: the hand state that arrived with this packet's commands,
+	// indexed exactly as the usercmds are, so cmds[i] and vr_cmds[i] are the
+	// same moment. Filled by clc_vrcmd, which the client sends immediately
+	// before the clc_move it describes.
+	vrcmd_t         vr_cmds[CMD_BACKUP];
+	int             vr_numcmds;      // how many of them are good this packet
+	int             vr_index;        // which one the command being run belongs to, -1 none
 
 	int    packet_loss;
 	double connecttime;

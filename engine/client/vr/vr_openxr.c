@@ -8751,6 +8751,27 @@ void VR_FillCmd( vrcmd_t *out )
 			SetBits( out->flags, VRCMD_FL_MUZZLE );
 		}
 	}
+
+	// A LOCAL GAME NEVER SENDS ONE OF THESE.
+	//
+	// Extensions are not negotiated over loopback, so single player fills this
+	// block and nothing ever puts it on a wire. That makes the fill the only
+	// half testable without two machines, so it is worth being able to look
+	// at: vr_debug 1 prints it about once a second whenever a hand is doing
+	// anything at all.
+	if( vr_debug.value )
+	{
+		static double next_log = 0.0;
+
+		if( host.realtime >= next_log && ( out->part_held || out->flags || out->carried ))
+		{
+			next_log = host.realtime + 1.0;
+			Con_Printf( "vrcmd: held=%02x flags=%02x carried=%i parts=%i %i %i %i\n",
+				out->part_held, out->flags, out->carried,
+				out->part_value[0], out->part_value[1],
+				out->part_value[2], out->part_value[3] );
+		}
+	}
 }
 
 /*

@@ -88,7 +88,15 @@ GNU General Public License for more details.
 #define clc_stringcmd		3	// [string] message
 #define clc_delta			4	// [byte] sequence number, requests delta compression of message
 #define clc_resourcelist		5
-// reserved
+// PCVR fork: the player's hand state for the commands in the clc_move that
+// follows it. Sent only when NET_EXT_VRCMD was negotiated, so a server that
+// does not understand it never receives one.
+//
+// Its own message rather than extra bytes inside clc_move, because that body
+// is CRC'd and munged as a unit for the GoldSrc protocol - appending to it
+// would mean reaching into someone else's checksum. Slot 6 was already
+// reserved and unused, so clc_lastmsg and GoldSrc's numbering are untouched.
+#define clc_vrcmd			6
 #define clc_fileconsistency		7
 #define clc_voicedata		8
 #define clc_requestcvarvalue		9
@@ -294,6 +302,27 @@ extern const char *const svc_goldsrc_strings[svc_lastmsg+1];
 // and the client falls back to eye-origin. Vanilla clients are never locked
 // out in either direction.
 #define NET_EXT_VRPOSE          (1U<<2) // usercmd carries the client's VR muzzle position
+
+// PCVR fork: the client sends a hand-state block per command (clc_vrcmd).
+//
+// Negotiated through the same "ext" handshake with the same intersection
+// semantics: a server that does not set the bit never gets a clc_vrcmd, and a
+// client whose bit was anded away simply does not send one. PROTOCOL_VERSION
+// stays 49 and no existing message changes shape, so vanilla clients and
+// servers are unaffected in both directions.
+#define NET_EXT_VRCMD           (1U<<3)
+
+// Layout version for the block itself, checked against VRCMD_VERSION. Two of
+// our own builds that disagree about the struct must refuse each other rather
+// than read each other's bytes wrong; the capability bit only says "I speak
+// this", not "I speak this revision of it".
+#define VRCMD_NET_VERSION       1
+
+// Which groups of a vrcmd_t changed since the previous command in the same
+// packet. A hand that is not moving costs one byte per command.
+#define VRCMD_D_PARTS   (1U<<0) // part_value[] follows
+#define VRCMD_D_STATE   (1U<<1) // part_held, flags, carried follow
+#define VRCMD_D_MUZZLE  (1U<<2) // muzzle follows
 
 // Sentinel written into usercmd_t.reserved[0] alongside a pose, so a mod that
 // uses these "left for modders" fields for its own purposes is never mistaken

@@ -1227,6 +1227,61 @@ void CL_WriteUsercmd( connprotocol_t proto, sizebuf_t *msg, int from, int to )
 }
 
 /*
+====================
+CL_WriteVRCmd
+
+One command's hand state, delta-coded against the previous command in the
+same packet.
+
+A hand that is not moving costs one byte. That matters more than it looks:
+these ride alongside every command, several commands go in every packet, and
+the block is twenty-odd bytes raw - so sending it whole would spend real
+bandwidth describing a hand holding still, which is what a hand does most of
+the time.
+
+Delta only WITHIN a packet, never against the last packet sent. A receiver
+must be able to decode a packet without having seen the one before it, or a
+single drop would corrupt every command after it until the next full send.
+====================
+*/
+static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *to )
+{
+	byte changed = 0;
+	int i;
+
+	if( memcmp( from->part_value, to->part_value, sizeof( to->part_value )))
+		SetBits( changed, VRCMD_D_PARTS );
+
+	if( from->part_held != to->part_held || from->flags != to->flags
+		|| from->carried != to->carried )
+		SetBits( changed, VRCMD_D_STATE );
+
+	if( !VectorCompare( from->muzzle, to->muzzle ))
+		SetBits( changed, VRCMD_D_MUZZLE );
+
+	MSG_WriteByte( msg, changed );
+
+	if( FBitSet( changed, VRCMD_D_PARTS ))
+	{
+		for( i = 0; i < VRCMD_MAX_PARTS; i++ )
+			MSG_WriteByte( msg, to->part_value[i] );
+	}
+
+	if( FBitSet( changed, VRCMD_D_STATE ))
+	{
+		MSG_WriteByte( msg, to->part_held );
+		MSG_WriteByte( msg, to->flags );
+		MSG_WriteByte( msg, to->carried );
+	}
+
+	if( FBitSet( changed, VRCMD_D_MUZZLE ))
+	{
+		for( i = 0; i < 3; i++ )
+			MSG_WriteCoord( msg, to->muzzle[i] );
+	}
+}
+
+/*
 ===================
 CL_WritePacket
 
@@ -1320,6 +1375,32 @@ static void CL_WritePacket( void )
 		newcmds = cls.netchan.outgoing_sequence - cls.lastoutgoingcommand;
 		newcmds = bound( 0, newcmds, maxcmds );
 		numcmds = newcmds + numbackup;
+
+		// PCVR fork: the hands, for the very commands about to be sent.
+		//
+		// BEFORE clc_move, not after, because the server runs the commands as
+		// it parses them - a block arriving afterwards would be describing
+		// hands for commands that had already been executed.
+		//
+		// Same commands, same order, same count as the loop below, so the two
+		// are read back in step without carrying sequence numbers of their own.
+		if( FBitSet( cls.extensions, NET_EXT_VRCMD ))
+		{
+			vrcmd_t nullvr = { 0 };
+			const vrcmd_t *vfrom = &nullvr;
+
+			MSG_BeginClientCmd( &buf, clc_vrcmd );
+			MSG_WriteByte( &buf, VRCMD_NET_VERSION );
+			MSG_WriteByte( &buf, numcmds );
+
+			for( i = numcmds - 1; i >= 0; i-- )
+			{
+				const vrcmd_t *vto = &cl.commands[( cls.netchan.outgoing_sequence - i ) & CL_UPDATE_MASK].vr;
+
+				CL_WriteVRCmd( &buf, vfrom, vto );
+				vfrom = vto;
+			}
+		}
 
 		// goldsrc starts writing clc_move earlier but it doesn't make sense if it's not going to be sent
 		MSG_BeginClientCmd( &buf, clc_move );
@@ -1658,7 +1739,7 @@ static void CL_SendConnectPacket( connprotocol_t proto, int challenge )
 		// Loopback still gets 0: a listen server's own player is handled by the
 		// NET_IsLocalAddress path in sv_pmove.c, which reads full-precision VR
 		// state directly instead of going through the wire's quantisation.
-		int extensions = adrtype == NA_LOOPBACK ? 0 : ( NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE );
+		int extensions = adrtype == NA_LOOPBACK ? 0 : ( NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE | NET_EXT_VRCMD );
 		string key;
 
 		ID_GetMD5ForAddress( key, adr, sizeof( key ));

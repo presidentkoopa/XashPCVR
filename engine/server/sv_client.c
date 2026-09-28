@@ -470,7 +470,7 @@ static void SV_ConnectClient( netadr_t from )
 	// NET_EXT_VRPOSE safe to add - an older server ands the bit away, the
 	// client sees it missing and falls back to eye-origin aim on its own. No
 	// version bump, no rejection, no vanilla client locked out.
-	newcl->extensions = FBitSet( extensions, NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE );
+	newcl->extensions = FBitSet( extensions, NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE | NET_EXT_VRCMD );
 	Q_strncpy( newcl->useragent, protinfo, sizeof( newcl->useragent ));
 
 	// HACKHACK: can hear all players by default to avoid issues
@@ -3233,6 +3233,85 @@ static qboolean SV_PlayerIsFrozen( const edict_t *pClient )
 
 /*
 ==================
+SV_ParseVRCmd
+
+The client's hand state for the commands in the clc_move that follows.
+
+Delta-coded within the packet only, so this decodes standalone: a dropped
+packet costs its own hands and nothing after it.
+
+Everything here is attacker-controlled. The count is clamped before it indexes
+anything, an unknown layout version is refused rather than guessed at, and the
+read is checked for overflow before any of it is believed.
+==================
+*/
+static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
+{
+	vrcmd_t nullvr = { 0 };
+	const vrcmd_t *from = &nullvr;
+	int version, count, i, j;
+
+	version = MSG_ReadByte( msg );
+	count = MSG_ReadByte( msg );
+
+	cl->vr_numcmds = 0;
+	cl->vr_index = -1;
+
+	if( version != VRCMD_NET_VERSION )
+	{
+		Con_Reportf( S_WARN "%s: %s sent vrcmd version %i, expected %i\n",
+			__func__, cl->name, version, VRCMD_NET_VERSION );
+		SV_DropClient( cl, false );
+		return;
+	}
+
+	if( count < 0 || count > CMD_BACKUP )
+	{
+		Con_Reportf( S_ERROR "%s: %s sent %i vrcmds\n", __func__, cl->name, count );
+		SV_DropClient( cl, false );
+		return;
+	}
+
+	// Read in the order written: oldest first, each against the one before it.
+	for( i = count - 1; i >= 0; i-- )
+	{
+		vrcmd_t *to = &cl->vr_cmds[i];
+		byte changed;
+
+		*to = *from;
+		changed = MSG_ReadByte( msg );
+
+		if( FBitSet( changed, VRCMD_D_PARTS ))
+		{
+			for( j = 0; j < VRCMD_MAX_PARTS; j++ )
+				to->part_value[j] = MSG_ReadByte( msg );
+		}
+
+		if( FBitSet( changed, VRCMD_D_STATE ))
+		{
+			to->part_held = MSG_ReadByte( msg );
+			to->flags = MSG_ReadByte( msg );
+			to->carried = MSG_ReadByte( msg );
+		}
+
+		if( FBitSet( changed, VRCMD_D_MUZZLE ))
+		{
+			for( j = 0; j < 3; j++ )
+				to->muzzle[j] = MSG_ReadCoord( msg );
+		}
+
+		from = to;
+	}
+
+	// A truncated or malformed packet leaves nothing believable behind.
+	if( MSG_CheckOverflow( msg ))
+		return;
+
+	cl->vr_numcmds = count;
+}
+
+/*
+==================
 SV_ParseClientMove
 
 The message usually contains all the movement commands
@@ -3584,6 +3663,12 @@ void SV_ExecuteClientMessage( sv_client_t *cl, sizebuf_t *msg )
 
 	ASSERT( cl->frames != NULL );
 
+	// PCVR fork: last packet's hands are not this packet's hands. A packet
+	// that carries no clc_vrcmd - a client that stopped sending them, or one
+	// that never did - must leave nothing behind to be read as current.
+	cl->vr_numcmds = 0;
+	cl->vr_index = -1;
+
 	// calc ping time
 	frame = &cl->frames[cl->netchan.incoming_acknowledged & SV_UPDATE_MASK];
 
@@ -3622,6 +3707,18 @@ void SV_ExecuteClientMessage( sv_client_t *cl, sizebuf_t *msg )
 			break;
 		case clc_delta:
 			cl->delta_sequence = MSG_ReadByte( msg );
+			break;
+		case clc_vrcmd:
+			// Only from a client that negotiated it. Anything else is a
+			// confused build or somebody probing, and both get the answer
+			// any unexpected message gets.
+			if( !FBitSet( cl->extensions, NET_EXT_VRCMD ))
+			{
+				Con_DPrintf( S_ERROR "%s: clc_vrcmd without the capability\n", cl->name );
+				SV_DropClient( cl, false );
+				return;
+			}
+			SV_ParseVRCmd( cl, msg );
 			break;
 		case clc_move:
 			if( move_issued ) return; // someone is trying to cheat...
