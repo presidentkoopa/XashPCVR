@@ -15,6 +15,14 @@ GNU General Public License for more details.
 #ifndef VRCMD_H
 #define VRCMD_H
 
+// PLAIN TYPES ON PURPOSE.
+//
+// byte, vec3_t and qboolean are engine typedefs, and this header has to be
+// includable from a game DLL that has never seen them - the whole point of
+// the channel is that mod code can read it. It is also the header destined
+// to be published as an SDK, where depending on our internals would be
+// worse still. unsigned char and float[3] are what those typedefs are.
+
 /*
 ====================
 STATE, NOT EVENTS. THIS IS THE WHOLE DESIGN.
@@ -78,16 +86,16 @@ typedef struct vrcmd_s
 	// A byte, not a float, because the travel it describes is at most a few
 	// units and the hand cannot hold a slide to better than a millimetre
 	// anyway. 255 steps over a 3.4-unit shotgun pump is 0.013 units a step.
-	byte     part_value[VRCMD_MAX_PARTS];
+	unsigned char part_value[VRCMD_MAX_PARTS];
 
 	// Which of those a hand is actually on this command. A part nobody is
 	// touching still reports a value - it has one - but the weapon code must
 	// not read a movement into a part that is simply where the animation left
 	// it. This is the bit that says the difference.
-	byte     part_held;
+	unsigned char part_held;
 
-	byte     flags;                 // VRCMD_FL_*
-	byte     carried;               // vrcarry_t
+	unsigned char flags;            // VRCMD_FL_*
+	unsigned char carried;          // vrcarry_t
 
 	// Where the muzzle is, in world space.
 	//
@@ -95,7 +103,7 @@ typedef struct vrcmd_s
 	// of room: all four slots are spent on one position, there is nowhere to
 	// put anything else, and a mod using those fields for its own purposes
 	// costs us the pose entirely. Here it is just three floats among others.
-	vec3_t   muzzle;
+	float    muzzle[3];
 } vrcmd_t;
 
 #endif // VRCMD_H
