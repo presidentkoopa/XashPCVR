@@ -24,6 +24,7 @@ GNU General Public License for more details.
 #include "mod_local.h"
 #include "pmove.h"
 #include "pm_defs.h"
+#include "vrcmd.h"   // PCVR fork: hand state carried per command
 #include "ref_params.h"
 #include "render_api.h"
 #include "sound_api.h"
@@ -76,6 +77,13 @@ typedef struct runcmd_s
 	float		frame_lerp;
 
 	usercmd_t		cmd;
+
+	// PCVR fork: what the hands were doing on THIS command.
+	//
+	// Kept beside the command rather than in a parallel array, so the two
+	// cannot drift apart: prediction replays a command by index, and the hand
+	// state it is replayed with has to be the state it was created with.
+	vrcmd_t		vr;
 
 	qboolean		processedfuncs;
 	qboolean		heldback;

@@ -791,6 +791,14 @@ static void CL_CreateCmd( void )
 		pcmd->heldback = false;
 		pcmd->sendsize = 0;
 		cmd = &pcmd->cmd;
+
+		// PCVR fork: and what the hands were doing on it.
+		//
+		// Filled here, with the command, rather than anywhere later: this
+		// block is the hand state AS OF this command, and prediction replays a
+		// command by index expecting the two to match. Zeroed for everyone
+		// without a headset, which reads as no hands and nothing held.
+		VR_FillCmd( &pcmd->vr );
 	}
 	else
 	{

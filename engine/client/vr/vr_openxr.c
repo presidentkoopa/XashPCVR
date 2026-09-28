@@ -8624,6 +8624,137 @@ qboolean VR_ActionBlocked( void )
 
 /*
 ================
+VR_AtLoadingPort
+
+Is what the off hand is carrying at the weapon's loading port RIGHT NOW?
+
+A state, deliberately, and asked as a question rather than computed inline
+where it is acted on. The insert that used to be decided here is an edge, and
+edges do not survive being sent with a command and replayed by prediction - so
+the command block carries this, and the weapon code decides for itself when a
+round went in by noticing that the answer changed.
+================
+*/
+static qboolean VR_AtLoadingPort( void )
+{
+	vec3_t hand, hang, wpn, wang, fwd, port, d;
+
+	if( !VR_IsActive() || !vr.rl_holding )
+		return false;
+
+	if( !VR_GetHandWorld( VR_OffHand(), hand, hang ))
+		return false;
+
+	// The port sits a little ahead of where the gun is HELD, not at the
+	// muzzle: on this weapon the gate is just ahead of the trigger, and the
+	// trigger is where the firing hand is.
+	if( !VR_GetHandWorld( VR_DominantHand(), wpn, wang ))
+		return false;
+
+	AngleVectors( wang, fwd, NULL, NULL );
+	VectorMA( wpn, vr_reload_port_fwd.value, fwd, port );
+	VectorSubtract( hand, port, d );
+
+	if( VectorLength( d ) >= Q_max( 1.0f, vr_reload_port.value ))
+		return false;
+
+	// A weapon that swings open has a port only while it IS open, or the ammo
+	// box could be pressed against a shut gun and the rounds would arrive
+	// through the frame.
+	if( vr.cyl_swings && !vr.cyl_open )
+		return false;
+
+	return true;
+}
+
+/*
+================
+VR_FillCmd
+
+What the hands are doing, for the command being built right now.
+
+STATE ONLY - see the note at the top of vrcmd.h. Nothing here is an edge, a
+pulse or a "just happened": every field describes how things ARE, so that
+replaying this command twice reaches the same conclusion twice. The weapon
+code works out what happened by differencing two of these, which is the one
+way of deriving an event that survives redundant sends and prediction replay.
+
+Safe to call with no headset and safe to call every frame; an inactive VR
+layer simply leaves the block zeroed, which reads as "no hands, nothing held".
+================
+*/
+void VR_FillCmd( vrcmd_t *out )
+{
+	int i, n;
+
+	if( !out )
+		return;
+
+	memset( out, 0, sizeof( *out ));
+
+	if( !VR_IsActive( ))
+		return;
+
+	// Where every part is, as the hand has it. Published for all of them, not
+	// only the held one: a part has a position whether or not anybody is
+	// touching it, and the weapon code needs the resting ones to notice when
+	// the gun's own animation has moved something.
+	n = refState.vrPartCount;
+
+	for( i = 0; i < n && i < VRCMD_MAX_PARTS; i++ )
+	{
+		float v = vr.part_value[i];
+
+		out->part_value[i] = (byte)( bound( 0.0f, v, 1.0f ) * 255.0f );
+	}
+
+	// And which one a hand is actually on. A mask because a weapon can
+	// eventually have two hands on two parts; today the engine tracks one,
+	// so one bit is set.
+	if( vr.part_held >= 0 && vr.part_held < VRCMD_MAX_PARTS )
+		SetBits( out->part_held, 1U << vr.part_held );
+
+	if( vr_grip_valid )
+		SetBits( out->flags, VRCMD_FL_GRIP );
+
+	if( VR_AtLoadingPort( ))
+		SetBits( out->flags, VRCMD_FL_AT_PORT );
+
+	if( vr_twohand.value != 0.0f && VR_GetButton( VR_BTN_OFFGRIP ) && !vr.rl_holding )
+		SetBits( out->flags, VRCMD_FL_TWOHAND );
+
+	// WHAT the hand is carrying, by the same rule the carried model already
+	// follows, so the object the player can see and the value sent agree: a
+	// tube-fed weapon takes shells, a swing-out cylinder takes a loader, and
+	// everything else takes a magazine.
+	if( vr.rl_holding )
+	{
+		const vr_wprofile_t *wp = VR_GetWeaponProfile();
+
+		if( wp && wp->valid && wp->pump )
+			out->carried = VRCARRY_ROUND;
+		else if( vr.cyl_swings )
+			out->carried = VRCARRY_LOADER;
+		else
+			out->carried = VRCARRY_MAGAZINE;
+	}
+
+	// The muzzle, folded in from the usercmd reserved[] carrier it has been
+	// riding in. That carrier works but is full - four slots spent on one
+	// position - and a mod using those fields costs us the pose entirely.
+	{
+		vec3_t muzzle;
+
+		if( VR_WeaponOriginActive( ) && VR_GetWeaponAim( muzzle, NULL ))
+		{
+			VectorCopy( muzzle, out->muzzle );
+			SetBits( out->flags, VRCMD_FL_MUZZLE );
+		}
+	}
+}
+
+/*
+================
 VR_UpdateReload
 
 Load the gun by hand: reach to the pouch at your off-side hip, close your
@@ -8716,21 +8847,7 @@ static void VR_UpdateReload( void )
 		//
 		// On this weapon the gate is just ahead of the trigger, and the trigger
 		// is where the firing hand is holding it. So measure from there.
-		if( VR_GetHandWorld( VR_DominantHand(), wpn, wang ))
-		{
-			AngleVectors( wang, fwd, NULL, NULL );
-			VectorMA( wpn, vr_reload_port_fwd.value, fwd, port );
-			VectorSubtract( hand, port, d );
-			at_port = ( VectorLength( d ) < Q_max( 1.0f, vr_reload_port.value ));
-		}
-
-		// A CLOSED CYLINDER HAS NOWHERE TO PUT A ROUND.
-		//
-		// On a weapon that swings open, the port only exists while it IS open -
-		// otherwise the ammo box could be pressed against a shut gun and the
-		// rounds would arrive through the frame.
-		if( at_port && vr.cyl_swings && !vr.cyl_open )
-			at_port = false;
+		at_port = VR_AtLoadingPort();
 
 		if( at_port )
 		{
@@ -11571,6 +11688,7 @@ qboolean VR_GetMeleeAttack( void ) { return false; }
 qboolean VR_GetReloadCmd( void ) { return false; }
 qboolean VR_ActionBlocked( void ) { return false; }
 int      VR_GetActionImpulse( void ) { return 0; }
+void     VR_FillCmd( struct vrcmd_s *out ) { if( out ) memset( out, 0, sizeof( vrcmd_t )); }
 int      VR_GetDropMagImpulse( void ) { return 0; }
 int      VR_GetCylinderImpulse( void ) { return 0; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }

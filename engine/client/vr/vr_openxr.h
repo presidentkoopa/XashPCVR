@@ -319,6 +319,12 @@ qboolean VR_GetAimAngles( vec3_t out_ang );
 // WITHOUT the cosmetic mesh correction). Used for firing and the laser.
 qboolean VR_GetWeaponAim( vec3_t out_org, vec3_t out_ang );
 
+// PCVR fork: fill the hand-state block for the command being built now.
+// State only, never events - see the note at the top of vrcmd.h. Safe with no
+// headset: the block is left zeroed, which reads as "no hands, nothing held".
+struct vrcmd_s;
+void VR_FillCmd( struct vrcmd_s *out );
+
 // World-space VR overlays (laser sight, grenade arc). Called from
 // pfnDrawNormalTriangles during the 3D pass.
 void     VR_DrawOverlays( void );
