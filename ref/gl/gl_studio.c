@@ -148,7 +148,20 @@ CVAR_DEFINE_AUTO( r_vr_action_bone,
 CVAR_DEFINE_AUTO( r_vr_flat_depth, "0", FCVAR_ARCHIVE, "squash the weapon into the near depth range as flatscreen does; breaks stereo depth on the weapon" );
 CVAR_DEFINE_AUTO( r_vr_action_debug, "0", 0, "log what the hand-driven action override sees" );
 CVAR_DEFINE_AUTO( r_vr_hide_arms, "0", FCVAR_ARCHIVE, "hide arm meshes welded into weapon viewmodels (VR)" );
-CVAR_DEFINE_AUTO( r_vr_arm_textures, "glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
+// Measured against every viewmodel on disk - Half-Life SD and HD, Opposing
+// Force, Blue Shift and MMod, 106 in all. The old list caught 24 of them: it
+// named the textures Valve used on Gordon's gloves and nothing else, so the
+// expansions - which skin every arm with plain "hand.BMP" and "skin.BMP" -
+// went entirely unmatched and the cvar looked broken rather than unset.
+// These six fragments reach 97.
+//
+// ".bmp" is part of three of the tokens on purpose. A bare "hand" also
+// matches handle.bmp, handleback.bmp and Pythonhandle.bmp, which are grips -
+// weapon art - and hiding those takes the grip off the gun. "hands.bmp"
+// likewise stays clear of scientist_hands_wht.bmp on the labcoat hand model.
+CVAR_DEFINE_AUTO( r_vr_arm_textures, "hand.bmp;hands.bmp;skin.bmp;glove;sleeve;forearm", FCVAR_ARCHIVE, "';' separated texture name fragments treated as arms" );
+CVAR_DEFINE_AUTO( r_vr_body_bones, "finger;thumb;hand;arm;palm;clavicle", FCVAR_ARCHIVE, "';' separated bone name fragments treated as the player's arms" );
+CVAR_DEFINE_AUTO( r_vr_body_guard, "15", FCVAR_ARCHIVE, "leave a viewmodel's arms alone once one arm bone owns this percent of its mesh" );
 static cvar_t			*cl_righthand = NULL;
 
 static r_studio_interface_t	*pStudioDraw;
@@ -2474,10 +2487,266 @@ static void R_StudioSubmitMesh( short *ptricmds, vec3_t *pstudionorms, float s, 
 
 /*
 ===============
+PCVR: find the player's own body in a viewmodel, by measurement
+
+Texture names are authored data, and authored data only ever covers content
+somebody has looked at. The bones carry the same answer without anyone
+writing it down.
+
+Arm bones own a characteristic share of a viewmodel's vertices - a finger
+bone about 1%, a forearm 4-5%, a hand 3% - while the weapon sits on its own
+bone at 40-60%. So when an arm bone owns far more than its share, the reason
+is always that the weapon itself is weighted to it, and collapsing or hiding
+that bone's geometry would take the weapon with it. Opposing Force's crowbar
+puts 85% of its mesh on "Bip01 R Hand"; the pipe wrench 94%; the desert eagle
+32%. Those models have to be left alone, and they say so themselves.
+
+Measured over all 106 viewmodels on hand - Half-Life SD and HD, Opposing
+Force, Blue Shift, MMod - a 15% ceiling allows 87 and refuses 19, and the 19
+are exactly the crowbars, the knife, the pipe wrench, the hand models, and
+the pistols and shotguns whose frame hangs off a hand bone.
+
+Refusing protects the texture path too, which is why it is checked first at
+the draw site: the crowbar is skinned with hand.BMP, so matching on texture
+alone would delete the crowbar.
+===============
+*/
+#define VR_MAX_BODY_MESHES	192
+
+static studiohdr_t	*vr_body_hdr = NULL;
+static mstudiomesh_t	*vr_body_mesh[VR_MAX_BODY_MESHES];
+static int		vr_body_nmesh = 0;
+static qboolean		vr_body_refused = true;
+
+// The analysis is cached per model, so the cvars it read are cached with it -
+// otherwise retuning the ceiling in a headset appears to do nothing until the
+// map reloads, which is the one place it needs to be adjustable.
+static char		vr_body_bones_used[256] = "";
+static float		vr_body_guard_used = -1.0f;
+
+/*
+===============
+R_StudioBoneIsBody
+
+Does this bone name the player's arm rather than the weapon?
+
+The match is a case-insensitive substring, EXCEPT that the character after it
+may not be a letter. That one rule is load-bearing: a bare "hand" otherwise
+swallows "Hands mesh 2", which is the HD pistol's SLIDE, and hiding the slide
+takes it off the gun. A trailing digit is fine - "Finger0" is still a finger,
+"Bip01 R Arm2" is still an arm.
+===============
+*/
+static qboolean R_StudioBoneIsBody( const char *name )
+{
+	const char *list = r_vr_body_bones.string;
+	char token[32];
+	int n;
+
+	if( !name || !name[0] || !list || !list[0] )
+		return false;
+
+	while( *list )
+	{
+		while( *list == ';' || *list == ' ' )
+			list++;
+
+		for( n = 0; *list && *list != ';' && n < (int)sizeof( token ) - 1; n++ )
+			token[n] = *list++;
+		token[n] = '\0';
+
+		if( n > 0 )
+		{
+			const char *at = name;
+
+			while(( at = Q_stristr( at, token )) != NULL )
+			{
+				char after = at[n];
+
+				if( !(( after >= 'a' && after <= 'z' )
+					|| ( after >= 'A' && after <= 'Z' )))
+					return true;
+
+				at++;
+			}
+		}
+	}
+
+	return false;
+}
+
+/*
+===============
+R_StudioFindBodyMeshes
+
+Work out, once per model, which meshes are the player's arms - and whether
+this model may be touched at all. Cached per studio header the same way
+R_StudioFindParts is.
+===============
+*/
+static void R_StudioFindBodyMeshes( void )
+{
+	byte		is_body[MAXSTUDIOBONES];
+	int		owned[MAXSTUDIOBONES];
+	mstudiobone_t	*pbones;
+	int		i, b, m, total = 0, guard;
+
+	if( vr_body_hdr == m_pStudioHeader
+		&& vr_body_guard_used == r_vr_body_guard.value
+		&& !Q_strcmp( vr_body_bones_used, r_vr_body_bones.string ))
+		return;
+
+	vr_body_hdr = m_pStudioHeader;
+	vr_body_guard_used = r_vr_body_guard.value;
+	Q_strncpy( vr_body_bones_used, r_vr_body_bones.string, sizeof( vr_body_bones_used ));
+	vr_body_nmesh = 0;
+	vr_body_refused = true;
+
+	if( !m_pStudioHeader || m_pStudioHeader->numbones <= 0
+		|| m_pStudioHeader->numbones > MAXSTUDIOBONES
+		|| m_pStudioHeader->numbodyparts <= 0 )
+		return;
+
+	pbones = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex);
+
+	for( i = 0; i < m_pStudioHeader->numbones; i++ )
+	{
+		is_body[i] = R_StudioBoneIsBody( pbones[i].name ) ? 1 : 0;
+		owned[i] = 0;
+	}
+
+	// Who owns the mesh. Every submodel counts, not just the one body 0
+	// happens to select, so a bodygroup switch cannot change the verdict
+	// halfway through a level.
+	for( b = 0; b < m_pStudioHeader->numbodyparts; b++ )
+	{
+		mstudiobodyparts_t *pbp = (mstudiobodyparts_t *)((byte *)m_pStudioHeader
+			+ m_pStudioHeader->bodypartindex) + b;
+
+		for( m = 0; m < pbp->nummodels; m++ )
+		{
+			mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
+				+ pbp->modelindex) + m;
+			byte *pvertbone = (byte *)m_pStudioHeader + pmod->vertinfoindex;
+			int v;
+
+			for( v = 0; v < pmod->numverts; v++ )
+			{
+				int bone = pvertbone[v];
+
+				if( bone < 0 || bone >= m_pStudioHeader->numbones )
+					continue;
+
+				owned[bone]++;
+				total++;
+			}
+		}
+	}
+
+	if( total <= 0 )
+		return;
+
+	guard = (int)bound( 1.0f, r_vr_body_guard.value, 100.0f );
+
+	for( i = 0; i < m_pStudioHeader->numbones; i++ )
+	{
+		if( is_body[i] && owned[i] * 100 > total * guard )
+		{
+			// The weapon hangs off an arm bone. Leave this model alone.
+			if( r_vr_action_debug.value )
+			{
+				gEngfuncs.Con_Printf( "vr: %s keeps its arms - bone \"%s\" owns %d%% of the mesh\n",
+					RI.currentmodel ? RI.currentmodel->name : "?",
+					pbones[i].name, ( owned[i] * 100 ) / total );
+			}
+			return;
+		}
+	}
+
+	vr_body_refused = false;
+
+	// Second pass: a mesh is arm art when most of its vertices are. Measured
+	// across Opposing Force, 55 of 58 meshes come out all-body or all-weapon,
+	// so the halfway mark is nowhere near anything real.
+	for( b = 0; b < m_pStudioHeader->numbodyparts; b++ )
+	{
+		mstudiobodyparts_t *pbp = (mstudiobodyparts_t *)((byte *)m_pStudioHeader
+			+ m_pStudioHeader->bodypartindex) + b;
+
+		for( m = 0; m < pbp->nummodels; m++ )
+		{
+			mstudiomodel_t *pmod = (mstudiomodel_t *)((byte *)m_pStudioHeader
+				+ pbp->modelindex) + m;
+			byte *pvertbone = (byte *)m_pStudioHeader + pmod->vertinfoindex;
+			int k;
+
+			for( k = 0; k < pmod->nummesh; k++ )
+			{
+				mstudiomesh_t *pmesh = (mstudiomesh_t *)((byte *)m_pStudioHeader
+					+ pmod->meshindex) + k;
+				short *ptricmds = (short *)((byte *)m_pStudioHeader + pmesh->triindex);
+				int nverts = 0, nbody = 0, run;
+
+				while(( run = *( ptricmds++ )))
+				{
+					if( run < 0 )
+						run = -run;
+
+					for( ; run > 0; run--, ptricmds += 4 )
+					{
+						int vert = ptricmds[0];
+						int bone;
+
+						if( vert < 0 || vert >= pmod->numverts )
+							continue;
+
+						bone = pvertbone[vert];
+						nverts++;
+
+						if( bone >= 0 && bone < m_pStudioHeader->numbones && is_body[bone] )
+							nbody++;
+					}
+				}
+
+				if( nverts > 0 && nbody * 2 > nverts
+					&& vr_body_nmesh < VR_MAX_BODY_MESHES )
+					vr_body_mesh[vr_body_nmesh++] = pmesh;
+			}
+		}
+	}
+}
+
+/*
+===============
+R_StudioIsBodyMesh
+
+True if R_StudioFindBodyMeshes decided this mesh is the player's own arm.
+A linear scan: a viewmodel carries tens of meshes, not thousands.
+===============
+*/
+static qboolean R_StudioIsBodyMesh( mstudiomesh_t *pmesh )
+{
+	int i;
+
+	for( i = 0; i < vr_body_nmesh; i++ )
+	{
+		if( vr_body_mesh[i] == pmesh )
+			return true;
+	}
+
+	return false;
+}
+
+/*
+===============
 R_StudioIsArmTexture
 
 True if this mesh's texture is arm/glove art rather than weapon art.
 Substring match against the ';' separated r_vr_arm_textures list.
+
+Kept alongside the measured test above, because the two fail differently: a
+mod that renames its textures is still caught by the bones, and a mesh the
+bone test reads as mixed is still caught by its texture.
 ===============
 */
 static qboolean R_StudioIsArmTexture( const char *texname )
@@ -2676,9 +2945,20 @@ static void R_StudioDrawPoints( void )
 		// tracked hand models can be drawn at the real controller poses
 		// instead. Viewmodel only - the same art appears on world models and
 		// other players, where it must stay.
-		if( r_vr_hide_arms.value && RI.currententity == tr.viewent &&
-			R_StudioIsArmTexture( ptexture[pskinref[pmesh->skinref]].name ))
-			continue;
+		//
+		// The measured verdict gates the texture test as well as its own.
+		// A refused model is one whose weapon is weighted to an arm bone, and
+		// on those the texture is no guide either: the crowbar is skinned
+		// with hand.BMP, so matching on the name alone deletes the crowbar.
+		if( r_vr_hide_arms.value && RI.currententity == tr.viewent )
+		{
+			R_StudioFindBodyMeshes();
+
+			if( !vr_body_refused
+				&& ( R_StudioIsBodyMesh( pmesh )
+					|| R_StudioIsArmTexture( ptexture[pskinref[pmesh->skinref]].name )))
+				continue;
+		}
 
 		g_nFaceFlags = ptexture[pskinref[pmesh->skinref]].flags | g_nForceFaceFlags;
 

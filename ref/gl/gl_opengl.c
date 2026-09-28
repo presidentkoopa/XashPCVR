@@ -1156,6 +1156,8 @@ static void GL_InitCommands( void )
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_flat_depth );
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_action_debug );
 	gEngfuncs.Cvar_RegisterVariable( &r_vr_arm_textures );
+	gEngfuncs.Cvar_RegisterVariable( &r_vr_body_bones );
+	gEngfuncs.Cvar_RegisterVariable( &r_vr_body_guard );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple_updatetime );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple_spawntime );

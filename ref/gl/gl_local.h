@@ -744,6 +744,8 @@ extern convar_t	r_vr_flat_depth;
 extern convar_t	r_vr_action_bone;		// PCVR: name the bone the hand works
 extern convar_t	r_vr_action_debug;		// PCVR: hide arms welded into weapon viewmodels
 extern convar_t r_vr_arm_textures;	// PCVR: ';' separated arm texture fragments
+extern convar_t r_vr_body_bones;	// PCVR: ';' separated arm BONE fragments
+extern convar_t r_vr_body_guard;	// PCVR: mesh-share ceiling before a model is left alone
 extern convar_t r_shadows;
 extern convar_t r_ripple;
 extern convar_t r_ripple_updatetime;
