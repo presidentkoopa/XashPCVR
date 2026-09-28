@@ -14,6 +14,11 @@ GNU General Public License for more details.
 */
 
 #include "common.h"
+
+// PCVR fork: index into cl.commands[] of the command being replayed, -1 outside
+// a replay. Read by the VR game API so a DLL asking "what are the hands doing"
+// during prediction gets the hands that belong to the command it is running.
+int cl_vr_predict_cmd = -1;
 #include "client.h"
 #include "const.h"
 #include "cl_tent.h"
@@ -1046,7 +1051,16 @@ void CL_PredictMovement( qboolean repredicting )
 		to_cmd = &cl.commands[current_command_mod];
 		runfuncs = ( !repredicting && !to_cmd->processedfuncs );
 
+		// PCVR fork: which command's hands the game DLL should see while this
+		// one is replayed. The block was filled beside this very usercmd in
+		// CL_CreateMove, so the index that selects one selects the other - the
+		// same pairing the server makes, which is what lets weapon code run
+		// once and be trusted on both sides.
+		cl_vr_predict_cmd = current_command_mod;
+
 		CL_RunUsercmd( from, to, &to_cmd->cmd, runfuncs, &time, current_command );
+
+		cl_vr_predict_cmd = -1;
 		VectorCopy( to->playerstate.origin, cl.local.predicted_origins[current_command_mod] );
 		to_cmd->processedfuncs = true;
 

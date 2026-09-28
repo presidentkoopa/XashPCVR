@@ -25,6 +25,9 @@ GNU General Public License for more details.
 #include "pmove.h"
 #include "pm_defs.h"
 #include "vrcmd.h"   // PCVR fork: hand state carried per command
+
+// PCVR fork: command being replayed by prediction, -1 outside a replay.
+extern int cl_vr_predict_cmd;
 #include "ref_params.h"
 #include "render_api.h"
 #include "sound_api.h"
@@ -516,6 +519,11 @@ typedef struct
 #if XASH_WIN32
 	qboolean client_dll_uses_sdl;
 #endif
+
+	// PCVR fork: the client DLL exported GetVRWeaponAPI and accepted our
+	// version, so weapon code inside it can read per-command hand state
+	// during prediction. False for every DLL that has never heard of VR.
+	qboolean	vr_api;
 } clgame_static_t;
 
 typedef struct

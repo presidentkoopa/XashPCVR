@@ -21,6 +21,7 @@ GNU General Public License for more details.
 
 #include "common.h"
 #include "client.h"
+#include "vr_gameapi.h"   // PCVR fork: optional VR interface to the client DLL
 #include "const.h"
 #include "triangleapi.h"
 #include "r_studioint.h"
@@ -3600,6 +3601,86 @@ static void GAME_EXPORT Voice_SetControlFloat( VoiceTweakControl iControl, float
 }
 
 /*
+=============
+CL_GetVRCmd
+
+The hand state for the command prediction is replaying right now.
+
+The same question SV_GetVRCmd answers on the server, during the same command,
+from the block that was filled beside it. That symmetry is the point: weapon
+code compiled into both hl.dll and client.dll asks this once and gets the same
+answer on both sides, which is what makes it safe to let that code decide
+things rather than having the engine infer them.
+
+The player argument is ignored here and that is correct - a client predicts
+exactly one player, its own, and has no edicts to distinguish anyway. It is in
+the signature because the server needs it.
+=============
+*/
+static qboolean CL_GetVRCmd( edict_t *player, vrcmd_t *out )
+{
+	if( !out )
+		return false;
+
+	memset( out, 0, sizeof( *out ));
+
+	if( cl_vr_predict_cmd < 0 || cl_vr_predict_cmd > CL_UPDATE_MASK )
+		return false;
+
+	*out = cl.commands[cl_vr_predict_cmd].vr;
+	return true;
+}
+
+static qboolean CL_VRPlayerHandLoads( edict_t *player )
+{
+	return Cvar_VariableValue( "vr_handload" ) != 0.0f;
+}
+
+static const vr_engine_funcs_t gVRClientFuncs =
+{
+	CL_GetVRCmd,
+	CL_VRPlayerHandLoads,
+};
+
+/*
+=============
+CL_InitVRGameAPI
+
+Offer the client DLL the same VR interface the server DLL gets.
+
+Optional on this side too: a client.dll without the export keeps the
+behaviour it has always had. Nothing is added to cl_enginefunc_t, for the same
+reason nothing was added to enginefuncs_t - it is the ABI every GoldSrc client
+DLL was built against.
+=============
+*/
+static void CL_InitVRGameAPI( void )
+{
+	VR_GAMEAPI_FN GetVRWeaponAPI;
+	vr_game_funcs_t game = { 0 };
+	int ret;
+
+	clgame.vr_api = false;
+
+	GetVRWeaponAPI = (VR_GAMEAPI_FN)COM_GetProcAddress( clgame.hInstance, VR_GAMEAPI_EXPORT );
+
+	if( !GetVRWeaponAPI )
+		return;
+
+	ret = GetVRWeaponAPI( VR_GAMEAPI_VERSION, &gVRClientFuncs, &game );
+
+	if( ret != VR_GAMEAPI_VERSION )
+	{
+		Con_Printf( S_WARN "client DLL declined the VR weapon API (wanted %i, got %i)\n",
+			VR_GAMEAPI_VERSION, ret );
+		return;
+	}
+
+	clgame.vr_api = true;
+	Con_Reportf( "VR weapon API: client DLL speaks version %i\n", VR_GAMEAPI_VERSION );
+}
+
+/*
 =================
 Voice_GetControlFloat
 
@@ -4062,6 +4143,10 @@ qboolean CL_LoadProgs( const char *name )
 		// trying to fill interface now
 		CL_GetSecuredClientAPI( GetClientAPI );
 	}
+
+	// PCVR fork: and offer the VR interface, which most client DLLs decline.
+	if( GetClientAPI != NULL )
+		CL_InitVRGameAPI();
 
 	if( GetClientAPI != NULL ) // check critical functions again
 		valid_single_export = ValidateExports( cdll_exports, ARRAYSIZE( cdll_exports ));
