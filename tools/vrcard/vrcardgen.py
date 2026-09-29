@@ -25,6 +25,7 @@ Usage:
 """
 
 import os
+import math
 import struct
 import sys
 
@@ -900,6 +901,74 @@ def draft_card(model, parts):
 
 
 # ---------------------------------------------------------------------------
+# posing
+#
+# The same forward kinematics the engine does, so a preview can show a frame
+# of an animation rather than the bind pose. A part with no bone of its own
+# still moves during a reload, carried by whichever bone owns it - and seeing
+# that happen is the difference between knowing which bone the magazine is on
+# and guessing.
+# ---------------------------------------------------------------------------
+
+def _angle_quat(a):
+    """GoldSrc's AngleQuaternion, angles in radians."""
+    sy = math.sin(a[2] * 0.5); cy = math.cos(a[2] * 0.5)
+    sp = math.sin(a[1] * 0.5); cp = math.cos(a[1] * 0.5)
+    sr = math.sin(a[0] * 0.5); cr = math.cos(a[0] * 0.5)
+    return (sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy)
+
+
+def _quat_matrix(q, o):
+    """A 3x4 matrix, as rows, from a quaternion and an origin."""
+    x, y, z, w = q
+    return [
+        [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * w * z,     2 * x * z + 2 * w * y,     o[0]],
+        [2 * x * y + 2 * w * z,     1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * w * x,     o[1]],
+        [2 * x * z - 2 * w * y,     2 * y * z + 2 * w * x,     1 - 2 * x * x - 2 * y * y, o[2]],
+    ]
+
+
+def _concat(a, b):
+    out = []
+    for r in range(3):
+        row = []
+        for c in range(3):
+            row.append(a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c])
+        row.append(a[r][0] * b[0][3] + a[r][1] * b[1][3] + a[r][2] * b[2][3] + a[r][3])
+        out.append(row)
+    return out
+
+
+def _xform(m, p):
+    return [m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3] for r in range(3)]
+
+
+def pose_bones(model, seq, frame):
+    """Every bone's world matrix on one frame of one sequence.
+
+    `seq` of None gives the bind pose, which is what the rest of the tool
+    measures against.
+    """
+    world = [None] * model.numbones
+
+    for b in model.bones:
+        if seq is None:
+            pos = list(b.value[:3])
+            rot = list(b.value[3:6])
+        else:
+            pos = [model._anim_value(seq["animindex"], b.index, a, frame) for a in range(3)]
+            rot = [model._anim_value(seq["animindex"], b.index, 3 + a, frame) for a in range(3)]
+
+        local = _quat_matrix(_angle_quat(rot), pos)
+        world[b.index] = local if b.parent == -1 else _concat(world[b.parent], local)
+
+    return world
+
+
+# ---------------------------------------------------------------------------
 # preview
 #
 # The plan asks for this in so many words: "a synthetic part is defined by
@@ -947,7 +1016,7 @@ def _frame(model):
     return fwd, up, right
 
 
-def _triangles(model, keep, offs, fwd, up, right):
+def _triangles(model, keep, world, fwd, up, right):
     """Every triangle of every bone that belongs to the weapon, already
     projected into the weapon frame.
 
@@ -973,9 +1042,7 @@ def _triangles(model, keep, offs, fwd, up, right):
                 bi = model.d[vertinfoindex + vi]
                 if bi not in keep:
                     return None
-                q = _v3(model.d, vertindex + vi * 12)
-                d = offs[bi]
-                w = [q[a] + d[a] for a in range(3)]
+                w = _xform(world[bi], _v3(model.d, vertindex + vi * 12))
                 return (bi,
                         sum(w[a] * fwd[a] for a in range(3)),
                         sum(w[a] * up[a] for a in range(3)),
@@ -1016,7 +1083,7 @@ def _triangles(model, keep, offs, fwd, up, right):
     return tris
 
 
-def preview(model, parts, path):
+def preview(model, parts, path, seqname=None, frac=0.0):
     counts, total = model.vertex_owners()
     fwd, up, right = _frame(model)
 
@@ -1027,19 +1094,21 @@ def preview(model, parts, path):
 
     keep = dict((p["bone"].index, p["bone"].name) for p in parts if p["inside"])
 
-    offs = {}
-    for b in model.bones:
-        if b.index not in keep:
-            continue
-        o = [0.0, 0.0, 0.0]
-        i = b.index
-        while i != -1 and i != body:
-            for a in range(3):
-                o[a] += model.bones[i].value[a]
-            i = model.bones[i].parent
-        offs[b.index] = o
+    seq = None
+    frame = 0
+    if seqname:
+        for q in model.sequences():
+            if q["label"].lower() == seqname.lower() and q["seqgroup"] == 0:
+                seq = q
+                break
+        if seq is None:
+            print("    no sequence called %s" % seqname)
+        else:
+            frame = max(0, min(seq["numframes"] - 1,
+                               int(round(frac * (seq["numframes"] - 1)))))
 
-    tris = _triangles(model, keep, offs, fwd, up, right)
+    world = pose_bones(model, seq, frame)
+    tris = _triangles(model, keep, world, fwd, up, right)
 
     if not tris:
         print("    nothing to preview")
@@ -1069,8 +1138,12 @@ def preview(model, parts, path):
              'viewBox="0 0 %d %d" font-family="ui-monospace,monospace">'
              % (int(W), int(H), int(W), int(H)))
     o.append('<rect width="100%" height="100%" fill="#14161a"/>')
-    o.append('<text x="%d" y="30" fill="#f0eeeb" font-size="17">%s</text>'
-             % (GUT, model.name))
+    if seq:
+        o.append('<text x="%d" y="30" fill="#f0eeeb" font-size="17">%s  -  %s, frame %d of %d</text>'
+                 % (GUT, model.name, seq["label"], frame, seq["numframes"] - 1))
+    else:
+        o.append('<text x="%d" y="30" fill="#f0eeeb" font-size="17">%s  -  bind pose</text>'
+                 % (GUT, model.name))
     o.append('<text x="%d" y="50" fill="#9aa0a6" font-size="12">'
              'each square is 1 model unit; numbers every 5. muzzle points RIGHT.</text>'
              % GUT)
@@ -1204,8 +1277,11 @@ def main(argv):
         mp = Model(argv[2])
         pp = classify(mp)
         report(mp, pp)
-        preview(mp, pp, argv[3] if len(argv) > 3 else
-                os.path.splitext(os.path.basename(argv[2]))[0] + ".svg")
+        preview(mp, pp,
+                argv[3] if len(argv) > 3 else
+                os.path.splitext(os.path.basename(argv[2]))[0] + ".svg",
+                argv[4] if len(argv) > 4 else None,
+                float(argv[5]) if len(argv) > 5 else 1.0)
         return 0
 
     if argv[1] == "--census":

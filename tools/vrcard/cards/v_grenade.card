@@ -1,0 +1,44 @@
+# Half-Life hand grenade. Measured by vrcardgen, finished by hand.
+#
+# The model has every bone this needs, and the plan names them: a `ring` that
+# turns 1.16 radians in `pinpull`, a `pin` that leaves with it, and a `spoon`
+# that owns 7% of the mesh and is never animated - because in Half-Life the
+# spoon never moves.
+#
+# HOW IT WORKS, and why it is not the fuse-from-pin the stock game uses.
+#
+# The pin does not start anything. It stops the spoon moving before you have
+# hold of the grenade, and once it is out your GRIP is what holds the spoon
+# down. Let the spoon go - with the thumb, deliberately - and the fuse runs
+# while the grenade is still in your hand. That is cooking, and it is a thing
+# you choose to do rather than a timer that started behind your back.
+#
+# Throwing does the same thing without the decision: a hand that opens to
+# throw is a hand that has stopped holding the spoon.
+#
+# One mechanism, both behaviours. Standard fidelity can still force the stock
+# fuse-from-pin for players who want it, which is a rule on top of this and
+# not a different mechanism underneath.
+
+weapon v_grenade
+match  bones 35  seqs 8  hash 0xf991b830
+
+type   thrown
+
+# The ring. Pulled until the pin is clear of its lugs - measured at 1.16
+# radians, which is the whole of the pinpull animation's travel.
+joint 0  bone "ring"  hinge  travel 1.16  rest 0
+    point pin_clear at 0.70
+    grab  point 0.00 0.00 0.00  radius 2.0
+
+# The spoon. It is held by your grip, not by a catch on a joint, so its
+# control names no joint - the one control in the format that does not.
+control spoon  at 0.00 0.00 0.00  finger thumb  kind button
+
+# `pin` travels 48 units in the pinpull animation, which is not a mechanism:
+# it is the pin being thrown away. The feed path owns it.
+#
+# `spoon` exists, owns 68 vertices and is never animated. Moving it wants a
+# declared travel and an animation written for it by the surgery - which is
+# possible today and is not done here, because nobody has measured the arc a
+# spoon actually swings through on this model.
