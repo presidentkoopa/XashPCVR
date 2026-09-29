@@ -237,6 +237,8 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 	int seq_entries[256], seq_frames[256];
 	int drive_seq = -1, drive_frames = 0;
 	int from_bone[MOD_MAX_SYNTH];
+	int synth_bone[MOD_MAX_SYNTH];
+	int added;
 
 	if( err )
 		*err = NULL;
@@ -255,7 +257,16 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 
 	numbones = RdI( src, H_NUMBONES );
 	numseq = RdI( src, H_NUMSEQ );
-	newbones = numbones + nsynth;
+
+	// A REWRITE ADDS NO BONE. It replaces the motion of one that is already
+	// there, so it costs an animation and nothing else.
+	newbones = numbones;
+
+	for( i = 0; i < nsynth; i++ )
+	{
+		if( !synths[i].rewrite )
+			newbones++;
+	}
 
 	if( numbones <= 0 || numseq < 0 )
 		FAIL( "model has no bones" );
@@ -274,7 +285,7 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 		if( from_bone[s] < 0 )
 			FAIL( "the bone a synthetic part comes from is not in this model" );
 
-		if( Surgery_FindBone( src, synths[s].name ) >= 0 )
+		if( !synths[s].rewrite && Surgery_FindBone( src, synths[s].name ) >= 0 )
 			FAIL( "a bone by that name already exists" );
 	}
 
@@ -381,10 +392,33 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 
 		memcpy( dst + newbase, src + oldbase, (size_t)numbones * BONE_SIZE );
 
-		for( s = 0; s < nsynth; s++ )
+		for( s = 0, added = 0; s < nsynth; s++ )
 		{
-			size_t b = newbase + (size_t)( numbones + s ) * BONE_SIZE;
+			size_t b;
 			int k;
+
+			// A rewrite works on a bone that is already in the array, so
+			// its scale is set where it stands rather than appended.
+			if( synths[s].rewrite )
+			{
+				b = newbase + (size_t)from_bone[s] * BONE_SIZE;
+
+				for( k = 0; k < 6; k++ )
+				{
+					int rot = ( k >= 3 );
+					int used = synths[s].rotates ? rot : !rot;
+
+					WrF( dst, b + BONE_SCALE + (size_t)k * 4,
+						used ? ( rot ? SYNTH_ROT_SCALE : SYNTH_SCALE ) : 0.0f );
+				}
+
+				synth_bone[s] = from_bone[s];
+				continue;
+			}
+
+			b = newbase + (size_t)( numbones + added ) * BONE_SIZE;
+			synth_bone[s] = numbones + added;
+			added++;
 
 			memset( dst + b, 0, BONE_SIZE );
 			strncpy( (char *)( dst + b + BONE_NAME ), synths[s].name, MOD_SYNTH_NAME_LEN - 1 );
@@ -488,7 +522,14 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 			// drives it, filled in below.
 			for( s = 0; s < nsynth; s++ )
 			{
-				size_t newe = newblock + (size_t)( b * newbones + numbones + s ) * ANIM_SIZE;
+				size_t newe = newblock
+					+ (size_t)( b * newbones + synth_bone[s] ) * ANIM_SIZE;
+
+				// Cleared in EVERY sequence, rewrite or not. For a new bone
+				// that is "sit at the pivot"; for a rewritten one it is the
+				// artist's motion being taken away, which has to happen
+				// everywhere or the bone would decode its old values
+				// against its new scale and fly apart.
 				memset( dst + newe, 0, ANIM_SIZE );
 			}
 		}
@@ -507,7 +548,7 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 		{
 			for( s = 0; s < nsynth; s++ )
 			{
-				size_t newe = newblock + (size_t)( numbones + s ) * ANIM_SIZE;
+				size_t newe = newblock + (size_t)synth_bone[s] * ANIM_SIZE;
 				int ch;
 
 				if( synths[s].travel == 0.0f )
@@ -567,9 +608,13 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 	// ---- move the vertices across ---------------------------------------
 	for( s = 0; s < nsynth; s++ )
 	{
-		int newindex = numbones + s;
+		int newindex = synth_bone[s];
 		int moved = 0;
 		int bp;
+
+		// A rewrite changes how a bone MOVES, not what hangs off it.
+		if( synths[s].rewrite )
+			continue;
 
 		for( bp = 0; bp < RdI( src, H_NUMBODYPARTS ); bp++ )
 		{

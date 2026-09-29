@@ -77,6 +77,19 @@ typedef struct vr_synthpart_s
 	// makes the gate in Part C mean anything, and writing a pure rotation
 	// for the handle is what makes the split honest.
 	unsigned char   rotates;
+
+	// REPLACE AN EXISTING BONE'S MOTION rather than creating a new one. No
+	// bone is added and no vertex moves; the bone named by `from` simply
+	// stops doing whatever the artist animated and does the declared motion
+	// instead.
+	//
+	// The other half of the two-axis bolt. Splitting the M40A1's bolt gives
+	// the sliding body its own bone, but the handle left behind still
+	// carries the original animation - which translates as well as turns, so
+	// driving it as a hinge would slide the bolt and then its child would
+	// slide again. Rewriting it to a pure turn is what makes the split mean
+	// what it says.
+	unsigned char   rewrite;
 } vr_synthpart_t;
 
 #endif // VRSYNTH_H

@@ -1,0 +1,70 @@
+# Opposing Force M40A1 sniper rifle. Measured by vrcardgen, cut and carded by
+# hand.
+#
+# THE ONE TRUE TWO-AXIS BOLT (M-03). Part K calls this the test that the joint
+# model is general rather than a set of Half-Life special cases, and it is:
+# lift the handle, pull back, push forward, drop. Every shot needs the full
+# cycle.
+#
+# The model does not hand it over. `m40a1_bolt` is a single bone that both
+# turns 0.595 radians and slides 1.25 units, in the same animation - and a
+# part, to the renderer, is a lerp between two bracketed poses driven by one
+# value. One bone cannot be two independent joints. (The two never-animated
+# knobs are not the handle: they are the scope's windage and elevation
+# turrets.)
+#
+# So the bolt is split, at load, by two operations:
+#
+#   the CARVE takes all 22 of the bolt's vertices onto a body of their own
+#   that slides and does not turn;
+#
+#   the REWRITE replaces what is left - the handle - with a pure turn, so
+#   that lifting it turns the bolt without also dragging it backwards.
+#
+# The body is parented to the handle, so lifting the handle turns the whole
+# bolt, which is what a rifle does.
+#
+# JOINT ORDER IS NOT ARBITRARY. The `magazine_slide` preset makes joint 0 the
+# action and joint 1 the magazine, so the bolt body has to be 0 and the clip
+# 1 - the handle, which the preset knows nothing about, goes last. Numbering
+# them the other way round silently gives the magazine the slide's catches.
+#
+# The plan's numbers check out: bolt 1.25 in `fire` and `reload2`, magazine
+# 4.81. Both measured here to the hundredth.
+
+weapon v_m40a1
+match  bones 55  seqs 9  hash 0xb95673d5
+
+type   magazine_slide  capacity 5  rpm 40
+
+# A BOLT ACTION CYCLES ITSELF FOR NOBODY, and it has no slide stop to hold
+# open. Both of those are the preset's assumptions about a self-loader.
+feed   no_self_loading  no_slide_lock
+
+# The bolt's sliding body, cut out of the bolt.
+synth m40a1_boltbody  from "m40a1_bolt"
+      box   -1.20 0.20 -0.65   2.10 2.85 0.75
+      pivot  0.00 0.00 0.00
+      slide  axis 1.0 0.0 0.0   travel 1.25
+
+# ...and the handle left behind, rewritten to turn and nothing else.
+synth m40a1_bolt  from "m40a1_bolt"  rewrite
+      hinge  axis 1.0 0.0 0.0   travel 0.60
+
+# JOINT 0: the bolt, AND IT CANNOT MOVE UNTIL THE HANDLE IS UP. That is the
+# gate from Part C, and this is the weapon it was written for.
+joint 0  bone "m40a1_boltbody"  slide  travel 1.25  rest 0
+    gate  2  0.80  1.00
+    point eject at 0.80
+    point feed  at 0.35
+    grab  point 0.43 1.53 0.05  radius 2.0
+
+# JOINT 1: five rounds, and the magazine comes out by hand like any other.
+joint 1  bone "m40a1_clip"  slide  travel 4.81  rest 0
+    grab  point 0.00 0.00 0.00  radius 2.0
+
+# JOINT 2: the handle. Lift it and it stays lifted - there is no spring
+# pulling a bolt handle down, which is why it carries no catch: its own
+# stiffness against the hand is what holds it.
+joint 2  bone "m40a1_bolt"  hinge  travel 0.60  rest 0
+    grab  point 0.43 1.53 0.05  radius 2.0

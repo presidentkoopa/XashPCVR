@@ -85,8 +85,13 @@ int main( int argc, char **argv )
 		synth.travel = (float)atof( argv[17] );
 
 	// An 18th argument of "rot" makes it a hinge: `travel` is then radians.
-	if( argc > 18 && !strcmp( argv[18], "rot" ))
-		synth.rotates = 1;
+	// "rewrite" replaces the source bone's own motion instead of carving a
+	// new bone out of it.
+	if( argc > 18 )
+	{
+		if( strstr( argv[18], "rot" ))     synth.rotates = 1;
+		if( strstr( argv[18], "rewrite" )) synth.rewrite = 1;
+	}
 
 	need = Mod_StudioSurgery( in, inlen, NULL, 0, &synth, 1, &err );
 
