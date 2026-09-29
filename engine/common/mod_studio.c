@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include "ref_common.h"
 #include "swaplib.h"
 #include "vrfingerprint.h"
+#include "mod_surgery.h"
 
 typedef int (*STUDIOAPI)( int, sv_blending_interface_t**, server_studio_api_t*,  float (*transform)[3][4], float (*bones)[MAXSTUDIOBONES][3][4] );
 
@@ -242,6 +243,32 @@ void *GAME_EXPORT Mod_StudioExtradata( model_t *mod )
 	if( mod && mod->type == mod_studio )
 		return mod->cache.data;
 	return NULL;
+}
+
+/*
+===============
+Mod_StudioIsViewModel
+
+Mesh surgery applies to view models and nothing else, so it needs to know
+one. By name, because that is the only thing a model has at this point that
+says what it is for: GoldSrc has named first-person models `v_*` since 1998,
+and every mod in the census follows it.
+===============
+*/
+static qboolean Mod_StudioIsViewModel( const char *name )
+{
+	const char *base = name, *p;
+
+	if( !name || !name[0] )
+		return false;
+
+	for( p = name; *p; p++ )
+	{
+		if( *p == '/' || *p == '\\' )
+			base = p + 1;
+	}
+
+	return ( base[0] == 'v' && base[1] == '_' );
 }
 
 /*
@@ -1328,6 +1355,64 @@ void Mod_LoadStudioModel( model_t *mod, void *buffer, size_t buffersize, qboolea
 
 	// NOTE: we may not want to keep raw textures in memory. just cutoff model pointer above texture base
 	phdr = Mod_MaybeTruncateStudioTextureData( mod );
+
+#if !XASH_DEDICATED
+	// ---- mesh surgery, before anything has drawn this ------------------
+	//
+	// A weapon card can only drive parts that are separate bones, and most
+	// of what a hand wants to hold is welded to the body because no animator
+	// needed it to move. If the client DLL says this model is missing a
+	// part, it gets one here - while the model is still ours alone and
+	// nothing has taken a pointer into it.
+	//
+	// VIEW MODELS ONLY. This changes what is drawn and nothing else; no
+	// hitbox, attachment or existing bone index moves, so the server's hit
+	// detection and every mod's own code see exactly what they saw before.
+	// Restricting it to view models is belt and braces on top of that.
+	//
+	// A refusal is not a failure. The unmodified model is what we already
+	// have, the weapon keeps the behaviour it has always had, and the reason
+	// is printed once.
+	if( !Host_IsDedicated( ) && phdr && Mod_StudioIsViewModel( mod->name ))
+	{
+		vr_synthpart_t synths[VRSYNTH_MAX_PARTS];
+		int nsynth = Mod_StudioSynthParts( mod->name, synths, VRSYNTH_MAX_PARTS );
+
+		if( nsynth > 0 )
+		{
+			const char *err = NULL;
+			size_t need = Mod_StudioSurgery( phdr, (size_t)phdr->length,
+				NULL, 0, synths, nsynth, &err );
+
+			if( !need )
+			{
+				Con_Printf( S_WARN "%s: no surgery on %s: %s\n", __func__,
+					mod->name, err ? err : "refused" );
+			}
+			else
+			{
+				void *grown = Mem_Calloc( mod->mempool, need );
+
+				if( Mod_StudioSurgery( phdr, (size_t)phdr->length, grown, need,
+					synths, nsynth, &err ))
+				{
+					Mem_Free( mod->cache.data );
+					mod->cache.data = grown;
+					phdr = (studiohdr_t *)grown;
+
+					Con_Reportf( "%s: %s gained %i bone%s\n", __func__,
+						mod->name, nsynth, nsynth == 1 ? "" : "s" );
+				}
+				else
+				{
+					Mem_Free( grown );
+					Con_Printf( S_WARN "%s: no surgery on %s: %s\n", __func__,
+						mod->name, err ? err : "refused" );
+				}
+			}
+		}
+	}
+#endif
 
 	// setup bounding box
 	if( !VectorCompare( vec3_origin, phdr->bbmin ))

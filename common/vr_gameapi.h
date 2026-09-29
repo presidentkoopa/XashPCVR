@@ -16,6 +16,7 @@ GNU General Public License for more details.
 #define VR_GAMEAPI_H
 
 #include "vrcmd.h"
+#include "vrsynth.h"
 
 /*
 ====================
@@ -45,7 +46,7 @@ the other to work.
 // speaks; a DLL that does not recognise it must return 0 and will be treated
 // as though it never exported anything, rather than reading a table whose
 // layout it is guessing at.
-#define VR_GAMEAPI_VERSION  3
+#define VR_GAMEAPI_VERSION  4
 
 struct edict_s;
 
@@ -134,6 +135,19 @@ typedef struct vr_game_funcs_s
 	// a player with no carded weapon in hand, and for every mod that has
 	// never heard of any of this.
 	int ( *pfnGetJointValues )( vr_jointvalue_t *out, int max );
+
+	// ---- version 4 ----
+
+	// Does this model need a bone the animators never made?
+	//
+	// Mesh surgery is DECLARED in a weapon card and APPLIED by the engine's
+	// model loader - the only thing that sees a model before it is drawn.
+	// Cards are the game DLL's, so the engine asks rather than parsing them
+	// a second time. Called once per model, at load.
+	//
+	// Returns how many parts were written. Zero is the normal answer, and
+	// the answer for every mod that has never heard of any of this.
+	int ( *pfnGetSynthParts )( const char *model, vr_synthpart_t *out, int max );
 } vr_game_funcs_t;
 
 // The export itself. Returns VR_GAMEAPI_VERSION on success, 0 to decline.

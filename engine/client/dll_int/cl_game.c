@@ -3671,6 +3671,21 @@ never fill any of it in.
 */
 vr_game_funcs_t clgame_vr_funcs = { 0 };
 
+/*
+=================
+Mod_StudioSynthParts
+
+Asked by the model loader, once per model. See mod_surgery.h.
+=================
+*/
+int Mod_StudioSynthParts( const char *model, struct vr_synthpart_s *out, int max )
+{
+	if( !clgame_vr_funcs.pfnGetSynthParts || !model || !out || max <= 0 )
+		return 0;
+
+	return clgame_vr_funcs.pfnGetSynthParts( model, (vr_synthpart_t *)out, max );
+}
+
 static void CL_InitVRGameAPI( void )
 {
 	VR_GAMEAPI_FN GetVRWeaponAPI;

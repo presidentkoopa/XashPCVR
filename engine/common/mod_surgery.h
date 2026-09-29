@@ -57,20 +57,15 @@ before.
 ====================
 */
 
-#define MOD_SYNTH_NAME_LEN  32
-#define MOD_MAX_SYNTH       4
+// The declaration itself lives in common/vrsynth.h, shared with the game DLL
+// that parses it out of a card and with the generator that previews it. One
+// struct, three callers; see that header.
+#include "vrsynth.h"
 
-// How the vertices for one synthetic part are chosen. A box in the source
-// bone's own space, which is what the generator's preview mode shows and what
-// a card declares.
-typedef struct mstudiosynth_s
-{
-	char    name[MOD_SYNTH_NAME_LEN];       // the new bone's name
-	char    from[MOD_SYNTH_NAME_LEN];       // whose vertices to take
-	float   box_min[3];
-	float   box_max[3];
-	float   pivot[3];                       // new bone's origin, source-bone space
-} mstudiosynth_t;
+#define MOD_SYNTH_NAME_LEN  VRSYNTH_NAME_LEN
+#define MOD_MAX_SYNTH       VRSYNTH_MAX_PARTS
+
+typedef vr_synthpart_t mstudiosynth_t;
 
 /*
 ====================
