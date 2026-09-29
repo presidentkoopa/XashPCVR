@@ -50,6 +50,22 @@ typedef struct vr_synthpart_s
 	// because it carries no rotation of its own that is a subtraction - which
 	// is also why the part's normals need no rewriting.
 	float   pivot[3];
+
+	// WHICH WAY IT MOVES, AND HOW FAR, in the source bone's space.
+	//
+	// A real part is measured: the engine finds which sequence moves its
+	// bone furthest and brackets the travel. A synthetic part has no
+	// animation to measure - nobody ever animated it, which is the whole
+	// reason it needed a bone - so the card states the motion instead, and
+	// the surgery WRITES an animation for it. The part is then measured by
+	// exactly the same code as every other part, and one posing path
+	// continues to serve both.
+	//
+	// A zero axis means the part is posed by nothing and simply sits at its
+	// pivot: still useful, since a bone that can be hidden or shrunk is
+	// worth having on its own.
+	float   axis[3];
+	float   travel;
 } vr_synthpart_t;
 
 #endif // VRSYNTH_H

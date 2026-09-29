@@ -78,7 +78,11 @@ int main( int argc, char **argv )
 		synth.box_min[i] = (float)atof( argv[5 + i] );
 		synth.box_max[i] = (float)atof( argv[8 + i] );
 		synth.pivot[i]   = (float)atof( argv[11 + i] );
+		synth.axis[i]    = ( argc > 17 ) ? (float)atof( argv[14 + i] ) : 0.0f;
 	}
+
+	if( argc > 17 )
+		synth.travel = (float)atof( argv[17] );
 
 	need = Mod_StudioSurgery( in, inlen, NULL, 0, &synth, 1, &err );
 

@@ -74,6 +74,11 @@ GNU General Public License for more details.
 #define STUDIO_VERSION  10
 #define MAX_BONES       128     // MAXSTUDIOBONES
 
+// The units a written animation value carries. 1/64 of a unit is finer than
+// studiomdl's own default and keeps a twenty-unit magazine's raw values
+// inside a signed short with room to spare.
+#define SYNTH_SCALE     ( 1.0f / 64.0f )
+
 #define FAIL( msg )     do { if( err ) *err = ( msg ); return 0; } while( 0 )
 
 static int RdI( const unsigned char *d, size_t o )
@@ -223,7 +228,8 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 	int numbones, numseq, newbones, i, s;
 	size_t need, cursor;
 	size_t seq_block[256], seq_size[256];
-	int seq_entries[256];
+	int seq_entries[256], seq_frames[256];
+	int drive_seq = -1, drive_frames = 0;
 	int from_bone[MOD_MAX_SYNTH];
 
 	if( err )
@@ -292,6 +298,17 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 
 		seq_block[i] = (size_t)RdI( src, sq + SEQ_ANIMINDEX );
 		seq_entries[i] = numblends * numbones;
+		seq_frames[i] = numframes;
+
+		// The sequence a synthetic part's motion is written into: the
+		// longest one, so the travel is finely sampled, and a single one, so
+		// the engine's "which sequence moves this bone furthest" measurement
+		// has an unambiguous answer.
+		if( numframes > drive_frames )
+		{
+			drive_frames = numframes;
+			drive_seq = i;
+		}
 
 		if( numframes <= 0 )
 		{
@@ -326,6 +343,15 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 		need = Align4( need );
 		need += (size_t)( numblends * newbones ) * ANIM_SIZE;
 		need += seq_size[i] - (size_t)seq_entries[i] * ANIM_SIZE;
+
+		// ...and the written animation, where it goes. Three channels per
+		// part, each a header pair plus one value a frame, plus a run header
+		// every 255 frames because both counts are bytes.
+		if( i == drive_seq )
+		{
+			need += (size_t)nsynth * 3 *
+				( (size_t)drive_frames * 2 + ( (size_t)drive_frames / 255 + 2 ) * 2 );
+		}
 	}
 
 	need = Align4( need );
@@ -370,10 +396,14 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 			WrF( dst, b + BONE_VALUE + 4, synths[s].pivot[1] );
 			WrF( dst, b + BONE_VALUE + 8, synths[s].pivot[2] );
 
-			// A scale of zero would make every animation value decode to
-			// the rest pose, which is exactly what a bone nobody animated
-			// should do. The card moves it instead.
-			for( k = 0; k < 6; k++ )
+			// The scale a written animation value is multiplied by. It has
+			// to be non-zero on the position channels or every value would
+			// decode back to the rest pose - which is precisely the bug a
+			// bone with no animation has, and the one this exists to fix.
+			for( k = 0; k < 3; k++ )
+				WrF( dst, b + BONE_SCALE + (size_t)k * 4, SYNTH_SCALE );
+
+			for( k = 3; k < 6; k++ )
 				WrF( dst, b + BONE_SCALE + (size_t)k * 4, 0.0f );
 		}
 
@@ -439,9 +469,9 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 			}
 
 			// The synthetic bones' entries. All-zero offsets, which GoldSrc
-			// reads as "use the bone's default value" - so the new bone
-			// simply sits at its pivot in every sequence, which is exactly
-			// what a part nobody animated should do.
+			// reads as "use the bone's default value", so the part sits at
+			// its pivot - correct in every sequence except the one that
+			// drives it, filled in below.
 			for( s = 0; s < nsynth; s++ )
 			{
 				size_t newe = newblock + (size_t)( b * newbones + numbones + s ) * ANIM_SIZE;
@@ -449,8 +479,73 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 			}
 		}
 
-		WrI( dst, sq + SEQ_ANIMINDEX, (int)newblock );
 		cursor = newblock + newdata + datasize;
+
+		// ---- the written animation ---------------------------------
+		//
+		// A real part is measured: the engine finds the sequence that moves
+		// its bone furthest and brackets the travel. A synthetic part has no
+		// animation to measure, so one is written here - and from that point
+		// on it is measured, posed and driven by exactly the same code as
+		// every part the artist made. That is what keeps one posing path
+		// rather than two.
+		if( i == drive_seq && drive_frames > 1 )
+		{
+			for( s = 0; s < nsynth; s++ )
+			{
+				size_t newe = newblock + (size_t)( numbones + s ) * ANIM_SIZE;
+				int ch;
+
+				if( synths[s].travel == 0.0f )
+					continue;
+
+				for( ch = 0; ch < 3; ch++ )
+				{
+					size_t at, delta;
+					int f, left;
+
+					if( synths[s].axis[ch] == 0.0f )
+						continue;
+
+					cursor = Align4( cursor );
+					at = cursor;
+					delta = at - newe;
+
+					if( delta > 0xFFFF )
+						FAIL( "no room to write a synthetic part's animation" );
+
+					// Runs of at most 255 frames, because `valid` and
+					// `total` are each a single byte.
+					f = 0;
+					while( f < drive_frames )
+					{
+						left = drive_frames - f;
+						if( left > 255 )
+							left = 255;
+
+						dst[cursor++] = (unsigned char)left;   // valid
+						dst[cursor++] = (unsigned char)left;   // total
+
+						for( ; left > 0; left--, f++ )
+						{
+							float t = (float)f / (float)( drive_frames - 1 );
+							float v = synths[s].axis[ch] * synths[s].travel * t;
+							int raw = (int)( v / SYNTH_SCALE );
+
+							if( raw > 32767 )  raw = 32767;
+							if( raw < -32768 ) raw = -32768;
+
+							WrU16( dst, cursor, (unsigned short)(short)raw );
+							cursor += 2;
+						}
+					}
+
+					WrU16( dst, newe + (size_t)ch * 2, (unsigned short)delta );
+				}
+			}
+		}
+
+		WrI( dst, sq + SEQ_ANIMINDEX, (int)newblock );
 	}
 
 	// ---- move the vertices across ---------------------------------------

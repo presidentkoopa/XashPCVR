@@ -902,19 +902,23 @@ def draft_card(model, parts):
 # ---------------------------------------------------------------------------
 # preview
 #
-# The plan asks for exactly this: "a synthetic part is defined by looking at
-# the model, not by guessing coordinates in a headset". A box guessed wrong
-# detaches the wrong half of a gun, and the only place that shows up is in
-# somebody's hands.
+# The plan asks for this in so many words: "a synthetic part is defined by
+# looking at the model, not by guessing coordinates in a headset". A box
+# guessed wrong detaches the wrong half of a gun, and the only place that
+# shows up is in somebody's hands.
+#
+# DRAW THE TRIANGLES, NOT THE VERTICES. A scatter of points is not a gun: it
+# has no silhouette, no surface and no way to tell the magazine from the space
+# behind it. The triangles are in the model already, as strips and fans per
+# mesh, and drawing them costs no more than drawing their corners did.
 # ---------------------------------------------------------------------------
 
-_PALETTE = ["#d94f3d", "#2f7fd1", "#3aa675", "#c9a227", "#8a5bd6",
-            "#d1568f", "#4aa8c0", "#8a7f6b"]
+_PALETTE = ["#e05c46", "#3d8fe0", "#3fb884", "#d8b136", "#9a6be8",
+            "#e0629c", "#4fc0d8", "#9d9384"]
 
 
 def _frame(model):
-    """A weapon-aligned frame: forward toward the muzzle, with a roll chosen
-    for stability rather than for meaning."""
+    """Forward toward the muzzle; the roll is chosen for stability."""
     att = model.attachments()
     fwd = None
 
@@ -928,7 +932,7 @@ def _frame(model):
         fwd = [0.0, -1.0, 0.0]
 
     ref = [0.0, 0.0, 1.0]
-    if abs(ref[0] * fwd[0] + ref[1] * fwd[1] + ref[2] * fwd[2]) > 0.9:
+    if abs(sum(ref[i] * fwd[i] for i in range(3))) > 0.9:
         ref = [1.0, 0.0, 0.0]
 
     d = sum(ref[i] * fwd[i] for i in range(3))
@@ -943,6 +947,75 @@ def _frame(model):
     return fwd, up, right
 
 
+def _triangles(model, keep, offs, fwd, up, right):
+    """Every triangle of every bone that belongs to the weapon, already
+    projected into the weapon frame.
+
+    GoldSrc packs triangles as commands: a positive count is a strip, a
+    negative count a fan, zero ends the mesh. Each vertex is four shorts and
+    only the first, the vertex index, matters here.
+    """
+    tris = []
+
+    for bp in range(model.numbodyparts):
+        o = model.bodypartindex + bp * BODYPART_SIZE
+        nummodels = _i(model.d, o + 64)
+        modelindex = _i(model.d, o + 72)
+
+        for m in range(nummodels):
+            mo = modelindex + m * MODEL_SIZE
+            nummesh = _i(model.d, mo + 72)
+            meshindex = _i(model.d, mo + 76)
+            vertinfoindex = _i(model.d, mo + 84)
+            vertindex = _i(model.d, mo + 88)
+
+            def place(vi):
+                bi = model.d[vertinfoindex + vi]
+                if bi not in keep:
+                    return None
+                q = _v3(model.d, vertindex + vi * 12)
+                d = offs[bi]
+                w = [q[a] + d[a] for a in range(3)]
+                return (bi,
+                        sum(w[a] * fwd[a] for a in range(3)),
+                        sum(w[a] * up[a] for a in range(3)),
+                        sum(w[a] * right[a] for a in range(3)))
+
+            for k in range(nummesh):
+                me = meshindex + k * 20
+                tri = _i(model.d, me + 4)
+                p = tri
+
+                while True:
+                    n = struct.unpack_from("<h", model.d, p)[0]
+                    p += 2
+
+                    if n == 0:
+                        break
+
+                    fan = n < 0
+                    n = abs(n)
+                    run = []
+
+                    for _ in range(n):
+                        vi = struct.unpack_from("<H", model.d, p)[0]
+                        p += 8
+                        run.append(place(vi))
+
+                    for t in range(n - 2):
+                        if fan:
+                            a, b, c = run[0], run[t + 1], run[t + 2]
+                        elif t % 2:
+                            a, b, c = run[t + 1], run[t], run[t + 2]
+                        else:
+                            a, b, c = run[t], run[t + 1], run[t + 2]
+
+                        if a and b and c:
+                            tris.append((a, b, c))
+
+    return tris
+
+
 def preview(model, parts, path):
     counts, total = model.vertex_owners()
     fwd, up, right = _frame(model)
@@ -954,7 +1027,6 @@ def preview(model, parts, path):
 
     keep = dict((p["bone"].index, p["bone"].name) for p in parts if p["inside"])
 
-    # each kept bone's offset from the body, so everything plots in one frame
     offs = {}
     for b in model.bones:
         if b.index not in keep:
@@ -967,69 +1039,65 @@ def preview(model, parts, path):
             i = model.bones[i].parent
         offs[b.index] = o
 
-    pts = []
-    for bp in range(model.numbodyparts):
-        o = model.bodypartindex + bp * BODYPART_SIZE
-        nm = _i(model.d, o + 64)
-        mi = _i(model.d, o + 72)
-        for k in range(nm):
-            mo = mi + k * MODEL_SIZE
-            nv = _i(model.d, mo + 80)
-            vi = _i(model.d, mo + 84)
-            vx = _i(model.d, mo + 88)
-            for v in range(nv):
-                bi = model.d[vi + v]
-                if bi not in keep:
-                    continue
-                q = _v3(model.d, vx + v * 12)
-                d = offs[bi]
-                w = [q[a] + d[a] for a in range(3)]
-                pts.append((bi,
-                            sum(w[a] * fwd[a] for a in range(3)),
-                            sum(w[a] * up[a] for a in range(3)),
-                            sum(w[a] * right[a] for a in range(3))))
+    tris = _triangles(model, keep, offs, fwd, up, right)
 
-    if not pts:
+    if not tris:
         print("    nothing to preview")
         return
 
-    order = sorted(set(p[0] for p in pts))
+    pts = [v for t in tris for v in t]
+    order = sorted(set(v[0] for v in pts))
     colour = dict((b, _PALETTE[i % len(_PALETTE)]) for i, b in enumerate(order))
 
-    lo = [min(p[1 + a] for p in pts) - 1.0 for a in range(3)]
-    hi = [max(p[1 + a] for p in pts) + 1.0 for a in range(3)]
+    lo = [min(v[1 + a] for v in pts) - 1.0 for a in range(3)]
+    hi = [max(v[1 + a] for v in pts) + 1.0 for a in range(3)]
 
-    SC = 26.0
-    GUT = 48
-    views = [("side   -  forward x up", 0, 1),
-             ("below  -  forward x right", 0, 2),
-             ("front  -  right x up", 2, 1)]
+    SC = 46.0                       # pixels per model unit - big enough to read
+    GUT = 62
+    LAB = 26
 
-    W = max((hi[h] - lo[h]) for _, h, _ in views) * SC + GUT * 2
-    H = sum((hi[v] - lo[v]) for _, _, v in views) * SC + GUT * (len(views) + 1) + 40 + 22 * len(order)
+    views = [("SIDE  - forward across, up vertical", 0, 1, 2),
+             ("BELOW - forward across, right vertical", 0, 2, 1),
+             ("FRONT - right across, up vertical", 2, 1, 0)]
+
+    W = max((hi[h] - lo[h]) for _, h, _, _ in views) * SC + GUT * 2
+    H = (sum((hi[v] - lo[v]) for _, _, v, _ in views) * SC
+         + (GUT + LAB) * len(views) + 60 + 24 * len(order))
 
     o = []
-    o.append('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" font-family="ui-monospace,monospace">' % (int(W), int(H), int(W), int(H)))
+    o.append('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+             'viewBox="0 0 %d %d" font-family="ui-monospace,monospace">'
+             % (int(W), int(H), int(W), int(H)))
     o.append('<rect width="100%" height="100%" fill="#14161a"/>')
-    o.append('<text x="%d" y="26" fill="#e8e6e3" font-size="15">%s  -  %d bones - grid is 1 model unit, labels every 5</text>' % (GUT, model.name, model.numbones))
+    o.append('<text x="%d" y="30" fill="#f0eeeb" font-size="17">%s</text>'
+             % (GUT, model.name))
+    o.append('<text x="%d" y="50" fill="#9aa0a6" font-size="12">'
+             'each square is 1 model unit; numbers every 5. muzzle points RIGHT.</text>'
+             % GUT)
 
-    y0 = 54
+    y0 = 78
 
-    for title, h, v in views:
+    for title, h, v, depth in views:
         wpx = (hi[h] - lo[h]) * SC
         hpx = (hi[v] - lo[v]) * SC
 
-        o.append('<text x="%d" y="%d" fill="#9aa0a6" font-size="12">%s</text>' % (GUT, y0 - 7, title))
-        o.append('<rect x="%d" y="%d" width="%.1f" height="%.1f" fill="#0d0f12" stroke="#2b2f36"/>' % (GUT, y0, wpx, hpx))
+        o.append('<text x="%d" y="%d" fill="#cfd3d8" font-size="13">%s</text>'
+                 % (GUT, y0 - 9, title))
+        o.append('<rect x="%d" y="%d" width="%.1f" height="%.1f" fill="#0b0d10" '
+                 'stroke="#333a43"/>' % (GUT, y0, wpx, hpx))
 
         g = int(lo[h]) - 1
         while g <= hi[h]:
             x = GUT + (g - lo[h]) * SC
             if GUT <= x <= GUT + wpx:
                 strong = (g % 5 == 0)
-                o.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%.1f" stroke="%s"/>' % (x, y0, x, y0 + hpx, "#39404a" if strong else "#21252b"))
+                o.append('<line x1="%.1f" y1="%d" x2="%.1f" y2="%.1f" stroke="%s" '
+                         'stroke-width="%s"/>'
+                         % (x, y0, x, y0 + hpx,
+                            "#4a525c" if strong else "#1f242a", "1" if strong else "0.6"))
                 if strong:
-                    o.append('<text x="%.1f" y="%.1f" fill="#6b7280" font-size="10" text-anchor="middle">%d</text>' % (x, y0 + hpx + 13, g))
+                    o.append('<text x="%.1f" y="%.1f" fill="#8b929b" font-size="12" '
+                             'text-anchor="middle">%d</text>' % (x, y0 + hpx + 17, g))
             g += 1
 
         g = int(lo[v]) - 1
@@ -1037,32 +1105,49 @@ def preview(model, parts, path):
             y = y0 + (hi[v] - g) * SC
             if y0 <= y <= y0 + hpx:
                 strong = (g % 5 == 0)
-                o.append('<line x1="%d" y1="%.1f" x2="%.1f" y2="%.1f" stroke="%s"/>' % (GUT, y, GUT + wpx, y, "#39404a" if strong else "#21252b"))
+                o.append('<line x1="%d" y1="%.1f" x2="%.1f" y2="%.1f" stroke="%s" '
+                         'stroke-width="%s"/>'
+                         % (GUT, y, GUT + wpx, y,
+                            "#4a525c" if strong else "#1f242a", "1" if strong else "0.6"))
                 if strong:
-                    o.append('<text x="%d" y="%.1f" fill="#6b7280" font-size="10" text-anchor="end">%d</text>' % (GUT - 6, y + 3, g))
+                    o.append('<text x="%d" y="%.1f" fill="#8b929b" font-size="12" '
+                             'text-anchor="end">%d</text>' % (GUT - 8, y + 4, g))
             g += 1
 
-        for bi, f, u, r in pts:
-            c = [f, u, r]
-            x = GUT + (c[h] - lo[h]) * SC
-            y = y0 + (hi[v] - c[v]) * SC
-            o.append('<circle cx="%.1f" cy="%.1f" r="1.8" fill="%s" opacity="0.85"/>' % (x, y, colour[bi]))
+        # Painter's algorithm: far triangles first, so the near surface wins.
+        ordered = sorted(tris, key=lambda t: sum(x[1 + depth] for x in t))
 
-        y0 += hpx + GUT
+        o.append('<g stroke-width="0.4">')
+        for t in ordered:
+            pts2 = []
+            for vtx in t:
+                c = [vtx[1], vtx[2], vtx[3]]
+                pts2.append("%.1f,%.1f" % (GUT + (c[h] - lo[h]) * SC,
+                                           y0 + (hi[v] - c[v]) * SC))
+            col = colour[t[0][0]]
+            o.append('<polygon points="%s" fill="%s" stroke="%s" fill-opacity="0.9"/>'
+                     % (" ".join(pts2), col, col))
+        o.append('</g>')
 
-    o.append('<text x="%d" y="%d" fill="#9aa0a6" font-size="12">bones (vertex count):</text>' % (GUT, y0 - 12))
+        y0 += hpx + GUT + LAB
+
+    o.append('<text x="%d" y="%d" fill="#cfd3d8" font-size="13">parts, by colour:</text>'
+             % (GUT, y0 - 34))
+    yy = y0 - 16
     for bi in order:
-        o.append('<circle cx="%d" cy="%d" r="5" fill="%s"/>' % (GUT + 6, y0 + 5, colour[bi]))
-        o.append('<text x="%d" y="%d" fill="#e8e6e3" font-size="12">%s  (%d)</text>' % (GUT + 18, y0 + 9, keep[bi], counts[bi]))
-        y0 += 22
+        o.append('<rect x="%d" y="%d" width="13" height="13" fill="%s"/>'
+                 % (GUT, yy - 10, colour[bi]))
+        o.append('<text x="%d" y="%d" fill="#f0eeeb" font-size="13">%s   (%d vertices)</text>'
+                 % (GUT + 20, yy, keep[bi], counts[bi]))
+        yy += 24
 
     o.append('</svg>')
 
     fh = open(path, "w")
-    fh.write("\n".join(o))
+    fh.write(chr(10).join(o))
     fh.close()
 
-    print("    wrote %s  (%d vertices, %d bones)" % (path, len(pts), len(order)))
+    print("    wrote %s  (%d triangles, %d parts)" % (path, len(tris), len(order)))
 
 
 def census(root):
