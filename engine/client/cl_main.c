@@ -1261,8 +1261,9 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 		SetBits( changed, VRCMD_D_MUZZLE );
 
 	if( from->trigger != to->trigger
-		|| from->control_touched != to->control_touched
-		|| from->control_pressed != to->control_pressed )
+		|| from->controls_under != to->controls_under
+		|| from->buttons != to->buttons
+		|| from->stick_x != to->stick_x || from->stick_y != to->stick_y )
 		SetBits( changed, VRCMD_D_FINGER );
 
 	MSG_WriteByte( msg, changed );
@@ -1291,8 +1292,10 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 	if( FBitSet( changed, VRCMD_D_FINGER ))
 	{
 		MSG_WriteByte( msg, to->trigger );
-		MSG_WriteByte( msg, to->control_touched );
-		MSG_WriteByte( msg, to->control_pressed );
+		MSG_WriteWord( msg, to->controls_under );
+		MSG_WriteByte( msg, to->buttons );
+		MSG_WriteChar( msg, to->stick_x );
+		MSG_WriteChar( msg, to->stick_y );
 	}
 }
 

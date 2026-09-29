@@ -61,7 +61,7 @@ code can difference.
 // Bumped when this struct's layout changes. Rides the capability handshake, so
 // two builds that disagree refuse each other at connect rather than quietly
 // reading each other's bytes wrong.
-#define VRCMD_VERSION 3
+#define VRCMD_VERSION 4
 
 // What the off hand is carrying. Not a count - the hand holds one thing at a
 // time, which is what makes a magazine and a shell the same two gestures.
@@ -79,6 +79,15 @@ typedef enum
 #define VRCMD_FL_TWOHAND   (1U<<2) // both hands are on the weapon
 #define VRCMD_FL_MUZZLE    (1U<<3) // muzzle[] is good this command
 #define VRCMD_FL_MUZZLE_UP (1U<<4) // the barrel is pointed up: cases fall out
+
+// Buttons on the hand that is on the gun, in vrcmd_t::buttons. Named for the
+// shape of the input rather than for a controller's silkscreen, because the
+// same bit is A on a Touch, A on an Index and a trackpad press on a Vive.
+#define VRBTN_FACE_A       (1U<<0)
+#define VRBTN_FACE_B       (1U<<1)
+#define VRBTN_STICK_CLICK  (1U<<2)
+#define VRBTN_THUMB_TOUCH  (1U<<3) // the thumb is off its rest, so it is
+                                   // reaching for something
 
 typedef struct vrcmd_s
 {
@@ -124,17 +133,26 @@ typedef struct vrcmd_s
 	// than folded into the button bits it superficially resembles.
 	unsigned char trigger;          // 0 at rest, 255 at the back of its travel
 
-	// WHICH CONTROLS A FINGER IS ON, and which of those it is pressing. One
-	// bit per control in the weapon's card, in the order the card declares
-	// them - the engine knows where the controls are in space and which
-	// finger is near them; only the game code knows what pressing one does.
+	// WHICH CONTROLS A FINGER IS ON. One bit per control in the weapon's
+	// card, in the order the card declares them.
 	//
-	// Touched and pressed are separate because resting a thumb on a
-	// magazine release is not the same as dropping the magazine, and a
-	// player feeling for a control without looking does the first for some
-	// time before the second.
-	unsigned char control_touched;
-	unsigned char control_pressed;
+	// THE ENGINE REPORTS POSITION, NOT INTENT. It knows where the card put
+	// each control and where the grip solve put each fingertip, so it can
+	// say which control is under a thumb. It does NOT say that the control
+	// was operated: that depends on what the player pressed and on what the
+	// control does, and both of those are game code's. An engine that
+	// decided "the magazine release was pressed" would be an engine holding
+	// a threshold the server cannot check and prediction cannot replay.
+	unsigned short controls_under;
+
+	// ...and what the hand on the gun is doing, raw. Face buttons and stick
+	// click as bits, thumbstick as two signed axes. The mapping from these
+	// to a control's effect - a face button works a magazine release, the
+	// stick pulled back thumbs a hammer - lives in the weapon code, where
+	// it can be predicted and where the card's own controls are known.
+	unsigned char buttons;
+	signed char   stick_x;
+	signed char   stick_y;
 } vrcmd_t;
 
 #endif // VRCMD_H

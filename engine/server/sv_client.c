@@ -3307,8 +3307,10 @@ static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
 		if( FBitSet( changed, VRCMD_D_FINGER ))
 		{
 			to->trigger = MSG_ReadByte( msg );
-			to->control_touched = MSG_ReadByte( msg );
-			to->control_pressed = MSG_ReadByte( msg );
+			to->controls_under = MSG_ReadWord( msg );
+			to->buttons = MSG_ReadByte( msg );
+			to->stick_x = MSG_ReadChar( msg );
+			to->stick_y = MSG_ReadChar( msg );
 		}
 
 		from = to;

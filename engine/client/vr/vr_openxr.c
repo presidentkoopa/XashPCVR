@@ -8819,13 +8819,25 @@ void VR_FillCmd( vrcmd_t *out )
 	// if the encoder is the only thing that rounds.
 	out->trigger = (byte)( bound( 0.0f, vr.trigger_value, 1.0f ) * 255.0f );
 
-	// Which controls a finger is on, and which of those it is pressing.
-	// Nothing populates these yet: the engine has no control geometry until
-	// cards carry it, and a control the engine cannot locate is one no
-	// finger can be reported on. Zero reads as "no finger on anything",
-	// which is what the simulator does with an uncarded weapon anyway.
-	out->control_touched = 0;
-	out->control_pressed = 0;
+	// Which controls a finger is on.
+	//
+	// Zero until the grip solver exists (G-01). Saying a control is under
+	// the thumb means knowing where the SOLVED thumb tip is, and that is
+	// what the grip solve produces; guessing it from the controller's own
+	// pose would put the thumb wherever the player's real thumb is rather
+	// than where the hand holding this weapon has it. Zero reads as "no
+	// finger on anything", which is what an uncarded weapon reports anyway.
+	out->controls_under = 0;
+
+	// What the hand on the gun is pressing, raw. The mapping to a control's
+	// effect is game code's, per Part G's table.
+	out->buttons = 0;
+
+	if( VR_GetButton( VR_BTN_ATTACK2 ))
+		SetBits( out->buttons, VRBTN_FACE_A );
+
+	out->stick_x = (signed char)( bound( -1.0f, vr.turn_x, 1.0f ) * 127.0f );
+	out->stick_y = (signed char)( bound( -1.0f, vr.turn_y, 1.0f ) * 127.0f );
 
 	// The muzzle, folded in from the usercmd reserved[] carrier it has been
 	// riding in. That carrier works but is full - four slots spent on one
