@@ -22,6 +22,7 @@ See vr_openxr.h for the design rationale.
 #include "entity_types.h"	// ET_NORMAL
 #include "keydefs.h"		// K_MOUSE1 - VR menu pointer clicks
 #include "vr_openxr.h"
+#include "vr_hold.h"
 
 // XASH_OPENXR is defined by the build ONLY when an openxr_loader for this
 // architecture was actually found (engine/wscript). Without it in the guard,
@@ -5091,6 +5092,75 @@ the calibration does - if aim is wrong, the laser is visibly wrong in exactly
 the same way, which makes it a real sight instead of a decoration that lies.
 ================
 */
+/*
+================
+THE WEAPON AS A THING WITH MASS (Part F)
+
+Behind a cvar, and off by default. Today the weapon is pinned to the
+controller and aims perfectly; this replaces that with a rigid body the hand
+holds through a spring, which is what muzzle climb, two-handed steadiness and
+the weight of a rocket launcher all fall out of.
+
+It is off by default because the aim path it sits in front of is calibrated,
+hard-won and currently correct, and the plan's own risk table says to keep the
+working path until the new one has been through the feel checklist in a
+headset. Turning it on is one cvar; proving it is a session with the headset
+on.
+================
+*/
+static vrhold_t    vr_hold;
+static vrholdcfg_t vr_holdcfg;
+static qboolean    vr_hold_ready = false;
+
+CVAR_DEFINE_AUTO( vr_hold_sim, "0", FCVAR_ARCHIVE,
+	"hold the weapon as a body with mass rather than pinning it to the hand" );
+CVAR_DEFINE_AUTO( vr_hold_mass, "1.0", FCVAR_ARCHIVE,
+	"the held weapon's mass, until cards carry one" );
+
+/*
+================
+VR_HoldWeapon
+
+Run the held-weapon body for this frame and replace the hand's pose with
+where the weapon actually ended up.
+
+Called with the pose the old path would have used, so that turning the cvar
+off restores exactly the previous behaviour rather than approximately it.
+================
+*/
+static void VR_HoldWeapon( vec3_t org, vec3_t ang )
+{
+	vec4_t q;
+	float dt = (float)( host.frametime );
+	int hands = 1;
+
+	if( vr_hold_sim.value == 0.0f )
+	{
+		vr_hold_ready = false;
+		return;
+	}
+
+	AngleQuaternion( ang, q, false );
+
+	// A weapon change is a new weapon: start it where the hand is rather
+	// than flying the old one across the room to the new grip.
+	if( !vr_hold_ready || vr_holdcfg.mass != vr_hold_mass.value )
+	{
+		VRHold_DefaultCfg( &vr_holdcfg, vr_hold_mass.value );
+		VRHold_Reset( &vr_hold, org, q );
+		vr_hold_ready = true;
+		return;
+	}
+
+	if( vr_twohand.value != 0.0f && VR_GetButton( VR_BTN_OFFGRIP ) && !vr.rl_holding )
+		hands = 2;
+
+	VRHold_Step( &vr_hold, &vr_holdcfg, org, q, hands, 0, dt );
+
+	VectorCopy( vr_hold.pos, org );
+	QuaternionAngle( vr_hold.quat, ang );
+}
+
 static vec3_t vr_fire_org;
 static vec3_t vr_fire_ang;
 static qboolean vr_fire_valid = false;
@@ -5106,6 +5176,13 @@ void VR_UpdateFireRay( void )
 
 	qboolean braced = VR_ApplyTwoHandedAim( org, ang );
 	qboolean used_attachment = false;
+
+	// Part F, behind its cvar: the weapon is a body the hand holds, not a
+	// thing welded to the controller. Everything downstream - the laser, the
+	// arc, the muzzle in the command - then reads the pose the weapon
+	// actually reached, which is what the plan means by "aim comes from the
+	// simulated gun".
+	VR_HoldWeapon( org, ang );
 
 	// PREFERRED: take the firing line straight off the weapon model's own
 	// MUZZLE ATTACHMENT, which ref_gl fills in world space every frame
@@ -9577,6 +9654,8 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_hand_yaw_offset );
 	Cvar_RegisterVariable( &vr_hand_roll_offset );
 	Cvar_RegisterVariable( &vr_twohand );
+	Cvar_RegisterVariable( &vr_hold_sim );
+	Cvar_RegisterVariable( &vr_hold_mass );
 	Cvar_RegisterVariable( &vr_twohand_min );
 	Cvar_RegisterVariable( &vr_twohand_max );
 	Cvar_RegisterVariable( &vr_twohand_radius );
