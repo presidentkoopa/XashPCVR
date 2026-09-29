@@ -3304,6 +3304,13 @@ static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
 				to->muzzle[j] = MSG_ReadCoord( msg );
 		}
 
+		if( FBitSet( changed, VRCMD_D_FINGER ))
+		{
+			to->trigger = MSG_ReadByte( msg );
+			to->control_touched = MSG_ReadByte( msg );
+			to->control_pressed = MSG_ReadByte( msg );
+		}
+
 		from = to;
 	}
 

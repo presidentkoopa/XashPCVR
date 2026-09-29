@@ -1260,6 +1260,11 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 	if( !VectorCompare( from->muzzle, to->muzzle ))
 		SetBits( changed, VRCMD_D_MUZZLE );
 
+	if( from->trigger != to->trigger
+		|| from->control_touched != to->control_touched
+		|| from->control_pressed != to->control_pressed )
+		SetBits( changed, VRCMD_D_FINGER );
+
 	MSG_WriteByte( msg, changed );
 
 	if( FBitSet( changed, VRCMD_D_PARTS ))
@@ -1281,6 +1286,13 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 	{
 		for( i = 0; i < 3; i++ )
 			MSG_WriteCoord( msg, to->muzzle[i] );
+	}
+
+	if( FBitSet( changed, VRCMD_D_FINGER ))
+	{
+		MSG_WriteByte( msg, to->trigger );
+		MSG_WriteByte( msg, to->control_touched );
+		MSG_WriteByte( msg, to->control_pressed );
 	}
 }
 

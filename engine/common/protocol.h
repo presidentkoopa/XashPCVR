@@ -316,13 +316,20 @@ extern const char *const svc_goldsrc_strings[svc_lastmsg+1];
 // our own builds that disagree about the struct must refuse each other rather
 // than read each other's bytes wrong; the capability bit only says "I speak
 // this", not "I speak this revision of it".
-#define VRCMD_NET_VERSION       2
+#define VRCMD_NET_VERSION       3
 
 // Which groups of a vrcmd_t changed since the previous command in the same
 // packet. A hand that is not moving costs one byte per command.
 #define VRCMD_D_PARTS   (1U<<0) // part_value[] follows
 #define VRCMD_D_STATE   (1U<<1) // part_held, flags, carried, part roles follow
 #define VRCMD_D_MUZZLE  (1U<<2) // muzzle follows
+
+// The fire control group gets a bit of its own rather than joining
+// VRCMD_D_STATE, because the two change on completely different schedules:
+// the state bytes are the same for seconds at a time while the trigger moves
+// on most commands a finger is anywhere near it. Sharing a bit would send
+// five unchanged bytes every time the finger twitched.
+#define VRCMD_D_FINGER  (1U<<3) // trigger and control contacts follow
 
 // Sentinel written into usercmd_t.reserved[0] alongside a pose, so a mod that
 // uses these "left for modders" fields for its own purposes is never mistaken

@@ -547,6 +547,16 @@ typedef enum
 {
 	VRA_MOVE = 0,	// vec2 - left stick
 	VRA_TURN,	// vec2 - right stick
+
+	// The trigger as an AXIS, alongside the boolean VRA_ATTACK on the same
+	// physical input. The sear needs travel: half a press must do nothing and
+	// the break must be a place the finger finds, neither of which a
+	// thresholded boolean can express. Declared here, among the analog
+	// actions, because the sampling loop below reads everything from
+	// VRA_JUMP onward as a boolean and a float in that range would simply
+	// fail to read.
+	VRA_TRIGGER,	// float - right trigger travel
+
 	VRA_JUMP,
 	VRA_CROUCH,
 	VRA_ATTACK,
@@ -570,6 +580,7 @@ static const struct
 {
 	{ "move",       "Move",           XR_ACTION_TYPE_VECTOR2F_INPUT },
 	{ "turn",       "Turn",           XR_ACTION_TYPE_VECTOR2F_INPUT },
+	{ "trigger",    "Trigger travel", XR_ACTION_TYPE_FLOAT_INPUT },
 	{ "jump",       "Jump",           XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "crouch",     "Crouch",         XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "attack",     "Attack",         XR_ACTION_TYPE_BOOLEAN_INPUT },
@@ -756,6 +767,7 @@ static struct
 	XrSpace       hand_space[2];
 	XrSpace       grip_space[2];
 
+	float         trigger_value;    // 0..1 right trigger travel, for the sear
 	float         move_x, move_y;   // -1..1 locomotion stick
 	float         turn_x, turn_y;   // -1..1 turn stick
 	qboolean      select_open;       // weapon select HUD up (grip + stick click)
@@ -8760,16 +8772,41 @@ void VR_FillCmd( vrcmd_t *out )
 			out->carried = VRCARRY_MAGAZINE;
 	}
 
+	// ---- the fire control group (v3) --------------------------------
+	//
+	// The trigger as travel, not as a button. Quantised HERE, at fill time,
+	// and never again: the simulator on the server and the simulator in
+	// prediction must both be handed the same integer, and they will not be
+	// if the encoder is the only thing that rounds.
+	out->trigger = (byte)( bound( 0.0f, vr.trigger_value, 1.0f ) * 255.0f );
+
+	// Which controls a finger is on, and which of those it is pressing.
+	// Nothing populates these yet: the engine has no control geometry until
+	// cards carry it, and a control the engine cannot locate is one no
+	// finger can be reported on. Zero reads as "no finger on anything",
+	// which is what the simulator does with an uncarded weapon anyway.
+	out->control_touched = 0;
+	out->control_pressed = 0;
+
 	// The muzzle, folded in from the usercmd reserved[] carrier it has been
 	// riding in. That carrier works but is full - four slots spent on one
 	// position - and a mod using those fields costs us the pose entirely.
 	{
 		vec3_t muzzle;
 
-		if( VR_WeaponOriginActive( ) && VR_GetWeaponAim( muzzle, NULL ))
+		vec3_t fwd;
+
+		if( VR_WeaponOriginActive( ) && VR_GetWeaponAim( muzzle, fwd ))
 		{
 			VectorCopy( muzzle, out->muzzle );
 			SetBits( out->flags, VRCMD_FL_MUZZLE );
+
+			// Barrel up far enough that gravity would empty a cylinder.
+			// A flag rather than the angle itself, because the only
+			// question game code ever asks of it is this one, and a flag
+			// bit is free where three more floats are not.
+			if( fwd[2] > 0.5f )
+				SetBits( out->flags, VRCMD_FL_MUZZLE_UP );
 		}
 	}
 
@@ -10200,6 +10237,7 @@ static const vr_profile_t vr_profiles[] =
 		{
 			"/user/hand/left/input/thumbstick",		// MOVE
 			"/user/hand/right/input/thumbstick",		// TURN
+			"/user/hand/right/input/trigger/value",	// TRIGGER (analog)
 			"/user/hand/right/input/a/click",		// JUMP
 			"/user/hand/right/input/b/click",		// CROUCH
 			"/user/hand/right/input/trigger/value",		// ATTACK
@@ -10224,6 +10262,7 @@ static const vr_profile_t vr_profiles[] =
 		{
 			"/user/hand/left/input/thumbstick",
 			"/user/hand/right/input/thumbstick",
+			"/user/hand/right/input/trigger/value",	// TRIGGER (analog)
 			"/user/hand/right/input/a/click",
 			"/user/hand/right/input/b/click",
 			"/user/hand/right/input/trigger/value",
@@ -10244,6 +10283,7 @@ static const vr_profile_t vr_profiles[] =
 		{
 			"/user/hand/left/input/thumbstick",
 			"/user/hand/right/input/thumbstick",
+			"/user/hand/right/input/trigger",	// TRIGGER (analog)
 			"/user/hand/right/input/trackpad/click",
 			"/user/hand/left/input/trackpad/click",
 			"/user/hand/right/input/trigger",
@@ -10264,6 +10304,7 @@ static const vr_profile_t vr_profiles[] =
 		{
 			"/user/hand/left/input/trackpad",
 			"/user/hand/right/input/trackpad",
+			"/user/hand/right/input/trigger/value",	// TRIGGER (analog)
 			"/user/hand/right/input/trackpad/click",
 			"/user/hand/left/input/trackpad/click",
 			"/user/hand/right/input/trigger/value",
@@ -10457,6 +10498,7 @@ static void VR_SyncInput( void )
 	XrActionStateGetInfo gi = { XR_TYPE_ACTION_STATE_GET_INFO };
 	XrActionStateVector2f v2 = { XR_TYPE_ACTION_STATE_VECTOR2F };
 	XrActionStateBoolean bl = { XR_TYPE_ACTION_STATE_BOOLEAN };
+	XrActionStateFloat fl = { XR_TYPE_ACTION_STATE_FLOAT };
 	int i;
 
 	if( !vr.input_ready )
@@ -10503,6 +10545,7 @@ static void VR_SyncInput( void )
 	memcpy( vr.btn_prev, vr.btn, sizeof( vr.btn ));
 	memset( vr.btn, 0, sizeof( vr.btn ));
 	vr.move_x = vr.move_y = vr.turn_x = vr.turn_y = 0.0f;
+	vr.trigger_value = 0.0f;
 
 	gi.subactionPath = XR_NULL_PATH;	// aggregate across every binding
 
@@ -10521,6 +10564,10 @@ static void VR_SyncInput( void )
 		vr.turn_x = v2.currentState.x;
 		vr.turn_y = v2.currentState.y;
 	}
+
+	gi.action = vr.actions[VRA_TRIGGER];
+	if( XR_SUCCEEDED( xrGetActionStateFloat( vr.session, &gi, &fl )) && fl.isActive )
+		vr.trigger_value = bound( 0.0f, fl.currentState, 1.0f );
 
 	for( i = VRA_JUMP; i < VRA_COUNT; i++ )
 	{

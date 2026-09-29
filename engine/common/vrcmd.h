@@ -61,7 +61,7 @@ code can difference.
 // Bumped when this struct's layout changes. Rides the capability handshake, so
 // two builds that disagree refuse each other at connect rather than quietly
 // reading each other's bytes wrong.
-#define VRCMD_VERSION 2
+#define VRCMD_VERSION 3
 
 // What the off hand is carrying. Not a count - the hand holds one thing at a
 // time, which is what makes a magazine and a shell the same two gestures.
@@ -78,6 +78,7 @@ typedef enum
 #define VRCMD_FL_AT_PORT   (1U<<1) // what it carries is at the weapon's loading port
 #define VRCMD_FL_TWOHAND   (1U<<2) // both hands are on the weapon
 #define VRCMD_FL_MUZZLE    (1U<<3) // muzzle[] is good this command
+#define VRCMD_FL_MUZZLE_UP (1U<<4) // the barrel is pointed up: cases fall out
 
 typedef struct vrcmd_s
 {
@@ -113,6 +114,27 @@ typedef struct vrcmd_s
 	// put anything else, and a mod using those fields for its own purposes
 	// costs us the pose entirely. Here it is just three floats among others.
 	float    muzzle[3];
+
+	// ---- v3: the fire control group --------------------------------------
+	//
+	// THE SEAR NEEDS AN AXIS, NOT A BUTTON. A VR trigger has travel: half a
+	// press must do nothing, the break must be a place the finger finds, and
+	// letting off to just short of the break must not fire again. None of
+	// that can be expressed as IN_ATTACK, which is why this is here rather
+	// than folded into the button bits it superficially resembles.
+	unsigned char trigger;          // 0 at rest, 255 at the back of its travel
+
+	// WHICH CONTROLS A FINGER IS ON, and which of those it is pressing. One
+	// bit per control in the weapon's card, in the order the card declares
+	// them - the engine knows where the controls are in space and which
+	// finger is near them; only the game code knows what pressing one does.
+	//
+	// Touched and pressed are separate because resting a thumb on a
+	// magazine release is not the same as dropping the magazine, and a
+	// player feeling for a control without looking does the first for some
+	// time before the second.
+	unsigned char control_touched;
+	unsigned char control_pressed;
 } vrcmd_t;
 
 #endif // VRCMD_H
