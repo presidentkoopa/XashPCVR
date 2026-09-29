@@ -1,0 +1,27 @@
+# Half-Life .357 revolver (Colt Python). Measured by vrcardgen, finished by
+# hand.
+#
+# The cylinder is bone "revolver", swinging 1.100 radians - 63 degrees -
+# about Y in `reload`. That is the whole mechanism a hand needs: open it,
+# tip the muzzle up and the cases fall out, fill it, close it, shoot.
+#
+# The model also has six SHELL bones and a speed_loader that travel in from
+# off-screen during the reload. Those are ROUNDS, not joints, and the feed
+# path owns them - a card declaring six hinges would have the simulator
+# trying to drive the ejecting brass.
+#
+# NOT declared, deliberately:
+#   trigger  - it moves 0.754 rad in `fire1`, but it is driven by the analog
+#              trigger and the sear, not by a hand grabbing it. Left to the
+#              existing path so it keeps animating.
+#   hammer   - exists, owns 2.6% of the mesh, and is never animated in any
+#              sequence. Single-action thumbing needs a travel stated by
+#              hand, which nobody has measured yet.
+
+weapon v_357
+match  bones 44  seqs 8  hash 0xba7f43f7
+
+type   revolver  capacity 6  rpm 300
+
+joint 0  bone "revolver"  hinge  travel 1.10  rest 0
+    grab  point 0.00 0.00 0.00  radius 3.0

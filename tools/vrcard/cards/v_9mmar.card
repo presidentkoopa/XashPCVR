@@ -1,0 +1,28 @@
+# Half-Life MP5. Measured by vrcardgen, finished by hand.
+#
+# One moving part: bone "clip", the magazine, 10.14 units straight down Z in
+# `reload`. Nothing else on this model moves - there is no bolt and no
+# charging handle, which is the content ceiling the plan's mesh surgery
+# (E-02) exists to break and names the MP5 as its first target.
+#
+# Two consequences, both stated below rather than worked around:
+#
+#   chamber_on_seat  - with no bolt to work, seating a magazine has to be
+#                      what chambers a round. This flag is exactly the
+#                      concession the plan describes, and mesh surgery
+#                      retires it.
+#   no_slide_lock    - the slide stop would engage on an empty magazine and
+#                      then nothing could ever release it, because the joint
+#                      a hand would grab does not exist on this model. A gun
+#                      that locks itself open forever is worse than one that
+#                      does not lock open at all.
+
+weapon v_9mmar
+match  bones 54  seqs 8  hash 0xefec1a61
+
+type   magazine_slide  capacity 50  rpm 900
+feed   chamber_on_seat  no_slide_lock
+fire   semi auto  rpm 900
+
+joint 1  bone "clip"  slide  travel 10.14  rest 0
+    grab  point 7.20 9.89 4.02  radius 3.0

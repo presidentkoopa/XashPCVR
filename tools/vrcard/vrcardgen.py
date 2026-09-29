@@ -328,30 +328,42 @@ class Model(object):
 
             for bi in range(self.numbones):
                 s = span[bi]
-                moved = False
+
+                # PER SEQUENCE, THEN MERGED. An earlier version folded every
+                # sequence into one running span and then asked whether that
+                # span had grown - which meant that once a bone moved in any
+                # sequence, every sequence after it looked like it moved the
+                # bone too. The pistol's slide stop came back as moving in
+                # draw and holster, where it does not move at all.
+                lo = [1e30] * 6
+                hi = [-1e30] * 6
 
                 for f in range(seq["numframes"]):
-                    for a in range(3):
+                    for a in range(6):
                         v = self._anim_value(base, bi, a, f)
-                        if v < s["pos_min"][a]:
-                            s["pos_min"][a] = v
-                        if v > s["pos_max"][a]:
-                            s["pos_max"][a] = v
-                    for a in range(3):
-                        v = self._anim_value(base, bi, 3 + a, f)
-                        if v < s["rot_min"][a]:
-                            s["rot_min"][a] = v
-                        if v > s["rot_max"][a]:
-                            s["rot_max"][a] = v
+                        if v < lo[a]:
+                            lo[a] = v
+                        if v > hi[a]:
+                            hi[a] = v
 
-                for a in range(3):
-                    if s["pos_max"][a] - s["pos_min"][a] > 0.01:
-                        moved = True
-                    if s["rot_max"][a] - s["rot_min"][a] > 0.01:
+                moved = False
+                for a in range(6):
+                    if hi[a] - lo[a] > 0.01:
                         moved = True
 
                 if moved:
                     s["seqs"].add(seq["label"])
+
+                for a in range(3):
+                    if lo[a] < s["pos_min"][a]:
+                        s["pos_min"][a] = lo[a]
+                    if hi[a] > s["pos_max"][a]:
+                        s["pos_max"][a] = hi[a]
+                for a in range(3):
+                    if lo[3 + a] < s["rot_min"][a]:
+                        s["rot_min"][a] = lo[3 + a]
+                    if hi[3 + a] > s["rot_max"][a]:
+                        s["rot_max"][a] = hi[3 + a]
 
         return span
 

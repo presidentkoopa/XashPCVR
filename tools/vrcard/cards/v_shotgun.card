@@ -1,0 +1,22 @@
+# Half-Life shotgun (SPAS-12). Measured by vrcardgen, finished by hand.
+#
+# The one moving part is the fore-end, bone "Charger", travelling 3.42 units
+# along Y. It is animated only in `shoot` and `shoot_big` - Half-Life pumps
+# the gun as part of firing rather than in a sequence of its own - but the
+# travel is the travel, and once a hand owns it the animation is irrelevant.
+#
+# A tube gun is the best possible first card: it needs no magazine, and this
+# model has no magazine bone. Shells go in through the gate one at a time,
+# which is a gesture the hands can already make.
+
+weapon v_shotgun
+match  bones 56  seqs 8  hash 0xbf9fd5e8
+
+type   tube_pump  capacity 8  rpm 75
+
+joint 0  bone "Charger"  slide  travel 3.42  rest 0
+    grab  point 0.00 -13.31 0.00  radius 3.0
+
+# The feed and ejection points keep the preset's positions. Where in the
+# stroke a shell actually leaves has NOT been measured, and inventing a
+# number would be worse than using one that is honestly a default.
