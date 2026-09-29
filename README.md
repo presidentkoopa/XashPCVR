@@ -22,4 +22,4 @@ are predicted and authoritative alike — proved by running the same six thousan
 ---
 
 *This fork is not affiliated with Valve or with the Xash3D FWGS project. Xash3D FWGS is
-GPL-licensed; so is this. See [`LICENSE`](LICENSE).*
+GPL-licensed; so is this.*
