@@ -1204,6 +1204,239 @@ static qboolean R_StudioDerivePart( cl_entity_t *e, int bone,
 
 /*
 ====================
+WEAPON CARDS
+
+Which bones on this model are parts, and which one is the action.
+
+This replaces naming them in r_vr_action_bone, a single cvar whose per-weapon
+entry truncates at 255 characters and which, measured across the 106
+viewmodels on this machine, was right about ten bones out of ten on Valve HD
+and two out of ten on everything else. Valve SD, Opposing Force, Blue Shift
+and MMod share a different rig family, so six of the seven carded weapons had
+no hand-drivable parts at all and nothing said so.
+
+A CARD IS BOUND TO A MODEL, NOT TO A GAME DIRECTORY. That is the census's
+other finding and the reason the file allows the same weapon more than once:
+`valve` holds two entirely different rigs, because valve_hd is an overlay
+mounted over it, and the two need different bone names. So several cards may
+name the same model, and the first one whose bones this model actually HAS is
+the one that applies. A card is thus self-identifying - it fits the rig it was
+measured from and quietly declines every other.
+
+  # models/vr/weapons.txt
+  weapon v_shotgun
+      action  Charger          # Valve HD, and our test pack
+  weapon v_shotgun
+      action  Bone01           # Valve SD and Opposing Force
+  weapon v_shotgun
+      action  Bone02           # Blue Shift
+
+  weapon v_357
+      action  revolver
+      part    speed_loader
+
+"action" is the mechanism that is worked and cycles when the weapon fires;
+"part" is anything else a hand can move - a magazine, a rocket, a pin.
+Getting that distinction wrong is what threw the magazine out of an MP5 on
+every shot.
+====================
+*/
+#define VR_CARD_MAX     128     // cards in one file
+#define VR_CARD_BONES   256     // the bone list a card produces
+
+typedef struct
+{
+	char model[64];
+	char bones[VR_CARD_BONES];  // in r_vr_action_bone's own syntax: "*Action,part"
+} vr_card_t;
+
+static vr_card_t vr_cards[VR_CARD_MAX];
+static int vr_ncards = 0;
+static qboolean vr_cards_loaded = false;
+
+static void R_StudioCardAppend( vr_card_t *c, const char *bone, qboolean is_action )
+{
+	size_t used = Q_strlen( c->bones );
+	size_t need = Q_strlen( bone ) + ( is_action ? 1 : 0 ) + ( used ? 1 : 0 );
+
+	if( used + need + 1 >= sizeof( c->bones ))
+		return;
+
+	if( used )
+		Q_strncat( c->bones, ",", sizeof( c->bones ));
+
+	if( is_action )
+		Q_strncat( c->bones, "*", sizeof( c->bones ));
+
+	Q_strncat( c->bones, bone, sizeof( c->bones ));
+}
+
+/*
+====================
+R_StudioLoadCards
+
+Read the card file once. Absent is normal and silent - the cvar still works,
+and a mod nobody has carded is the common case rather than an error.
+====================
+*/
+static void R_StudioLoadCards( void )
+{
+	fs_offset_t len = 0;
+	byte *file;
+	char *p;
+	vr_card_t *cur = NULL;
+
+	vr_cards_loaded = true;
+	vr_ncards = 0;
+
+	file = gEngfuncs.fsapi->LoadFile( "models/vr/weapons.txt", &len, false );
+
+	if( !file || len <= 0 )
+		return;
+
+	p = (char *)file;
+
+	while( *p )
+	{
+		char word[128];
+		int n = 0;
+
+		// one line at a time
+		while( *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' )
+			p++;
+
+		if( *p == '#' || ( p[0] == '/' && p[1] == '/' ))
+		{
+			while( *p && *p != '\n' ) p++;
+			continue;
+		}
+
+		if( !*p )
+			break;
+
+		// keyword
+		while( *p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n'
+			&& n < (int)sizeof( word ) - 1 )
+			word[n++] = *p++;
+		word[n] = 0;
+
+		while( *p == ' ' || *p == '\t' )
+			p++;
+
+		// the rest of the line is the value, trimmed
+		{
+			char value[128];
+			int v = 0;
+
+			while( *p && *p != '\r' && *p != '\n' && v < (int)sizeof( value ) - 1 )
+				value[v++] = *p++;
+			value[v] = 0;
+
+			while( v > 0 && ( value[v-1] == ' ' || value[v-1] == '\t' ))
+				value[--v] = 0;
+
+			if( !Q_stricmp( word, "weapon" ))
+			{
+				if( vr_ncards >= VR_CARD_MAX )
+				{
+					gEngfuncs.Con_Printf( S_WARN "vr cards: more than %i, ignoring the rest\n", VR_CARD_MAX );
+					break;
+				}
+
+				cur = &vr_cards[vr_ncards++];
+				memset( cur, 0, sizeof( *cur ));
+				Q_strncpy( cur->model, value, sizeof( cur->model ));
+			}
+			else if( cur && ( !Q_stricmp( word, "action" ) || !Q_stricmp( word, "part" )))
+			{
+				R_StudioCardAppend( cur, value, !Q_stricmp( word, "action" ));
+			}
+			else if( word[0] )
+			{
+				gEngfuncs.Con_Printf( S_WARN "vr cards: unknown key \"%s\"\n", word );
+			}
+		}
+	}
+
+	Mem_Free( file );
+	gEngfuncs.Con_Reportf( "vr cards: %i loaded\n", vr_ncards );
+}
+
+/*
+====================
+R_StudioCardBones
+
+The bone list for this model, or NULL if no card fits it.
+
+"Fits" means every bone the card names exists here. That is what lets several
+cards claim the same model name and only the right one apply, which is how SD
+and HD live in one file under one gamedir.
+====================
+*/
+static const char *R_StudioCardBones( void )
+{
+	int i;
+
+	if( !vr_cards_loaded )
+		R_StudioLoadCards();
+
+	if( !vr_ncards || !RI.currentmodel || !m_pStudioHeader )
+		return NULL;
+
+	for( i = 0; i < vr_ncards; i++ )
+	{
+		mstudiobone_t *pbones;
+		const char *b;
+		qboolean all_present = true;
+
+		if( !vr_cards[i].model[0] || !Q_stristr( RI.currentmodel->name, vr_cards[i].model ))
+			continue;
+
+		pbones = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex);
+		b = vr_cards[i].bones;
+
+		// every bone this card names has to be here, or it is a card for a
+		// different rig that happens to share a file name
+		while( *b && all_present )
+		{
+			char name[64];
+			int n = 0, j;
+
+			if( *b == '*' ) b++;
+
+			while( *b && *b != ',' && n < (int)sizeof( name ) - 1 )
+				name[n++] = *b++;
+			name[n] = 0;
+
+			if( *b == ',' ) b++;
+
+			while( n > 0 && name[n-1] == ' ' )
+				name[--n] = 0;
+
+			if( !name[0] )
+				continue;
+
+			all_present = false;
+
+			for( j = 0; j < m_pStudioHeader->numbones; j++ )
+			{
+				if( !Q_stricmp( pbones[j].name, name ))
+				{
+					all_present = true;
+					break;
+				}
+			}
+		}
+
+		if( all_present )
+			return vr_cards[i].bones;
+	}
+
+	return NULL;
+}
+
+/*
+====================
 R_StudioFindParts
 
 Work out which parts of this weapon the player can take hold of, and how far
@@ -1238,12 +1471,31 @@ static int R_StudioDeriveParts( cl_entity_t *e )
 	vr_nparts = 0;
 	want[0] = 0;
 
-	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0
-		|| !r_vr_action_bone.string[0] || !RI.currentmodel )
+	if( !m_pStudioHeader || m_pStudioHeader->numseq <= 0 || !RI.currentmodel )
+		return 0;
+
+	// A CARD FIRST, THE CVAR AFTER.
+	//
+	// A card names the parts for the rig it was measured from and declines
+	// any model that lacks its bones, so several can claim one file name and
+	// only the right one applies. The cvar has no such test - it matches on
+	// the model's path and hopes - which is why it was right on Valve HD and
+	// wrong nearly everywhere else.
+	{
+		const char *card = R_StudioCardBones();
+
+		if( card && card[0] )
+		{
+			Q_strncpy( want, card, sizeof( want ));
+		}
+	}
+
+	if( !want[0] && !r_vr_action_bone.string[0] )
 		return 0;
 
 	// The entry for this model. "model=bones", semicolon separated; the model
 	// side matches anywhere in the path so "v_shotgun" is enough.
+	if( !want[0] )
 	{
 		const char *p = r_vr_action_bone.string;
 
