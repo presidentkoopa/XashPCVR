@@ -1,0 +1,45 @@
+# Half-Life 9mm pistol (a Glock 17). Measured by vrcardgen, carved by hand.
+#
+# THIS MODEL HAS NO MAGAZINE. Posing the reload animation frame by frame,
+# nothing on this pistol moves more than 2.2 units, and that is the slide -
+# no magazine leaves the gun and none comes back. The grip is 44 vertices,
+# because the hand mesh covers it and the artist never modelled what nobody
+# would see.
+#
+# So the magazine is CARVED OUT OF THE GRIP. The 36 vertices in the bottom of
+# the grip column get their own bone, and that bone slides out the bottom the
+# way a Glock magazine does. Nothing else about the model changes: the same
+# geometry sits in the same places, and the surgery is refused outright if it
+# cannot do that.
+#
+# The `match` line is the fingerprint of the model BEFORE surgery, because
+# that is the model the engine has when it decides whether this card applies.
+
+weapon v_9mmhandgun
+match  bones 36  seqs 9  hash 0xc8430223
+
+type   magazine_slide  capacity 17  rpm 400
+
+# The magazine, cut from the grip. The box is in the body bone's own space,
+# which is what the generator's preview draws; the pivot is the top of the
+# cut, so the part hinges on nothing and simply slides; and the axis runs
+# down the grip, which on this rig is local +Y.
+synth magazine  from "Hands mesh"
+      box   -0.80 2.15 -0.90   1.15 3.00 1.30
+      pivot  0.17 2.21 0.22
+      axis   0.0 1.0 0.0   travel 5.00
+
+# The slide. Measured at 3.29 units, moving in reload and shoot_empty -
+# which is to say it locks back when the last round goes.
+joint 0  bone "Hands mesh 2"  slide  travel 3.29  rest 0
+    grab  point 0.09 0.64 1.10  radius 2.5
+
+# ...and the magazine it now has.
+joint 1  bone "magazine"  slide  travel 5.00  rest 0
+    grab  point 0.17 2.60 0.22  radius 2.0
+
+# `Hands mesh 3` is the hammer: it sits above the bore line at the rear and
+# turns a hundred degrees about the lateral axis, only in reload and
+# shoot_empty. Not declared, because a hammer nobody can cock is a part the
+# simulator would freeze where a hand cannot reach it - it keeps the
+# animation it has until there is a control for it.

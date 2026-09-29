@@ -1,0 +1,17 @@
+# Half-Life snark. Measured by vrcardgen, finished by hand.
+#
+# Part J: "Take one from the nest on the chest. It squirms in the hand and
+# bites if held too long. Throw it, or drop it at your feet and let it hunt."
+#
+# There is nothing to work and nothing to load. A snark is released, and
+# after that it has opinions of its own - so the card carries no fuse,
+# because what happens next is the creature's and not a timer's.
+#
+# The squirming and the biting are Part I and Part G: a thing in the hand
+# with its own behaviour, and haptics to match. Neither belongs in a card.
+
+weapon v_squeak
+match  bones 67  seqs 6  hash 0x7a41a0d2
+
+type   thrown
+fuse   0           # it is alive; it decides

@@ -1,0 +1,19 @@
+# Half-Life satchel charge. Measured by vrcardgen, finished by hand.
+#
+# Part J: "Take one from the chest; throw it or set it down gently where you
+# want it."
+#
+# NOTHING ON IT MOVES. The tool found no moving bones at all, which is the
+# right answer: a satchel is a brick with a radio receiver. There is no pin,
+# no spoon and no fuse - it waits for the detonator, which is a separate
+# weapon with a card of its own.
+#
+# What this card says is that the satchel is RELEASED rather than fired.
+# Throwing it and setting it down are the same gesture at different speeds,
+# and both are the world's business (Part I) rather than the weapon's.
+
+weapon v_satchel
+match  bones 44  seqs 4  hash 0x04798c0b
+
+type   thrown
+fuse   0           # it waits for the radio

@@ -24,6 +24,7 @@ weapon v_grenade
 match  bones 35  seqs 8  hash 0xf991b830
 
 type   thrown
+fuse   3500        # Half-Life's, and it starts when the SPOON goes
 
 # The ring. Pulled until the pin is clear of its lugs - measured at 1.16
 # radians, which is the whole of the pinpull animation's travel.

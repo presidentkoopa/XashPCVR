@@ -1,0 +1,14 @@
+# Half-Life tripmine. Measured by vrcardgen, finished by hand.
+#
+# Part J: "Hold it to a wall: a ghost shows where it will sit. Press it to
+# the surface and it attaches there, oriented to the surface, and arms."
+#
+# No moving parts, no pin, no fuse. A tripmine arms where it is put, so
+# releasing it against a surface is the whole mechanism - and finding the
+# surface is the world's job, not the weapon's.
+
+weapon v_tripmine
+match  bones 32  seqs 9  hash 0x79d3e7d9
+
+type   thrown
+fuse   0           # it arms where it is placed
