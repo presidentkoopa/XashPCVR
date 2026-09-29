@@ -1,0 +1,17 @@
+# Opposing Force displacer. Measured by vrcardgen, finished by hand.
+#
+# Part K: "Charge by holding: the spinner spins up with the haptics. The
+# secondary fire, which teleports the player, gets a comfort fade. No hand
+# reload."
+#
+# The spinner measures 5.999 radians - 343.7 degrees, which is the number the
+# plan quotes, to a tenth. It is declared so that whatever drives the charge
+# drives a part rather than an animation; there is nothing here for a hand to
+# work, and no feed rules, because a displacer draws from the same reserve the
+# gauss does.
+
+weapon v_displacer
+match  bones 54  seqs 7  hash 0xfcebfb70
+
+joint 0  bone "spinner"  hinge  travel 6.00  rest 0
+    grab  point 0.00 0.00 0.00  radius 3.0

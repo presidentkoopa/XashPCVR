@@ -1,0 +1,35 @@
+# Opposing Force M249 SAW. Measured by vrcardgen, finished by hand.
+#
+# Part K: "Belt-fed: open the top cover (hinge), lay the belt on the feed
+# tray from the box, close the cover, pull the charging handle. The heaviest
+# gun in the game."
+#
+# The other mechanism that exists nowhere in stock Half-Life, and the model
+# has all of it: `Object05` is the charging handle at 17.49 units - the plan
+# quotes 17.5 - `Object02` is the top cover, turning 1.675 radians and only
+# in `reload1`, and `saw_clipbox` is the ammunition box.
+#
+# A BELT IS A QUEUE, which is what a tube is, so the simulator carries it as
+# one. What makes it a belt rather than a magazine is the cover: rounds go in
+# only while it is open, and none come out while it is. A SAW with the cover
+# up does not fire, which is the whole reason you can see the belt.
+
+weapon v_saw
+match  bones 41  seqs 9  hash 0x99236238
+
+type   belt  capacity 50  rpm 800
+fire   auto  rpm 800
+
+# The charging handle.
+joint 0  bone "Object05"  slide  travel 17.49  rest 0
+    grab  point 0.00 0.00 0.00  radius 3.0
+
+# The top cover. It stays where it is put - a cover has a detent, not a
+# spring, which is why it carries no return.
+joint 1  bone "Object02"  hinge  travel 1.68  rest 0
+    point cover_open at 0.50
+    grab  point 0.00 0.00 0.00  radius 3.5
+
+# `saw_clipbox` is the ammunition box and `v_saw_round1..5` are the belt
+# itself. Neither is a joint: the box is a thing you take a belt out of and
+# the rounds are what the feed path owns.

@@ -1,0 +1,19 @@
+# Opposing Force shock roach. Measured by vrcardgen, finished by hand.
+#
+# Part K: "A living weapon that recharges; no hand reload. It wriggles in the
+# hand; the segments move as it fires. Type `none` with moving parts for
+# show."
+#
+# Type `none` is what this card is: no feed rules at all. The body measures
+# 19.81 against the plan's 19.8, and `shock_rifle_tele1` drives four
+# telescoping segments that the tool collapsed into one - which is right,
+# because they extend together.
+#
+# Declared so the parts are the simulator's to pose rather than the
+# animation's. Nothing loads it and nothing can: it feeds itself.
+
+weapon v_shock
+match  bones 43  seqs 5  hash 0x1ffec0c2
+
+joint 0  bone "shock_rifle_tele1"  slide  travel 3.08  rest 0
+    grab  point 0.00 0.00 0.00  radius 2.5

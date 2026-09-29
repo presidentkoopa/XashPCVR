@@ -1,0 +1,14 @@
+# Opposing Force combat knife. Measured by vrcardgen, finished by hand.
+#
+# Part K: "Melee with the same swept-head method as the crowbar: a short,
+# light blade, fast, stabbing or slashing."
+#
+# So it is the crowbar's mechanism with different numbers. It starts counting
+# at a lower speed than the crowbar, because a knife does not need momentum
+# to cut, and it reaches its full damage sooner for the same reason. A short
+# radius, because a blade is thin.
+
+weapon v_knife
+match  bones 24  seqs 13  hash 0x5a8efa8a
+
+strike point 0.00 0.00 0.00  radius 1.5  from 35  full 180

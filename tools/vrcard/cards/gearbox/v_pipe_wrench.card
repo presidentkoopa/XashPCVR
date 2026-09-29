@@ -1,0 +1,16 @@
+# Opposing Force pipe wrench. Measured by vrcardgen, finished by hand.
+#
+# Part K: "Heavy melee. Momentum does the work: a big two-handed swing lands
+# far harder than a flick. The 'hold for a heavy swing' secondary becomes
+# simply swinging harder."
+#
+# And that is the whole card. The census found no drivable part on this model
+# and the plan says as much; a wrench has nothing that moves. What it has is
+# weight, and weight in this system is a floor set high enough that a flick
+# does nothing and a cap set far enough away that a real swing keeps earning
+# more.
+
+weapon v_pipe_wrench
+match  bones 11  seqs 15  hash 0x264af4aa
+
+strike point 0.00 0.00 0.00  radius 3.5  from 90  full 420

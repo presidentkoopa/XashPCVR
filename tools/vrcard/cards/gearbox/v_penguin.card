@@ -1,0 +1,12 @@
+# Opposing Force penguin. Measured by vrcardgen, finished by hand.
+#
+# Part K: "Opposing Force's snark: take, squirm, throw or drop; it explodes."
+#
+# Nothing on it moves and nothing about it is loaded. Released rather than
+# fired, and what happens afterwards is the creature's business.
+
+weapon v_penguin
+match  bones 54  seqs 6  hash 0xc0c27779
+
+type   thrown
+fuse   0           # it decides
