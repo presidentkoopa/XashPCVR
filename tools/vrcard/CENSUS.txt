@@ -1,0 +1,100 @@
+# Viewmodel census
+#
+# Produced by tools/vrcard/vrcardgen.py --census over the retail model sets.
+# Joints are parts a hand could drive; rounds are objects the feed path owns;
+# static are bones that exist and are never animated - mesh surgery's targets.
+#
+# EVERY FINGERPRINT IS DIFFERENT, including the same weapon across gamedirs.
+# That is what a card binds to, and why one card cannot serve two rigs.
+
+=== valve
+model                       bones  seqs  fingerprint  parts
+v_357.mdl                      66     8   0xf5d877cb   3 joints   0 rounds   1 static
+v_9mmar.mdl                    25     8   0x1e22b9ad   1 joints   0 rounds   1 static
+v_9mmhandgun.mdl               48    10   0x31abf203   0 joints   0 rounds   0 static
+v_chub.mdl                     76     6   0xeb4702b2   9 joints   0 rounds   0 static
+v_crossbow.mdl                 56    12   0x60e2e198   3 joints   0 rounds   2 static
+v_crowbar.mdl                  11    11   0x3684cfae   1 joints   0 rounds   0 static
+v_egon.mdl                     32    11   0xa4ade1bd   1 joints   0 rounds   0 static
+v_gauss.mdl                    32     9   0x423d7cad   1 joints   0 rounds   0 static
+v_grenade.mdl                  49     8   0x6e00f52c   0 joints   0 rounds   0 static
+v_hgun.mdl                     21     6   0xbd437167  11 joints   0 rounds   2 static
+v_rpg.mdl                      32    10   0x862bb646   0 joints   0 rounds   0 static
+v_satchel.mdl                  29     4   0xf8389268   0 joints   0 rounds   0 static
+v_satchel_radio.mdl            30     5   0x4a5f850e   2 joints   0 rounds   0 static
+v_shotgun.mdl                  32    10   0x6daf19b8   1 joints   0 rounds   0 static
+v_squeak.mdl                   75     6   0x557c4f0f  11 joints   0 rounds   0 static
+v_tripmine.mdl                 46     9   0xe8898805   0 joints   0 rounds   0 static
+
+16 view models
+
+=== valve_hd
+model                       bones  seqs  fingerprint  parts
+v_357.mdl                      60     8   0xed2a677b   3 joints   7 rounds   1 static
+v_9mmar.mdl                    50     8   0xb72952b7   1 joints   0 rounds   1 static
+v_9mmhandgun.mdl               51     9   0xea5e27df   2 joints   0 rounds   0 static
+v_crossbow.mdl                 73    12   0xb6f36d2f   3 joints   0 rounds   2 static
+v_crowbar.mdl                  47    11   0x0f0d2e34   0 joints   0 rounds   0 static
+v_egon.mdl                     49    11   0xc9e21153   0 joints   0 rounds   0 static
+v_gauss.mdl                    15     9   0x6108f516   0 joints   0 rounds   1 static
+v_grenade.mdl                  51     8   0x1f4f0c84   1 joints   1 rounds   1 static
+v_hgun.mdl                     21     6   0xbd437167  10 joints   0 rounds   2 static
+v_rpg.mdl                      50     9   0x1e3e8964   1 joints   1 rounds   0 static
+v_satchel.mdl                  59     4   0x9ab11d46   7 joints   0 rounds   1 static
+v_satchel_radio.mdl            50     5   0xb99afb57   2 joints   0 rounds   0 static
+v_shotgun.mdl                  52    10   0xf086fed6   0 joints   0 rounds   0 static
+v_squeak.mdl                   83     6   0x9edc84de  12 joints   0 rounds   5 static
+v_tripmine.mdl                 48     9   0x19c33a89   0 joints   0 rounds   0 static
+
+15 view models
+
+=== gearbox
+model                       bones  seqs  fingerprint  parts
+v_357.mdl                      64     8   0x893606ab   3 joints   0 rounds   1 static
+v_9mmar.mdl                    47     9   0xf5804bd1   1 joints   0 rounds   0 static
+v_9mmhandgun.mdl               47    10   0xb7aaab83   0 joints   0 rounds   0 static
+v_bgrap.mdl                    41    11   0xf9b00396   6 joints   0 rounds   0 static
+v_bgrap_tonguetip.mdl           5     2   0x4f3a1439   1 joints   0 rounds   0 static
+v_crossbow.mdl                 70    12   0x4000585d   3 joints   0 rounds   2 static
+v_crowbar.mdl                  12    11   0x3de0b9d4   2 joints   0 rounds   0 static
+v_desert_eagle.mdl             46    11   0x83f6776f   0 joints   0 rounds   0 static
+v_displacer.mdl                54     7   0xfcebfb70   1 joints   0 rounds   5 static
+v_egon.mdl                     31    11   0x1f521ab3   1 joints   0 rounds   0 static
+v_grenade.mdl                  47     8   0x497f8c68   0 joints   0 rounds   0 static
+v_knife.mdl                    24    13   0x5a8efa8a   2 joints   0 rounds   0 static
+v_m40a1.mdl                    55     9   0xb95673d5   4 joints   0 rounds   2 static
+v_penguin.mdl                  54     6   0xc0c27779   0 joints   0 rounds   0 static
+v_pipe_wrench.mdl              11    15   0x264af4aa   0 joints   0 rounds   0 static
+v_rpg.mdl                      31     8   0x27652336   0 joints   0 rounds   0 static
+v_satchel.mdl                  47     4   0xb461560d   0 joints   0 rounds   0 static
+v_satchel_radio.mdl            29     5   0x01c49bcc   2 joints   0 rounds   0 static
+v_saw.mdl                      41     9   0x99236238  10 joints   0 rounds   1 static
+v_shock.mdl                    43     5   0x1ffec0c2   4 joints   3 rounds   3 static
+v_shotgun.mdl                  30    10   0xb63ecf93   1 joints   0 rounds   0 static
+v_spore_launcher.mdl           67     9   0xeff49c22  21 joints   0 rounds   1 static
+v_squeak.mdl                   74     6   0x6c318d57  11 joints   0 rounds   0 static
+v_tripmine.mdl                 45     9   0x8bdfc00b   0 joints   0 rounds   0 static
+
+24 view models
+
+=== bshift
+model                       bones  seqs  fingerprint  parts
+v_357.mdl                      67     8   0x7355a006   3 joints   0 rounds   1 static
+v_9mmar.mdl                    47     9   0xf5804bd1   0 joints   0 rounds   0 static
+v_9mmhandgun.mdl               46    10   0xe9bedb2b   0 joints   0 rounds   0 static
+v_chub.mdl                     76     6   0xeb4702b2   9 joints   0 rounds   0 static
+v_crossbow.mdl                 55    12   0x6bb29bce   3 joints   0 rounds   2 static
+v_crowbar.mdl                  26    11   0x04131012   2 joints   0 rounds   3 static
+v_egon.mdl                     31    11   0x1f521ab3   1 joints   0 rounds   0 static
+v_gauss.mdl                    32     9   0x423d7cad   1 joints   0 rounds   0 static
+v_grenade.mdl                  50     8   0x3468eedb   0 joints   0 rounds   0 static
+v_hgun.mdl                     21     6   0xbd437167  11 joints   0 rounds   2 static
+v_rpg.mdl                      31     8   0x27652336   0 joints   0 rounds   0 static
+v_satchel.mdl                  28     4   0x664588fc   0 joints   0 rounds   0 static
+v_satchel_radio.mdl            29     5   0x01c49bcc   1 joints   0 rounds   2 static
+v_shotgun.mdl                  32    10   0xdbd94bef   1 joints   0 rounds   0 static
+v_squeak.mdl                   76     6   0x492de0d0  11 joints   0 rounds   0 static
+v_tripmine.mdl                 44     9   0xae61d519   0 joints   0 rounds   0 static
+
+16 view models
+
