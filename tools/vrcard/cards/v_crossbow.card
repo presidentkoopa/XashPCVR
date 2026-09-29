@@ -1,0 +1,39 @@
+# Half-Life crossbow. Measured by vrcardgen, finished by hand.
+#
+# Part J: "Draw the string back to its catch, lay a bolt in the groove, fire."
+# That is the whole weapon, and it is three joints.
+#
+# The plan quotes the SD rig at string `Slide` 10.0 and bolt rack
+# `Clip Master` 8.4. Measured here on the HD model: 9.95 and 8.34. Different
+# models, the same weapon, and the numbers agree to a fiftieth of a unit -
+# which is a useful check that the generator is measuring what the census
+# measured.
+#
+# The two limbs are NOT declared. Each is four bones that flex together as
+# the string is drawn, and the tool collapses them to one driver apiece - but
+# they follow the string rather than being grabbed, so nothing should be
+# trying to pose them from a hand. Left undeclared, they keep the animation
+# they have, which is correct.
+
+weapon v_crossbow
+match  bones 58  seqs 12  hash 0x670c53b3
+
+type   single_shot  rpm 150
+# The rate is deliberately loose. On a weapon like this the MECHANISM is the
+# limiter - you cannot shoot faster than you can work it and lay the next one
+# in - so a low rpm only adds a second, invisible timer that stops the weapon
+# firing when the player has done everything right. It is here to keep two
+# shots out of one millisecond, and nothing more.
+feed   needs_cock
+
+# The string. Drawn back onto its sear, where it stays until the trigger
+# lets it go - which is why `needs_cock` is on: an undrawn crossbow clicks.
+joint 0  bone "Slide"  slide  travel 9.95  rest 0
+    point hammer_cock at 0.88
+    catch sear        at 0.94  holds -1
+    grab  point 0.00 0.00 0.00  radius 3.5
+
+# The bolt rack. It travels 8.34 units in the reload, carrying the next bolt
+# into the groove - which is the gesture a hand makes instead.
+joint 1  bone "Clip Master"  slide  travel 8.34  rest 0
+    grab  point 0.00 0.00 0.00  radius 3.0
