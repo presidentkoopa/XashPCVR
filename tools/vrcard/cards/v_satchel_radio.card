@@ -1,0 +1,24 @@
+# Half-Life satchel detonator. Measured by vrcardgen, finished by hand.
+#
+# Part J: "The detonator is a radio in the hand (Half-Life ships
+# v_satchel_radio.mdl); press its button with the thumb."
+#
+# The model animates two things in `fire`: `Object02` slides 0.27 units -
+# that is the button going down - and `Cylinder03` turns 0.6 radians, which
+# is the aerial. The button is the one a thumb wants.
+#
+# It carries no rounds and no feed rules of any kind. What it needs is a
+# control the thumb can find without looking, which is Part G's job, and a
+# joint for the button so the press is visible.
+
+weapon v_satchel_radio
+match  bones 35  seqs 5  hash 0x272e5180
+
+joint 0  bone "Object02"  slide  travel 0.27  rest 0
+    catch sear  at 0.80  holds -1
+    grab  point 0.00 0.00 0.00  radius 1.5
+
+control sear  at 0.00 0.00 0.00  finger thumb  kind button
+
+# The satchels themselves are objects in the world - thrown, or set down
+# gently where you want them - which is Part I and not a card.

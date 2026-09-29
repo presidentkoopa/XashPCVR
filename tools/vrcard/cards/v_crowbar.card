@@ -1,0 +1,27 @@
+# Half-Life crowbar. Measured by vrcardgen, finished by hand.
+#
+# Part J: "A physical object with mass. Hits are found by sweeping the
+# crowbar's head (declared in the card) between consecutive commands against
+# hitboxes and the world, on the server; damage scales with the head's speed
+# at contact, with a floor below which nothing happens."
+#
+# NO JOINTS, AND THAT IS THE WHOLE WEAPON. A crowbar has nothing that moves
+# relative to itself. What it has is a head, and the head is the card's only
+# real content - the tool found `BoxEnd`, three vertices sitting at the end
+# of the bar, which is exactly the marker a card wants.
+#
+# The numbers are a floor and a cap. Below the floor the bar is being carried
+# rather than swung and nothing happens; at the cap it does its full damage,
+# and faster does not do more - so a swing amplified by a tracking glitch
+# cannot one-shot anything.
+
+weapon v_crowbar
+match  bones 32  seqs 11  hash 0xd4b0a53b
+
+strike point 0.00 0.00 0.00  radius 3.0  from 60  full 260
+
+# Part J also asks for prying: "Wedge the tip into a breakable vent, grate or
+# crate and lever it: sustained torque applies damage until it gives." The
+# tip is the same point as the head on this model, and the levering itself is
+# not built yet, so no pry point is declared - a declared one that nothing
+# acts on would be a promise the weapon does not keep.
