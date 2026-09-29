@@ -61,7 +61,7 @@ code can difference.
 // Bumped when this struct's layout changes. Rides the capability handshake, so
 // two builds that disagree refuse each other at connect rather than quietly
 // reading each other's bytes wrong.
-#define VRCMD_VERSION 1
+#define VRCMD_VERSION 2
 
 // What the off hand is carrying. Not a count - the hand holds one thing at a
 // time, which is what makes a magazine and a shell the same two gestures.
@@ -93,6 +93,15 @@ typedef struct vrcmd_s
 	// not read a movement into a part that is simply where the animation left
 	// it. This is the bit that says the difference.
 	unsigned char part_held;
+
+	// WHICH PART IS WHICH, as the engine currently believes.
+	//
+	// Provisional, and the card format replaces the SOURCE of this without
+	// changing the channel: until a weapon has a card, the engine's own bone
+	// map is the only thing that knows the magazine from the action, and the
+	// game DLL has no way to work it out from indices alone. 0xFF for absent.
+	unsigned char part_action;
+	unsigned char part_mag;
 
 	unsigned char flags;            // VRCMD_FL_*
 	unsigned char carried;          // vrcarry_t

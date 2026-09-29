@@ -8708,6 +8708,27 @@ void VR_FillCmd( vrcmd_t *out )
 		out->part_value[i] = (byte)( bound( 0.0f, v, 1.0f ) * 255.0f );
 	}
 
+	// WHICH PART IS WHICH. Provisional: the engine's bone map is the only
+	// thing that knows a magazine from an action until cards exist, and the
+	// game DLL cannot tell from an index. 0xFF means the weapon has none.
+	out->part_action = 0xFF;
+	out->part_mag = 0xFF;
+
+	if( vr.part_action >= 0 && vr.part_action < VRCMD_MAX_PARTS )
+		out->part_action = (unsigned char)vr.part_action;
+
+	for( i = 0; i < n && i < VRCMD_MAX_PARTS; i++ )
+	{
+		if( i == vr.part_action )
+			continue;
+
+		if( refState.vrParts[i].present && VR_PartIsAmmo( refState.vrParts[i].name ))
+		{
+			out->part_mag = (unsigned char)i;
+			break;
+		}
+	}
+
 	// And which one a hand is actually on. A mask because a weapon can
 	// eventually have two hands on two parts; today the engine tracks one,
 	// so one bit is set.

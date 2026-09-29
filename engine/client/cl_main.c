@@ -1253,7 +1253,8 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 		SetBits( changed, VRCMD_D_PARTS );
 
 	if( from->part_held != to->part_held || from->flags != to->flags
-		|| from->carried != to->carried )
+		|| from->carried != to->carried || from->part_action != to->part_action
+		|| from->part_mag != to->part_mag )
 		SetBits( changed, VRCMD_D_STATE );
 
 	if( !VectorCompare( from->muzzle, to->muzzle ))
@@ -1272,6 +1273,8 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 		MSG_WriteByte( msg, to->part_held );
 		MSG_WriteByte( msg, to->flags );
 		MSG_WriteByte( msg, to->carried );
+		MSG_WriteByte( msg, to->part_action );
+		MSG_WriteByte( msg, to->part_mag );
 	}
 
 	if( FBitSet( changed, VRCMD_D_MUZZLE ))

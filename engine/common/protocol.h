@@ -316,12 +316,12 @@ extern const char *const svc_goldsrc_strings[svc_lastmsg+1];
 // our own builds that disagree about the struct must refuse each other rather
 // than read each other's bytes wrong; the capability bit only says "I speak
 // this", not "I speak this revision of it".
-#define VRCMD_NET_VERSION       1
+#define VRCMD_NET_VERSION       2
 
 // Which groups of a vrcmd_t changed since the previous command in the same
 // packet. A hand that is not moving costs one byte per command.
 #define VRCMD_D_PARTS   (1U<<0) // part_value[] follows
-#define VRCMD_D_STATE   (1U<<1) // part_held, flags, carried follow
+#define VRCMD_D_STATE   (1U<<1) // part_held, flags, carried, part roles follow
 #define VRCMD_D_MUZZLE  (1U<<2) // muzzle follows
 
 // Sentinel written into usercmd_t.reserved[0] alongside a pose, so a mod that

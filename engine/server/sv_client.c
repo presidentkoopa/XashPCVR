@@ -3294,6 +3294,8 @@ static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
 			to->part_held = MSG_ReadByte( msg );
 			to->flags = MSG_ReadByte( msg );
 			to->carried = MSG_ReadByte( msg );
+			to->part_action = MSG_ReadByte( msg );
+			to->part_mag = MSG_ReadByte( msg );
 		}
 
 		if( FBitSet( changed, VRCMD_D_MUZZLE ))
