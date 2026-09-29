@@ -3640,6 +3640,7 @@ static const vr_engine_funcs_t gVRClientFuncs =
 {
 	CL_GetVRCmd,
 	CL_VRPlayerHandLoads,
+	Mod_StudioFingerprint,
 };
 
 /*

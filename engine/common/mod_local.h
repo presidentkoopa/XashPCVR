@@ -154,6 +154,10 @@ void *Mod_CacheCheck( struct cache_user_s *c );
 void Mod_LoadCacheFile( const char *path, struct cache_user_s *cu );
 void *Mod_AliasExtradata( model_t *mod );
 void *Mod_StudioExtradata( model_t *mod );
+
+// Bone count, sequence count and a hash of the bone names, for binding a VR
+// weapon card to the model it was measured from. See mod_studio.c.
+qboolean Mod_StudioFingerprint( const char *name, int *bones, int *seqs, unsigned int *namehash );
 // Every bone of a studio model in MODEL space, at a sequence and frame. Any
 // subsystem may ask; the VR layer uses it to find where a hand holds a weapon.
 qboolean Mod_StudioBoneTransforms( model_t *mod, int sequence, float frame, matrix3x4 *out );

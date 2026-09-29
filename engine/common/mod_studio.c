@@ -20,6 +20,7 @@ GNU General Public License for more details.
 #include "library.h"
 #include "ref_common.h"
 #include "swaplib.h"
+#include "vrfingerprint.h"
 
 typedef int (*STUDIOAPI)( int, sv_blending_interface_t**, server_studio_api_t*,  float (*transform)[3][4], float (*bones)[MAXSTUDIOBONES][3][4] );
 
@@ -241,6 +242,63 @@ void *GAME_EXPORT Mod_StudioExtradata( model_t *mod )
 	if( mod && mod->type == mod_studio )
 		return mod->cache.data;
 	return NULL;
+}
+
+/*
+===============
+Mod_StudioFingerprint
+
+What model is this, really - so a weapon card can decline one it was not
+measured from.
+
+Bone count, sequence count and a hash of the bone names in bone order. Bone
+NAMES rather than geometry because a card refers to bones by name: two models
+that agree on every bone name are two models a card can drive, whatever their
+meshes look like. Two that do not are two different rigs, and Half-Life ships
+both under the same paths - the HD models are an overlay mounted over `valve`.
+
+The hash is VR_HashBoneName from vrfingerprint.h, which the game DLL and the
+card generator include too. That is the point of it being a header: three
+callers, one definition, no chance of a separator byte's worth of drift
+silently stopping every card from binding.
+
+Loads the model if it is not already loaded, because the question is usually
+asked about a view model the moment a weapon is drawn. Returns false for
+anything that is not a studio model, which the caller must treat as "do not
+apply the card" rather than as "apply it anyway".
+===============
+*/
+qboolean Mod_StudioFingerprint( const char *name, int *bones, int *seqs, unsigned int *namehash )
+{
+	model_t     *mod;
+	studiohdr_t *hdr;
+	mstudiobone_t *bone;
+	unsigned int h = VR_FINGERPRINT_BASIS;
+	int i;
+
+	if( !name || !name[0] )
+		return false;
+
+	mod = Mod_ForName( name, false, false );
+
+	if( !mod )
+		return false;
+
+	hdr = (studiohdr_t *)Mod_StudioExtradata( mod );
+
+	if( !hdr || hdr->numbones <= 0 )
+		return false;
+
+	bone = (mstudiobone_t *)((byte *)hdr + hdr->boneindex );
+
+	for( i = 0; i < hdr->numbones; i++ )
+		h = VR_HashBoneName( h, bone[i].name );
+
+	if( bones )    *bones = hdr->numbones;
+	if( seqs )     *seqs = hdr->numseq;
+	if( namehash ) *namehash = h;
+
+	return true;
 }
 
 /*

@@ -45,7 +45,7 @@ the other to work.
 // speaks; a DLL that does not recognise it must return 0 and will be treated
 // as though it never exported anything, rather than reading a table whose
 // layout it is guessing at.
-#define VR_GAMEAPI_VERSION  1
+#define VR_GAMEAPI_VERSION  2
 
 struct edict_s;
 
@@ -71,6 +71,26 @@ typedef struct vr_engine_funcs_s
 	// game DLLs already read, offered here so weapon code has one place to ask
 	// rather than reaching for a cvar by name.
 	qboolean ( *pfnPlayerHandLoads )( struct edict_s *player );
+
+	// ---- version 2 ----
+
+	// What model is this, really?
+	//
+	// A weapon card binds to the model it was measured FROM, not to a file
+	// name, because Half-Life's own `valve` directory holds two entirely
+	// different rigs under the same paths. Only the engine has the loaded
+	// model; only game code has the card. So the engine answers the
+	// question and game code does the comparing.
+	//
+	// `namehash` is VR_HashBoneName folded over every bone name in bone
+	// order - see vrfingerprint.h, which both sides include so that they
+	// cannot disagree about it.
+	//
+	// Returns false for a model that is not loaded or is not a studio
+	// model, leaving the outputs untouched. A card that cannot be checked
+	// must not be applied: the fallback is a weapon that works.
+	qboolean ( *pfnGetModelFingerprint )( const char *model, int *bones,
+		int *seqs, unsigned int *namehash );
 } vr_engine_funcs_t;
 
 // What the game DLL offers back. Deliberately empty in version 1: the engine
