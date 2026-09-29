@@ -45,9 +45,29 @@ the other to work.
 // speaks; a DLL that does not recognise it must return 0 and will be treated
 // as though it never exported anything, rather than reading a table whose
 // layout it is guessing at.
-#define VR_GAMEAPI_VERSION  2
+#define VR_GAMEAPI_VERSION  3
 
 struct edict_s;
+
+// ---- version 3 ----
+
+// One joint's predicted position, as the shared simulator has it.
+//
+// BY BONE NAME, NOT BY INDEX. The renderer numbers parts in the order its
+// own bone scan found them; a card numbers joints in the order it declares
+// them. Those two orders have no reason to agree, and matching them by
+// index would pose the right value onto the wrong part - silently, and
+// differently per model.
+//
+// A fixed array rather than a pointer because this crosses a DLL boundary:
+// a borrowed pointer would tie the caller to the game DLL's idea of how
+// long its card cache lives, and eight names a frame is nothing.
+typedef struct vr_jointvalue_s
+{
+	char    bone[32];
+	float   value;          // 0 at rest, 1 at full travel
+} vr_jointvalue_t;
+
 
 // What the engine can be asked.
 typedef struct vr_engine_funcs_s
@@ -93,13 +113,27 @@ typedef struct vr_engine_funcs_s
 		int *seqs, unsigned int *namehash );
 } vr_engine_funcs_t;
 
-// What the game DLL offers back. Deliberately empty in version 1: the engine
-// has nothing it needs to call yet, and inventing callbacks before there is a
-// caller is how interfaces rot. It exists so that adding one later is a
-// version bump rather than a new export.
+// What the game DLL offers back. Empty through version 2, because the engine
+// had nothing it needed to call and inventing callbacks before there is a
+// caller is how interfaces rot. Version 3 is what it was left there for.
 typedef struct vr_game_funcs_s
 {
-	int unused;
+	// Where the weapon's parts actually are, as predicted by the shared
+	// simulator this command.
+	//
+	// THE ENGINE ASKS; IT DOES NOT DECIDE. Until a weapon has a card the
+	// engine drives part positions from the hand directly, and that stays
+	// exactly as it was. For a carded weapon the joint simulation is the
+	// authority - it is the thing the server also runs - so the VR layer
+	// takes these values and poses with them instead. One posing path for
+	// both, which is what keeps the magazine shrink, the child re-pose and
+	// the lighting-chain fix working for carded weapons without being
+	// written twice.
+	//
+	// Returns how many entries were filled. Zero is the normal answer for
+	// a player with no carded weapon in hand, and for every mod that has
+	// never heard of any of this.
+	int ( *pfnGetJointValues )( vr_jointvalue_t *out, int max );
 } vr_game_funcs_t;
 
 // The export itself. Returns VR_GAMEAPI_VERSION on success, 0 to decline.

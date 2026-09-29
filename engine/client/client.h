@@ -25,6 +25,7 @@ GNU General Public License for more details.
 #include "pmove.h"
 #include "pm_defs.h"
 #include "vrcmd.h"   // PCVR fork: hand state carried per command
+#include "vr_gameapi.h" // PCVR fork: the optional game-DLL interface
 
 // PCVR fork: command being replayed by prediction, -1 outside a replay.
 extern int cl_vr_predict_cmd;
@@ -1280,5 +1281,9 @@ client_textmessage_t *CL_TextMessageParse( poolhandle_t mempool, char *pMemFile,
 extern rgba_t g_color_table[8];
 extern triangleapi_t gTriApi;
 extern net_api_t gNetApi;
+
+// The client DLL's VR weapon callbacks, or all-NULL for a DLL that offered
+// none. Filled by CL_InitVRGameAPI; read by the VR layer once a frame.
+extern vr_game_funcs_t clgame_vr_funcs;
 
 #endif//CLIENT_H

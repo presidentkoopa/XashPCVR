@@ -5998,6 +5998,45 @@ static void VR_UpdateParts( void )
 		refState.vrParts[i].value = ours ? vr.part_value[i] : -1.0f;
 	}
 
+	// ---- and then the game DLL's answer wins, where it has one ----------
+	//
+	// Everything above is the engine deciding where a part is from where the
+	// hand is. That is right for an uncarded weapon and wrong for a carded
+	// one: there the joint simulation in the client DLL is the authority,
+	// because it is the same code the server runs and the same code
+	// prediction replays. The engine asks, and poses what it is told.
+	//
+	// MATCHED BY BONE NAME. The order this loop numbers parts in comes from
+	// the engine's own bone scan; the order the card numbers joints in comes
+	// from the card. Nothing makes those agree, and matching by index would
+	// pose the slide's position onto the magazine on some models and not
+	// others.
+	//
+	// Nothing below runs for a weapon without a card, so the existing path -
+	// and every mod that has never heard of any of this - is untouched.
+	if( clgame_vr_funcs.pfnGetJointValues )
+	{
+		vr_jointvalue_t jv[VR_MAX_PARTS];
+		int njv = clgame_vr_funcs.pfnGetJointValues( jv, VR_MAX_PARTS );
+		int j;
+
+		for( j = 0; j < njv && j < VR_MAX_PARTS; j++ )
+		{
+			for( i = 0; i < n && i < VR_MAX_PARTS; i++ )
+			{
+				if( !refState.vrParts[i].present )
+					continue;
+
+				if( Q_stricmp( refState.vrParts[i].name, jv[j].bone ))
+					continue;
+
+				refState.vrParts[i].driven = true;
+				refState.vrParts[i].value = bound( 0.0f, jv[j].value, 1.0f );
+				break;
+			}
+		}
+	}
+
 	if( !VR_IsActive() || vr_parts.value == 0.0f || n <= 0
 		|| !VR_GetHandWorld( VR_OffHand(), hand, hang ))
 	{

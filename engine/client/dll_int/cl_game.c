@@ -3655,6 +3655,22 @@ reason nothing was added to enginefuncs_t - it is the ABI every GoldSrc client
 DLL was built against.
 =============
 */
+/*
+=================
+The client DLL's side of the interface.
+
+Kept, where version 1 threw it away - there was nothing in it to keep. The
+VR layer reads it directly rather than through an accessor because it is
+read once a frame from one place, and a getter that only ever has one caller
+is a getter that only obscures where the value comes from.
+
+Zeroed whenever the client DLL is unloaded or declines, so every entry is
+either a live function or NULL. Callers must check: most game DLLs will
+never fill any of it in.
+=================
+*/
+vr_game_funcs_t clgame_vr_funcs = { 0 };
+
 static void CL_InitVRGameAPI( void )
 {
 	VR_GAMEAPI_FN GetVRWeaponAPI;
@@ -3662,6 +3678,7 @@ static void CL_InitVRGameAPI( void )
 	int ret;
 
 	clgame.vr_api = false;
+	memset( &clgame_vr_funcs, 0, sizeof( clgame_vr_funcs ));
 
 	GetVRWeaponAPI = (VR_GAMEAPI_FN)COM_GetProcAddress( clgame.hInstance, VR_GAMEAPI_EXPORT );
 
