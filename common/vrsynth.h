@@ -66,6 +66,17 @@ typedef struct vr_synthpart_s
 	// worth having on its own.
 	float   axis[3];
 	float   travel;
+
+	// TURNS RATHER THAN SLIDES, and `travel` is then radians about `axis`.
+	//
+	// Needed by the one true two-axis bolt (M-03). The M40A1's bolt is a
+	// single bone that both lifts and pulls, in one animation - and a part,
+	// to the renderer, is a lerp between two bracketed poses driven by one
+	// value. One bone therefore cannot be two independent joints. Splitting
+	// it into a handle that only turns and a body that only slides is what
+	// makes the gate in Part C mean anything, and writing a pure rotation
+	// for the handle is what makes the split honest.
+	unsigned char   rotates;
 } vr_synthpart_t;
 
 #endif // VRSYNTH_H

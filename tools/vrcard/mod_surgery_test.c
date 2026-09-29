@@ -84,6 +84,10 @@ int main( int argc, char **argv )
 	if( argc > 17 )
 		synth.travel = (float)atof( argv[17] );
 
+	// An 18th argument of "rot" makes it a hinge: `travel` is then radians.
+	if( argc > 18 && !strcmp( argv[18], "rot" ))
+		synth.rotates = 1;
+
 	need = Mod_StudioSurgery( in, inlen, NULL, 0, &synth, 1, &err );
 
 	if( !need )

@@ -79,6 +79,12 @@ GNU General Public License for more details.
 // inside a signed short with room to spare.
 #define SYNTH_SCALE     ( 1.0f / 64.0f )
 
+// A radian is a big quantity where a unit is a small one, so a rotation
+// written at the position scale would come out visibly notched. This is
+// finer by a factor of sixteen, which keeps a ninety-degree swing well
+// inside a signed short.
+#define SYNTH_ROT_SCALE ( 1.0f / 1024.0f )
+
 #define FAIL( msg )     do { if( err ) *err = ( msg ); return 0; } while( 0 )
 
 static int RdI( const unsigned char *d, size_t o )
@@ -397,14 +403,22 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 			WrF( dst, b + BONE_VALUE + 8, synths[s].pivot[2] );
 
 			// The scale a written animation value is multiplied by. It has
-			// to be non-zero on the position channels or every value would
-			// decode back to the rest pose - which is precisely the bug a
-			// bone with no animation has, and the one this exists to fix.
-			for( k = 0; k < 3; k++ )
-				WrF( dst, b + BONE_SCALE + (size_t)k * 4, SYNTH_SCALE );
+			// to be non-zero on the channels the ramp will use, or every
+			// value decodes back to the rest pose - which is precisely the
+			// bug a bone with no animation has, and the one this exists to
+			// fix.
+			//
+			// Rotation gets a finer scale than position: a radian is a
+			// large quantity where a unit is a small one, and the same step
+			// would make a hinge visibly notched.
+			for( k = 0; k < 6; k++ )
+			{
+				int rot = ( k >= 3 );
+				int used = synths[s].rotates ? rot : !rot;
 
-			for( k = 3; k < 6; k++ )
-				WrF( dst, b + BONE_SCALE + (size_t)k * 4, 0.0f );
+				WrF( dst, b + BONE_SCALE + (size_t)k * 4,
+					used ? ( rot ? SYNTH_ROT_SCALE : SYNTH_SCALE ) : 0.0f );
+			}
 		}
 
 		WrI( dst, H_BONEINDEX, (int)newbase );
@@ -503,6 +517,8 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 				{
 					size_t at, delta;
 					int f, left;
+					int chan = synths[s].rotates ? ( 3 + ch ) : ch;
+					float scale = synths[s].rotates ? SYNTH_ROT_SCALE : SYNTH_SCALE;
 
 					if( synths[s].axis[ch] == 0.0f )
 						continue;
@@ -530,7 +546,7 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 						{
 							float t = (float)f / (float)( drive_frames - 1 );
 							float v = synths[s].axis[ch] * synths[s].travel * t;
-							int raw = (int)( v / SYNTH_SCALE );
+							int raw = (int)( v / scale );
 
 							if( raw > 32767 )  raw = 32767;
 							if( raw < -32768 ) raw = -32768;
@@ -540,7 +556,7 @@ size_t Mod_StudioSurgery( const void *in, size_t inlen, void *out, size_t outcap
 						}
 					}
 
-					WrU16( dst, newe + (size_t)ch * 2, (unsigned short)delta );
+					WrU16( dst, newe + (size_t)chan * 2, (unsigned short)delta );
 				}
 			}
 		}
