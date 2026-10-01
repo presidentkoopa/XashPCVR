@@ -8,5 +8,13 @@
 weapon v_penguin
 match  bones 54  seqs 6  hash 0xc0c27779
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Bone24"
+
 type   thrown
 fuse   0           # it decides

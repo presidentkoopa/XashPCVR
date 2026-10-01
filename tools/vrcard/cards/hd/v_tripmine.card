@@ -21,6 +21,14 @@
 weapon v_tripmine
 match  bones 48  seqs 9  hash 0x19c33a89
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "tripmine"
+
 # NOTHING ON IT MOVES, AND THAT IS THE MEASUREMENT, NOT AN ASSUMPTION.
 # vrcardgen offers ZERO joint candidates on this rig, and the reason is that
 # there is only one weapon bone. Of the 48 bones, 47 are the arms: `Bip01`

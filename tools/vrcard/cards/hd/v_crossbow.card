@@ -58,6 +58,14 @@
 weapon v_crossbow
 match  bones 73  seqs 12  hash 0xb6f36d2f
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "crossbow parent"
+
 # NO CAPACITY AND NO RPM, BOTH DELIBERATE.
 #
 # `single_shot` reads neither: there is no magazine and no tube, the groove

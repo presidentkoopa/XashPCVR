@@ -20,6 +20,14 @@
 weapon v_9mmar
 match  bones 54  seqs 8  hash 0xefec1a61
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "carbine"
+
 type   magazine_slide  capacity 50  rpm 900
 feed   chamber_on_seat  no_slide_lock
 fire   auto  rpm 900

@@ -12,6 +12,14 @@
 weapon v_shotgun
 match  bones 56  seqs 8  hash 0xbf9fd5e8
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Reciever"
+
 type   tube_pump  capacity 8  rpm 75
 
 joint 0  bone "Charger"  slide  travel 3.42  rest 0

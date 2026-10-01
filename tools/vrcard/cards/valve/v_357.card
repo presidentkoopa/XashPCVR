@@ -21,6 +21,14 @@
 weapon v_357
 match  bones 44  seqs 8  hash 0xba7f43f7
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "python"
+
 type   revolver  capacity 6  rpm 300
 
 joint 0  bone "revolver"  hinge  travel 1.10  rest 0

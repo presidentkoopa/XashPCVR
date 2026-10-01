@@ -13,4 +13,12 @@
 weapon v_pipe_wrench
 match  bones 11  seqs 15  hash 0x264af4aa
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Bip01 R Hand"
+
 strike point 0.00 0.00 0.00  radius 3.5  from 90  full 420

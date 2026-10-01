@@ -18,6 +18,14 @@
 weapon v_9mmhandgun
 match  bones 36  seqs 9  hash 0xc8430223
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Hands mesh"
+
 type   magazine_slide  capacity 17  rpm 400
 
 # The magazine, cut from the grip. The box is in the body bone's own space,

@@ -13,5 +13,13 @@
 weapon v_displacer
 match  bones 54  seqs 7  hash 0xfcebfb70
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Bone01"
+
 joint 0  bone "spinner"  hinge  travel 6.00  rest 0
     grab  point 0.00 0.00 0.00  radius 3.0

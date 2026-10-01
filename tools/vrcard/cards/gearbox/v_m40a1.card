@@ -35,6 +35,14 @@
 weapon v_m40a1
 match  bones 55  seqs 9  hash 0xb95673d5
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "m40a1_stock"
+
 type   magazine_slide  capacity 5  rpm 40
 
 # A BOLT ACTION CYCLES ITSELF FOR NOBODY, and it has no slide stop to hold

@@ -14,6 +14,14 @@
 weapon v_satchel_radio
 match  bones 35  seqs 5  hash 0x272e5180
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Cylinder02"
+
 joint 0  bone "Object02"  slide  travel 0.27  rest 0
     catch sear  at 0.80  holds -1
     grab  point 0.00 0.00 0.00  radius 1.5

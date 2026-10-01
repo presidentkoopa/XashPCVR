@@ -37,6 +37,14 @@
 weapon v_9mmhandgun
 match  bones 51  seqs 9  hash 0xea5e27df
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Hands mesh"
+
 # Capacity from the game DLL, not from the model: GLOCK_MAX_CLIP is 17
 # (dlls/weapons.h). The rpm is deliberately LOOSE. Half-Life's own fastest
 # glock cadence is GlockFire's 0.2 s cycle - 300 rpm - so 400 sits above

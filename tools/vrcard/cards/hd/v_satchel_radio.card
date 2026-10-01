@@ -22,6 +22,14 @@
 weapon v_satchel_radio
 match  bones 50  seqs 5  hash 0xb99afb57
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Cylinder02"
+
 # JOINT 0: THE BUTTON, and the only thing on this model a hand can work.
 #
 # `Object02` is a 61-vertex cap, 0.99 x 0.44 x 0.99 units, parented to the

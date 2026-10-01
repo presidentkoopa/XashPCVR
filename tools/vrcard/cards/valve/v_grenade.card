@@ -23,6 +23,14 @@
 weapon v_grenade
 match  bones 35  seqs 8  hash 0xf991b830
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "pine"
+
 type   thrown
 fuse   3500        # Half-Life's, and it starts when the SPOON goes
 

@@ -18,6 +18,14 @@
 weapon v_crossbow
 match  bones 58  seqs 12  hash 0x670c53b3
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "crossbow parent"
+
 type   single_shot  rpm 150
 # The rate is deliberately loose. On a weapon like this the MECHANISM is the
 # limiter - you cannot shoot faster than you can work it and lay the next one

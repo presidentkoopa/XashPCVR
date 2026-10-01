@@ -28,6 +28,14 @@
 weapon v_crowbar
 match  bones 12  seqs 11  hash 0x09482809
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Bip01 R Hand"
+
 # THE HEAD IS THE SMALLEST BALL THAT HOLDS IT. Separating the crowbar from
 # the hand by texture (`crowbar_01.bmp`, 256 verts; the hand and sleeve are
 # their own meshes) leaves a far-end mass at z >= 17.5 that is the bend, the

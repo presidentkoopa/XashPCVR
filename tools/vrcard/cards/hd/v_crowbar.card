@@ -50,6 +50,14 @@
 weapon v_crowbar
 match  bones 47  seqs 11  hash 0x0f0d2e34
 
+# The bone every position in this card is measured in - the controls, the
+# grab points, the chamber, the ejection port. Nothing recorded it until
+# the engine had to place a control in the world to ask whether a thumb is
+# near it; the simulator never needed one, because it never works in world
+# space. Taken from the generator, which has always called this bone the
+# WEAPON BODY and is what measured these numbers in the first place.
+body   "Bip01 R Hand"
+
 # THE HEAD is the centroid of those 192 vertices. The claw there is flat and
 # bent: 5.70 across in x, 2.15 through in y, 2.23 along in z, with a prong
 # reaching out to x 8.29 at z 18.15 and a chisel end carrying on to z 20.16.
