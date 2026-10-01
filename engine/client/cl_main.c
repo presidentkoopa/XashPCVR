@@ -1758,10 +1758,29 @@ static void CL_SendConnectPacket( connprotocol_t proto, int challenge )
 		// costs nothing when unused - the pose is only written by a client that
 		// actually has a muzzle to report.
 		//
-		// Loopback still gets 0: a listen server's own player is handled by the
-		// NET_IsLocalAddress path in sv_pmove.c, which reads full-precision VR
-		// state directly instead of going through the wire's quantisation.
-		int extensions = adrtype == NA_LOOPBACK ? 0 : ( NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE | NET_EXT_VRCMD );
+		// LOOPBACK GETS THE SAME SET AS EVERYONE ELSE, and it used to get none.
+		//
+		// The old reasoning was that a listen server's own player is served by
+		// the NET_IsLocalAddress path in sv_pmove.c, which reads full-precision
+		// VR state directly rather than through the wire's 0.125-unit
+		// quantisation. That is still true, and still takes priority - the wire
+		// muzzle is read only `if( !vr_muzzle )`, so single player keeps its
+		// full-precision pose and the wire is merely a fallback.
+		//
+		// But it was only ever true of the POSE. The hand block that drives the
+		// weapon simulator arrives exclusively through clc_vrcmd, which was
+		// never sent on loopback, so cl->vr_cmds stayed empty, SV_GetVRCmd
+		// returned false, and the server never stepped a carded weapon at all.
+		// The client fills its own block unconditionally (VR_FillCmd, above),
+		// so the effect was a client predicting reloads its own server never
+		// performed.
+		//
+		// Negotiating it on loopback too means single player runs the identical
+		// path as a network game, which is worth more than the bytes it costs
+		// on a connection that has none: every session is then a test of the
+		// wire, and a desync shows up on the author's desk rather than in
+		// somebody's match.
+		int extensions = NET_EXT_SPLITSIZE | NET_EXT_NETCHAN_COOKIE | NET_EXT_VRPOSE | NET_EXT_VRCMD;
 		string key;
 
 		ID_GetMD5ForAddress( key, adr, sizeof( key ));
