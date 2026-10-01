@@ -26,7 +26,14 @@ joint 0  bone "Object02"  slide  travel 0.27  rest 0
     catch sear  at 0.80  holds -1
     grab  point 0.00 0.00 0.00  radius 1.5
 
-control sear  at 0.00 0.00 0.00  finger thumb  kind button
+# MEASURED, and the kind is now honoured. The button is its own joint -
+# Object02, 61 vertices - and this is their centroid in the body frame.
+#
+# `kind button` used to be silently discarded: the simulator forced every
+# control naming a sear to the thumbstick, on the reasoning that a hammer is
+# pulled back. A sear is not a hammer, and a detonator is a button you press.
+# VRC_HAMMER exists now and only a hammer is forced to the stick.
+control sear  at 1.33 0.80 -1.78  finger thumb  kind button
 
 # The satchels themselves are objects in the world - thrown, or set down
 # gently where you want them - which is Part I and not a card.

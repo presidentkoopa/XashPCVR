@@ -47,7 +47,11 @@ joint 0  bone "ring"  hinge  travel 1.16  rest 0
 
 # The spoon. It is held by your grip, not by a catch on a joint, so its
 # control names no joint - the one control in the format that does not.
-control spoon  at 0.00 0.00 0.00  finger thumb  kind button
+# MEASURED. The spoon bone is 68 vertices and this is their centroid in the
+# body frame - the pad a thumb actually rests on, not the bone origin, which
+# sits at the hinge. It agrees with the HD card to a hundredth, which is the
+# only reason to trust either: two rigs measured apart, same answer.
+control spoon  at 0.00 0.37 1.66  finger thumb  kind button
 
 # `pin` travels 48 units in the pinpull animation, which is not a mechanism:
 # it is the pin being thrown away. The feed path owns it.
