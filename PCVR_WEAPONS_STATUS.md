@@ -190,6 +190,38 @@ In the order I would take them:
    parser with **no range validation at all** — which matters precisely because mod-friendly means mod
    authors typing numbers.
 
+## One more fun thing per gun (owner, 1 Oct)
+
+The owner's note, kept because it is the right instinct and the architecture is
+already most of the way there: **examine each weapon for one more thing a hand
+can do with it.** The example that prompted it - the shotgun's stock could be
+deployed, and that could mean less muzzle climb and slower handling.
+
+Mechanically this is cheap. A stock is a JOINT: a bone, a travel, a detent at
+"deployed". The card format expresses that today. What does not exist is the
+CONSEQUENCE - a way for a joint's position to change how the weapon handles.
+Part F already carries recoil and inertia for the held weapon, and a stock
+against the shoulder is a third contact point, which is what two-handed
+stabilisation already models. So the addition is one general card concept -
+"while this joint is past this detent, scale recoil/sway by K" - and it serves
+every weapon rather than being a shotgun special case.
+
+Candidates worth measuring the models for, in rough order of how much they
+would add:
+
+- **shotgun, MP5** - fold out the stock. Less climb, slower to bring on target.
+- **revolver** - thumb the hammer for single action: slower, steadier, and it is
+  already a declared joint with a hammer_cock detent.
+- **pistol** - a press check. Draw the slide a quarter inch and see brass.
+- **crossbow** - flip the scope up out of the way.
+- **gauss, displacer** - the spinners are already hand-turnable; make spinning
+  them mean something.
+- **RPG** - flip the sight up.
+- **tripmine, satchel** - the arming state as a thing you can see and change.
+
+Nothing here is on the critical path. It is what the project is FOR, so it is
+written down rather than remembered.
+
 ## Decided, so do not re-litigate
 
 - **Fidelity default: standard. Released weapons: return to holster.** (Owner, 29 Sep.)
