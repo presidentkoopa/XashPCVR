@@ -851,6 +851,10 @@ static struct
 	// the same name match that drives posing, so the two directions cannot
 	// disagree about which bone is which joint.
 	int           part_joint[VR_MAX_PARTS];
+
+	// Which of the held weapon's controls a finger is on, a bit per control
+	// in the card's declaration order. See VR_UpdateControls.
+	unsigned short controls_under;
 	double        part_fired;       // when the action was last cycled by firing
 	int           part_clip;        // clip count the cycle detector last saw
 	int           part_clip_prev;   // and the count before that, for the magazine
@@ -6023,6 +6027,143 @@ static qboolean VR_PartHandLocal( const vec3_t hand, vec3_t out )
 	return true;
 }
 
+/*
+=====================
+VR_UpdateControls   (G-01)
+
+Which of the held weapon's controls a finger is on.
+
+NOT A GEOMETRIC SOLVE, AND DELIBERATELY NOT. Part G asks for a closed hand
+solved against the weapon's rest-pose triangles. We measured those triangles:
+of 101 retail viewmodels, THREE are watertight and 69 have real holes. A
+contact solve against meshes like that pushes fingers through gaps on
+essentially every gun in the game, and it would be solving for something the
+animators have already answered - the hand model the engine loads ships an
+authored closed fist. So the pose is read, not derived.
+
+Measured off v_hand_hevsuit.mdl, the thumb tip in the hand bone's own frame:
+
+    open     (idle)                 ( 4.241  0.543  2.814)
+    half     (halfgrab_start f28)   ( 2.725  2.934  1.194)
+    closed   (fullgrab_start f20)   ( 3.163  2.632  0.462)
+
+v_hand_labcoat.mdl is the same rig to three decimals, so one set serves both.
+The path is NOT a straight line - the thumb curls in and then back out - which
+is why the blend goes through the half pose rather than cutting the corner.
+
+The weapon's controls are measured in a bone's own frame, so the engine asks
+the renderer for that bone's matrix (refState.vrFrameBone) and places them
+with it. Everything then happens in world space, where the thumb already is.
+=====================
+*/
+static void VR_UpdateControls( void )
+{
+	// The authored thumb, in the hand bone's frame. See above - these are
+	// measurements off the model, not tuning values, and re-measuring them
+	// is tools/vrcard against v_hand_hevsuit.mdl.
+	static const vec3_t thumb_open   = {  4.241f, 0.543f, 2.814f };
+	static const vec3_t thumb_half   = {  2.725f, 2.934f, 1.194f };
+	static const vec3_t thumb_closed = {  3.163f, 2.632f, 0.462f };
+
+	vr_control_t ctl[VR_MAX_PARTS];
+	vec3_t hand, hang, f, r, u, local, world;
+	int n, i;
+	float grip;
+
+	vr.controls_under = 0;
+
+	if( !VR_IsActive() || !clgame_vr_funcs.pfnGetControls )
+	{
+		refState.vrFrameBone[0] = 0;
+		return;
+	}
+
+	n = clgame_vr_funcs.pfnGetControls( ctl, VR_MAX_PARTS );
+
+	if( n <= 0 )
+	{
+		refState.vrFrameBone[0] = 0;
+		return;
+	}
+
+	// Ask the renderer for the frame these were measured in. Every control on
+	// a card shares it, so the first one that names a bone decides.
+	refState.vrFrameBone[0] = 0;
+
+	for( i = 0; i < n; i++ )
+	{
+		if( ctl[i].bone[0] )
+		{
+			Q_strncpy( refState.vrFrameBone, ctl[i].bone, sizeof( refState.vrFrameBone ));
+			break;
+		}
+	}
+
+	// The renderer answers on the frame after it next draws the model, so the
+	// first frame of a weapon reports nothing. That is correct rather than
+	// unfortunate: guessing a frame would place controls somewhere arbitrary.
+	if( !refState.vrFrameBone[0] || !refState.vrFrameValid )
+		return;
+
+	if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
+		return;
+
+	// HOW CLOSED THE HAND IS. There is no analog grip on the dominant hand -
+	// its squeeze is bound to secondary fire - and a hand holding a weapon is
+	// closed around it in any case, so the fist is the honest default. When an
+	// analog grip action exists this becomes its value and nothing else here
+	// changes.
+	grip = 1.0f;
+
+	{
+		const float *a, *b;
+		float t;
+
+		if( grip <= 0.5f ) { a = thumb_open; b = thumb_half;   t = grip * 2.0f; }
+		else               { a = thumb_half; b = thumb_closed; t = ( grip - 0.5f ) * 2.0f; }
+
+		for( i = 0; i < 3; i++ )
+			local[i] = a[i] + ( b[i] - a[i] ) * t;
+	}
+
+	// Into the world, through the hand's own pose.
+	AngleVectors( hang, f, r, u );
+
+	for( i = 0; i < 3; i++ )
+		world[i] = hand[i] + f[i] * local[0] + r[i] * local[1] + u[i] * local[2];
+
+	// And every control into the world through the bone it was measured in.
+	for( i = 0; i < n && i < 16; i++ )
+	{
+		vec3_t cw, d;
+		int k;
+
+		// Zero radius is how the game DLL says "this one has no usable
+		// position" - never measured, or no frame recorded for it.
+		if( ctl[i].radius <= 0.0f )
+			continue;
+
+		// Only the thumb is solved. The other digits are wrapped around the
+		// grip and have nothing to reach; Part G's table only ever puts a
+		// control under the thumb.
+		if( ctl[i].finger != VR_FINGER_THUMB )
+			continue;
+
+		for( k = 0; k < 3; k++ )
+		{
+			cw[k] = refState.vrFrameMatrix[k][3]
+				+ refState.vrFrameMatrix[k][0] * ctl[i].at[0]
+				+ refState.vrFrameMatrix[k][1] * ctl[i].at[1]
+				+ refState.vrFrameMatrix[k][2] * ctl[i].at[2];
+		}
+
+		VectorSubtract( world, cw, d );
+
+		if( DotProduct( d, d ) <= ctl[i].radius * ctl[i].radius )
+			SetBits( vr.controls_under, 1U << i );
+	}
+}
+
 static void VR_UpdateParts( void )
 {
 	static qboolean grip_prev = false;
@@ -8997,15 +9138,10 @@ void VR_FillCmd( vrcmd_t *out )
 	// if the encoder is the only thing that rounds.
 	out->trigger = (byte)( bound( 0.0f, vr.trigger_value, 1.0f ) * 255.0f );
 
-	// Which controls a finger is on.
-	//
-	// Zero until the grip solver exists (G-01). Saying a control is under
-	// the thumb means knowing where the SOLVED thumb tip is, and that is
-	// what the grip solve produces; guessing it from the controller's own
-	// pose would put the thumb wherever the player's real thumb is rather
-	// than where the hand holding this weapon has it. Zero reads as "no
-	// finger on anything", which is what an uncarded weapon reports anyway.
-	out->controls_under = 0;
+	// Which controls a finger is on. Computed in VR_UpdateControls; zero for
+	// an uncarded weapon, one whose card records no frame to measure in, and
+	// every mod that has never heard of any of this.
+	out->controls_under = vr.controls_under;
 
 	// What the hand on the gun is pressing, raw. The mapping to a control's
 	// effect is game code's, per Part G's table.
@@ -11460,6 +11596,11 @@ qboolean VR_BeginFrame( void )
 	VR_UpdateShoulderMelee();
 	VR_UpdateReload();
 	VR_UpdateParts();
+
+	// After the parts, because the card the controls come from is the same
+	// card that drives them, and because the thumb is placed from the hand
+	// pose this frame.
+	VR_UpdateControls();
 	VR_UpdateAction();
 	VR_UpdateThrow();
 	VR_UpdateMenu2D();

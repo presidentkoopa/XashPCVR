@@ -4135,9 +4135,32 @@ static void R_StudioApplyHandAction( void )
 	int n, i;
 
 	gpGlobals->vrPartCount = 0;
+	gpGlobals->vrFrameValid = false;
 
 	if( !m_pStudioHeader )
 		return;
+
+	// THE ENGINE'S STANDING REQUEST FOR ONE BONE'S TRANSFORM.
+	//
+	// It needs to place things measured in a bone's own frame - a card's
+	// controls and grab points - and this is the only code that computes bone
+	// matrices. Answered before the part scan below, because it is wanted even
+	// for a weapon that declares no parts at all.
+	if( gpGlobals->vrFrameBone[0] )
+	{
+		mstudiobone_t *pb = (mstudiobone_t *)((byte *)m_pStudioHeader + m_pStudioHeader->boneindex );
+
+		for( i = 0; i < m_pStudioHeader->numbones; i++ )
+		{
+			if( Q_stricmp( pb[i].name, gpGlobals->vrFrameBone ))
+				continue;
+
+			memcpy( gpGlobals->vrFrameMatrix, g_studio.bonestransform[i],
+				sizeof( gpGlobals->vrFrameMatrix ));
+			gpGlobals->vrFrameValid = true;
+			break;
+		}
+	}
 
 	n = R_StudioFindParts( RI.currententity );
 

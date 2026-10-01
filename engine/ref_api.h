@@ -246,6 +246,26 @@ typedef struct ref_globals_s
 	vr_part_t vrParts[VR_MAX_PARTS];
 	int       vrPartCount;
 
+	// ONE BONE OF THE VIEW MODEL, BY NAME, IN WORLD SPACE.
+	//
+	// The engine needs to place things that were measured in a bone's own
+	// frame - a weapon card's controls, its grab points, its ejection port -
+	// and only the renderer computes bone matrices. So the engine names the
+	// bone it wants and the renderer fills the matrix on the next frame it
+	// draws that model.
+	//
+	// A request rather than a fixed field because the bone differs per
+	// weapon: a card records which frame it measured in, and that is whatever
+	// the generator decided the weapon's body was.
+	//
+	// One frame of latency, which does not matter for a question asked about
+	// a hand that moves at human speed. Empty name means no request and the
+	// renderer skips it entirely, which is the state for every mod that has
+	// never heard of any of this.
+	char      vrFrameBone[32];      // engine -> renderer
+	float     vrFrameMatrix[3][4];  // renderer -> engine: local to world
+	qboolean  vrFrameValid;         // renderer -> engine: the bone was found
+
 	// todo: fill this without engine help
 	// move to local
 
