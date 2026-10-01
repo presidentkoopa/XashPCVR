@@ -22,7 +22,7 @@ match  bones 54  seqs 8  hash 0xefec1a61
 
 type   magazine_slide  capacity 50  rpm 900
 feed   chamber_on_seat  no_slide_lock
-fire   semi auto  rpm 900
+fire   auto  rpm 900
 
 joint 1  bone "clip"  slide  travel 10.14  rest 0
     grab  point 7.20 9.89 4.02  radius 3.0

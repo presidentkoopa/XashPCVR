@@ -65,6 +65,11 @@ fuse   3000
 # stowed, on three euler channels at once rather than the one clean axis the
 # pull uses. Flourish, not mechanism. The pull is 66.50 deg.
 joint 0  bone "ring"  hinge  travel 1.16  rest 0
+    # A PIN RING HAS NO RETURN SPRING. Stated as an explicit zero rather than
+    # left silent: silence means "use the default for this kind of joint", and
+    # that default is a pistol slide's return, which climbed the ring back into
+    # the fuse the moment the hand came off it.
+    spring 0
 
     # THE PIN COMES CLEAR AT THE TOP OF THE SWING. Measured: the pin is
     # seated for the whole of frames 8-15 and gone on frame 16, so the real

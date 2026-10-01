@@ -64,7 +64,7 @@ feed   chamber_on_seat  no_slide_lock
 # Half-Life's MP5 is automatic only. The semi position is the real MP5A3's,
 # and Part G's selector exists to offer it; the auto position is what the
 # game has always done.
-fire   semi auto  rpm 600
+fire   auto  rpm 600
 
 # JOINT 0 IS THE PRESET'S ACTION, AND IT KEEPS NO BONE. magazine_slide
 # declares it, and it stays bodiless on purpose: with `self_loading` still

@@ -29,6 +29,11 @@ fuse   3500        # Half-Life's, and it starts when the SPOON goes
 # The ring. Pulled until the pin is clear of its lugs - measured at 1.16
 # radians, which is the whole of the pinpull animation's travel.
 joint 0  bone "ring"  hinge  travel 1.16  rest 0
+    # A PIN RING HAS NO RETURN SPRING. Stated as an explicit zero rather than
+    # left silent: silence means "use the default for this kind of joint", and
+    # that default is a pistol slide's return, which climbed the ring back into
+    # the fuse the moment the hand came off it.
+    spring 0
     point pin_clear at 0.70
     grab  point 0.00 0.00 0.00  radius 2.0
 
