@@ -9159,9 +9159,20 @@ void VR_FillCmd( vrcmd_t *out )
 	{
 		vec3_t muzzle;
 
-		vec3_t fwd;
+		// ANGLES, NOT A DIRECTION, and the name is the whole of the bug this
+		// replaces. VR_GetWeaponAim's second parameter is out_ANGLES - every
+		// other one of its six callers names the local `ang` or `wang`. This
+		// one called it `fwd` and then tested element [2] as if it were a
+		// direction's Z. Element [2] of an angle triple is ROLL, in degrees,
+		// so VRCMD_FL_MUZZLE_UP was set whenever the wrist was rolled more
+		// than half a degree clockwise, and never because the barrel was
+		// pointed up. The revolver reads that flag to decide whether gravity
+		// would empty its cylinder (vr_gun.cpp, `muzzle_up`), so it dumped
+		// its cases on a wrist twitch and would not dump them when held
+		// muzzle-up over the hand.
+		vec3_t ang, fwd;
 
-		if( VR_WeaponOriginActive( ) && VR_GetWeaponAim( muzzle, fwd ))
+		if( VR_WeaponOriginActive( ) && VR_GetWeaponAim( muzzle, ang ))
 		{
 			VectorCopy( muzzle, out->muzzle );
 			SetBits( out->flags, VRCMD_FL_MUZZLE );
@@ -9170,6 +9181,12 @@ void VR_FillCmd( vrcmd_t *out )
 			// A flag rather than the angle itself, because the only
 			// question game code ever asks of it is this one, and a flag
 			// bit is free where three more floats are not.
+			//
+			// Through AngleVectors rather than off the pitch directly: pitch
+			// alone is the elevation only while roll is zero, and a hand
+			// holding a revolver up to tip it out is rolled by definition.
+			AngleVectors( ang, fwd, NULL, NULL );
+
 			if( fwd[2] > 0.5f )
 				SetBits( out->flags, VRCMD_FL_MUZZLE_UP );
 		}
