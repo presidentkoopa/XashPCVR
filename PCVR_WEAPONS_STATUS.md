@@ -68,7 +68,7 @@ retail content the only binding target — see the card section.
 | **F** Held weapon as an object | done, gated | `engine/client/vr/vr_hold.*`, behind `vr_hold_sim`, default 0 |
 | **G** Hands on the gun | **mostly** | grip solver built from the authored fist; six cards now carry measured controls, none a placeholder |
 | **H** Sights and scopes | **part** | zoom suppressed for hand-loaders; offscreen view targets built and self-testable; both scopes measured. No lens syntax, no lens drawing. |
-| **I** World and body | not started | — |
+| **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What is missing is the slots themselves - holstering and drawing - not the body under them. |
 | **J** Half-Life's arsenal | **part** | 18 HD cards written, 6 verified clean |
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
 | **L** Malfunctions, fidelity | **done** (simulator side) | `hlsdk/dlls/vr_feed.*` - three levels, three jams, deterministic rolls |

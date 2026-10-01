@@ -401,6 +401,32 @@ static CVAR_DEFINE_AUTO( vr_pouch_fwd, "4", FCVAR_ARCHIVE, "ammo pouch, forward 
 static CVAR_DEFINE_AUTO( vr_pouch_out, "2", FCVAR_ARCHIVE, "ammo pouch, outboard of the hip JOINT, units" );
 static CVAR_DEFINE_AUTO( vr_pouch_up, "0", FCVAR_ARCHIVE, "ammo pouch, above the hip JOINT, units" );
 static CVAR_DEFINE_AUTO( vr_pouch_radius, "20", FCVAR_ARCHIVE, "ammo pouch size once solved, units" );
+
+// HOLSTERS (Part I-01). Default OFF, and the two slots are the two that were
+// free: the shoulders are the melee swap and the flashlight, and the off-hand
+// hip is the ammo pouch above.
+//
+// The assignment lives in an archived cvar rather than a save file, so it is
+// inspectable, scriptable, survives a restart for nothing, and is per player
+// on their own client - which is what the plan asks for.
+static CVAR_DEFINE_AUTO( vr_holsters, "0", FCVAR_ARCHIVE, "reach to a holster to draw the weapon kept there" );
+static CVAR_DEFINE_AUTO( vr_holster_grab, "1", FCVAR_ARCHIVE, "a holster needs the hand closed, not just passing through" );
+static CVAR_DEFINE_AUTO( vr_holster_hip, "", FCVAR_ARCHIVE, "weapon kept on the dominant hip; set it with vr_holster hip" );
+static CVAR_DEFINE_AUTO( vr_holster_chest, "", FCVAR_ARCHIVE, "weapon kept on the chest; set it with vr_holster chest" );
+// Geometry in the TORSO frame - forward, outboard, up - exactly as the pouch's
+// is, and outboard is positive on both hands because the anchor carries the
+// side.
+static CVAR_DEFINE_AUTO( vr_holster_hip_fwd, "2", FCVAR_ARCHIVE, "hip holster, forward of the hip joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_hip_out, "3", FCVAR_ARCHIVE, "hip holster, outboard of the hip joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_hip_up, "-2", FCVAR_ARCHIVE, "hip holster, above the hip joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_hip_radius, "9", FCVAR_ARCHIVE, "hip holster size, units" );
+// The chest rides the NECK anchor with a drop, because the solve computes
+// anchor_chest but VR_HandInGestureSpot has no id for it yet. Adding one is a
+// three-line change; it is left until something needs the chest precisely.
+static CVAR_DEFINE_AUTO( vr_holster_chest_fwd, "5", FCVAR_ARCHIVE, "chest holster, forward of the neck joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_chest_out, "3", FCVAR_ARCHIVE, "chest holster, outboard of the neck joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_chest_up, "-8", FCVAR_ARCHIVE, "chest holster, above the neck joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_chest_radius, "9", FCVAR_ARCHIVE, "chest holster size, units" );
 static CVAR_DEFINE_AUTO( vr_seated, "0", FCVAR_ARCHIVE, "seated play: no physical crouch, and the view is raised to standing height" );
 static CVAR_DEFINE_AUTO( vr_seated_lift, "0", FCVAR_ARCHIVE, "extra height for seated play; normally 0 - the view is already anchored to the mod's eye position, so lifting it only makes the player tall" );
 static CVAR_DEFINE_AUTO( vr_crouch, "1", FCVAR_ARCHIVE, "duck by physically ducking" );
@@ -9450,6 +9476,274 @@ server has acknowledged the switch, so a loop inside one frame would compare
 against a stale value and run to its limit every time.
 ================
 */
+
+/*
+=================================================================
+HOLSTERS (Part I-01)
+
+Reach to your hip and the pistol is in your hand. Reach to your chest and it
+is a grenade.
+
+WHAT THIS IS BUILT ON, all of which already existed:
+
+  - The solved torso. `vr_body` has been solving a neck, a chest, two
+    shoulders and two hips from the head and hands since before this, and it
+    is default on. Five of the six slots the plan asks for already have an
+    anchor; nothing new is solved here.
+  - VR_HandInGestureSpot, which tests a hand against an anchor-relative point
+    and crossfades from the legacy head-relative spot by the solve's own
+    confidence, so a session with no solve behaves exactly as it did.
+  - Weapon select BY NAME. `VR_ObserveUserMessage` learns every weapon's name
+    from the mod's own WeaponList message, and an unrecognised console command
+    is forwarded to the server, where stock Half-Life's ClientCommand matches
+    anything beginning with `weapon_` and calls SelectItem. So drawing is ONE
+    command and one switch, for any GoldSrc mod, with no new protocol, no new
+    impulse and no game DLL change. The shoulder melee swap already does it
+    this way.
+
+WHY ASSIGNMENT IS A COMMAND AND NOT A GESTURE, which is a departure from the
+plan and worth stating plainly. The plan says "release the weapon near it to
+holster; close the hand there to draw". Releasing cannot mean what it sounds
+like: Half-Life has no empty-handed state. There is no "holster all" - the
+player is always holding something, and the existing shoulder swap stows a
+weapon by switching to the crowbar, which is a stand-in and not a holster.
+
+Making the same gesture both assign and draw is also ambiguous: reaching an
+assigned slot while holding something else must draw, and reaching it while
+holding the assigned weapon would have to mean something else again.
+
+So assignment is explicit - `vr_holster hip` with the pistol in hand - and the
+gesture does exactly one thing, which is draw. The assignment lives in an
+archived cvar, so it is inspectable, scriptable, survives a restart for free,
+and is per player on their own client exactly as the plan requires. When the
+game grows a real empty-handed state the gesture can grow the other half.
+
+DEFAULT OFF, and the two slots used here are the two that were FREE. The
+shoulder hotspots are the melee swap and the flashlight, and the off-hand hip
+is the ammo pouch; the plan would eventually have holsters replace the
+shoulder one, but that is a behaviour change to something that works today and
+is not this change's business.
+=================================================================
+*/
+#define VR_HOLSTER_HIP    0
+#define VR_HOLSTER_CHEST  1
+#define VR_HOLSTER_COUNT  2
+
+// Which solved anchor each slot hangs off, in VR_HandInGestureSpot's terms:
+// 0 = neck, 1 = shoulder[hand], 2 = hip[hand]. The chest has no id of its own
+// yet and the neck is the nearest thing above it, so the chest slot rides the
+// neck anchor with a downward offset - see the cvar defaults.
+static const struct
+{
+	const char *name;
+	int         anchor;
+} vr_holster_def[VR_HOLSTER_COUNT] =
+{
+	{ "hip",   2 },
+	{ "chest", 0 },
+};
+
+static struct
+{
+	qboolean inside;        // edge state, so a resting hand does not re-draw
+	double   next_time;     // and a rate limit, so a switch can land
+} vr_holster_state[VR_HOLSTER_COUNT];
+
+static convar_t *VR_HolsterCvar( int slot )
+{
+	switch( slot )
+	{
+	case VR_HOLSTER_HIP:   return &vr_holster_hip;
+	case VR_HOLSTER_CHEST: return &vr_holster_chest;
+	default:               return NULL;
+	}
+}
+
+/*
+================
+VR_HolsterCmd
+
+  vr_holster                 - what is in each slot
+  vr_holster <slot>          - put the weapon now held into that slot
+  vr_holster <slot> none     - empty it
+  vr_holster <slot> <weapon> - name it outright, for a config file
+================
+*/
+static void VR_HolsterCmd( void )
+{
+	const char *which, *what;
+	convar_t *cv;
+	int i, slot = -1;
+
+	if( Cmd_Argc() < 2 )
+	{
+		Con_Printf( "holsters:\n" );
+		for( i = 0; i < VR_HOLSTER_COUNT; i++ )
+		{
+			cv = VR_HolsterCvar( i );
+			Con_Printf( "  %-6s %s\n", vr_holster_def[i].name,
+				( cv && cv->string[0] ) ? cv->string : "(empty)" );
+		}
+		Con_Printf( "usage: vr_holster <%s|%s> [weapon_name|none]\n",
+			vr_holster_def[0].name, vr_holster_def[1].name );
+		return;
+	}
+
+	which = Cmd_Argv( 1 );
+
+	for( i = 0; i < VR_HOLSTER_COUNT; i++ )
+	{
+		if( !Q_stricmp( which, vr_holster_def[i].name ))
+			slot = i;
+	}
+
+	if( slot < 0 )
+	{
+		Con_Printf( S_ERROR "no holster called \"%s\"\n", which );
+		return;
+	}
+
+	cv = VR_HolsterCvar( slot );
+	if( !cv )
+		return;
+
+	if( Cmd_Argc() >= 3 )
+	{
+		what = Cmd_Argv( 2 );
+
+		if( !Q_stricmp( what, "none" ) || !Q_stricmp( what, "clear" ))
+		{
+			Cvar_DirectSet( cv, "" );
+			Con_Printf( "%s holster emptied\n", vr_holster_def[slot].name );
+			return;
+		}
+
+		Cvar_DirectSet( cv, what );
+		Con_Printf( "%s holster: %s\n", vr_holster_def[slot].name, what );
+		return;
+	}
+
+	// No name given: take whatever is in hand. This is the normal way to use
+	// it - hold the pistol, say `vr_holster hip`, and it is yours from then on.
+	what = VR_CurrentWeaponName();
+
+	if( !what || !what[0] )
+	{
+		Con_Printf( S_ERROR "the mod has not said what this weapon is called"
+			" - hold a weapon, or name it: vr_holster %s weapon_9mmhandgun\n",
+			vr_holster_def[slot].name );
+		return;
+	}
+
+	Cvar_DirectSet( cv, what );
+	Con_Printf( "%s holster: %s\n", vr_holster_def[slot].name, what );
+}
+
+/*
+================
+VR_UpdateHolsters
+
+Once per frame, beside the other reach gestures.
+================
+*/
+static void VR_UpdateHolsters( void )
+{
+	int slot;
+
+	if( !VR_IsActive() || vr_holsters.value == 0.0f )
+		return;
+
+	for( slot = 0; slot < VR_HOLSTER_COUNT; slot++ )
+	{
+		convar_t *cv = VR_HolsterCvar( slot );
+		vec3_t legacy_sbl, joint_fou;
+		qboolean inside, closed;
+		int hand;
+		float fwd, out, up, radius;
+
+		if( !cv || !cv->string[0] )
+			continue;
+
+		if( slot == VR_HOLSTER_HIP )
+		{
+			hand = VR_DominantHand();
+			fwd = vr_holster_hip_fwd.value;
+			out = vr_holster_hip_out.value;
+			up = vr_holster_hip_up.value;
+			radius = vr_holster_hip_radius.value;
+		}
+		else
+		{
+			hand = VR_OffHand();
+			fwd = vr_holster_chest_fwd.value;
+			out = vr_holster_chest_out.value;
+			up = vr_holster_chest_up.value;
+			radius = vr_holster_chest_radius.value;
+		}
+
+		VectorSet( joint_fou, fwd, out, up );
+
+		// NO LEGACY SPOT. The head-relative fallback exists so that gestures
+		// which predate the body solve do not move when it engages; this
+		// gesture has no history to preserve, and a hip measured from the HEAD
+		// is not a hip at all. Giving the legacy arm the same offsets would
+		// place the slot a foot and a half too high whenever the solve has not
+		// settled, which is worse than not firing - so the slot simply does
+		// not exist until the body is solved, and the confidence crossfade
+		// below reads zero until then.
+		VectorCopy( joint_fou, legacy_sbl );
+
+		if( !vr.body_valid || vr.body_conf <= 0.5f )
+		{
+			vr_holster_state[slot].inside = false;
+			continue;
+		}
+
+		inside = VR_HandInGestureSpot( hand, vr_holster_def[slot].anchor,
+			legacy_sbl, joint_fou, radius, radius, NULL );
+
+		// The hand must CLOSE on the slot, not merely pass through it - the
+		// same rule the shoulder hotspots use, and for the same reason: a hand
+		// swinging past your hip while you walk is not a draw.
+		closed = ( hand == VR_OffHand())
+			? VR_GetButton( VR_BTN_OFFGRIP )
+			: VR_GetButton( VR_BTN_ATTACK2 );
+
+		if( vr_holster_grab.value != 0.0f && !closed )
+			inside = false;
+
+		// Edge, and a rate limit. m_iId does not update until the server has
+		// acknowledged a switch, and the shoulder swap learned the hard way
+		// that firing one per frame issues a dozen before the first lands.
+		if( inside && !vr_holster_state[slot].inside
+			&& host.realtime >= vr_holster_state[slot].next_time )
+		{
+			const char *held = VR_CurrentWeaponName();
+
+			// Already holding it. Not an error and not worth a sound - a
+			// player resting a hand on their hip with the pistol out should
+			// get nothing at all.
+			if( !held || Q_stricmp( held, cv->string ))
+			{
+				Cbuf_AddText( va( "%s\n", cv->string ));
+
+				// The confirm Half-Life plays for its own weapon select.
+				// Selecting by name bypasses that HUD path, so without this
+				// the draw is silent - correct, but it does not feel like it
+				// happened. Same reasoning as the shoulder swap's.
+				S_StartLocalSound( "common/wpn_select.wav", VOL_NORM, false );
+				VR_Haptic( hand, 0.05f, 0.0f, 0.6f );
+				VR_DiagPrintf( "HOLSTER %s drew %s\n",
+					vr_holster_def[slot].name, cv->string );
+			}
+
+			vr_holster_state[slot].next_time = host.realtime + 0.35;
+		}
+
+		vr_holster_state[slot].inside = inside;
+	}
+}
+
 static void VR_UpdateShoulderMelee( void )
 {
 	// NOT WHILE CLIMBING.
@@ -9891,6 +10185,19 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_grab );
+	Cvar_RegisterVariable( &vr_holsters );
+	Cvar_RegisterVariable( &vr_holster_grab );
+	Cvar_RegisterVariable( &vr_holster_hip );
+	Cvar_RegisterVariable( &vr_holster_chest );
+	Cvar_RegisterVariable( &vr_holster_hip_fwd );
+	Cvar_RegisterVariable( &vr_holster_hip_out );
+	Cvar_RegisterVariable( &vr_holster_hip_up );
+	Cvar_RegisterVariable( &vr_holster_hip_radius );
+	Cvar_RegisterVariable( &vr_holster_chest_fwd );
+	Cvar_RegisterVariable( &vr_holster_chest_out );
+	Cvar_RegisterVariable( &vr_holster_chest_up );
+	Cvar_RegisterVariable( &vr_holster_chest_radius );
+	Cmd_AddCommand( "vr_holster", VR_HolsterCmd, "keep the held weapon in a holster: vr_holster <hip|chest> [weapon|none]" );
 	Cvar_RegisterVariable( &vr_shoulder_radius );
 	Cvar_RegisterVariable( &vr_shoulder_side );
 	Cvar_RegisterVariable( &vr_shoulder_back );
@@ -12018,6 +12325,7 @@ qboolean VR_BeginFrame( void )
 	// were located, or every hotspot answers from last frame's body.
 	VR_BodyUpdate();
 	VR_UpdateShoulderMelee();
+	VR_UpdateHolsters();
 	VR_UpdateReload();
 	VR_UpdateParts();
 
