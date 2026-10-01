@@ -1266,6 +1266,9 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 		|| from->stick_x != to->stick_x || from->stick_y != to->stick_y )
 		SetBits( changed, VRCMD_D_FINGER );
 
+	if( from->grab_ent != to->grab_ent )
+		SetBits( changed, VRCMD_D_GRAB );
+
 	MSG_WriteByte( msg, changed );
 
 	if( FBitSet( changed, VRCMD_D_PARTS ))
@@ -1297,6 +1300,9 @@ static void CL_WriteVRCmd( sizebuf_t *msg, const vrcmd_t *from, const vrcmd_t *t
 		MSG_WriteChar( msg, to->stick_x );
 		MSG_WriteChar( msg, to->stick_y );
 	}
+
+	if( FBitSet( changed, VRCMD_D_GRAB ))
+		MSG_WriteWord( msg, to->grab_ent );
 }
 
 /*

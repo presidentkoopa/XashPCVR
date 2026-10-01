@@ -61,7 +61,7 @@ code can difference.
 // Bumped when this struct's layout changes. Rides the capability handshake, so
 // two builds that disagree refuse each other at connect rather than quietly
 // reading each other's bytes wrong.
-#define VRCMD_VERSION 4
+#define VRCMD_VERSION 5
 
 // What the off hand is carrying. Not a count - the hand holds one thing at a
 // time, which is what makes a magazine and a shell the same two gestures.
@@ -153,6 +153,34 @@ typedef struct vrcmd_s
 	unsigned char buttons;
 	signed char   stick_x;
 	signed char   stick_y;
+
+	// ---- v5: what the off hand is closing on -----------------------------
+	//
+	// The entity index of the nearest thing within reach of the off hand at
+	// the moment it closed, or 0 for nothing. Part I's "closing a hand on it"
+	// gesture.
+	//
+	// A PROPOSAL, NOT A CLAIM, and that distinction is the whole design. The
+	// engine knows where the hands are and the game knows what is worth
+	// picking up, so neither can decide this alone. The client therefore
+	// offers the nearest entity it can see - whatever it is, grabbable or not,
+	// without filtering - and the game looks it up, decides whether it is a
+	// thing a hand can take, and bounds it by distance from the player before
+	// acting. A proposal that is wrong, stale or invented is simply refused.
+	//
+	// This is also why grabbability does NOT have to be networked. It is
+	// tempting to think the client needs to know which entities are grabbable
+	// in order to pick one - entity_state_t carries no movetype, so it cannot
+	// - but it does not need to know: "nearest entity to my hand" is a
+	// question about geometry, which the client has, and every other part of
+	// the decision belongs to the server anyway.
+	//
+	// ONE HAND, deliberately. The off hand is the one that fetches on every
+	// other gesture in this fork - the pouch, a round to the port, a magazine
+	// into the well - because the dominant hand is holding the weapon. A
+	// second slot for the dominant hand is the obvious extension and is what
+	// picking a dropped WEAPON up will want; it is not pretended to exist.
+	unsigned short grab_ent;
 } vrcmd_t;
 
 #endif // VRCMD_H

@@ -31,6 +31,19 @@ set "PLAY=E:\XashWork\XashVR"
 set "VS=C:\Program Files\Microsoft Visual Studio\18\Community"
 set "CMAKE=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 
+rem ====================================================================
+rem EXIT CODES: EVERY FAILURE PATH GOES THROUGH :fail.
+rem
+rem It used to `exit /b 1` from inside the parenthesised `if %DO_BUILD%==1 (
+rem ... )` block, and that reported SUCCESS. The block printed FAILED, stopped
+rem before deploying, and handed back 0 - so anything reading the exit code
+rem was told a broken build had shipped. Caught by breaking the game DLL on
+rem purpose and watching this return 0 with "error C2059" on screen.
+rem
+rem Same family as the two lies vr_test_all.bat already carries warnings
+rem about: a runner that cannot report its own failure is worse than no
+rem runner, because it converts a loud failure into a silent one.
+rem ====================================================================
 set DO_BUILD=1
 set DO_LAUNCH=1
 set DO_TESTS=0
@@ -47,7 +60,7 @@ if %DO_TESTS%==1 (
 	if errorlevel 1 (
 		echo       FAILED - not deploying code that does not pass its own tests
 		type "%TEMP%\pt_tests.txt" | findstr /i /c:"FAIL" /c:"BUILD FAILED"
-		exit /b 1
+		goto :fail
 	)
 	for /f %%N in ('type "%TEMP%\pt_tests.txt" ^| find /c "  ok   "') do echo       %%N cases pass
 )
@@ -59,7 +72,7 @@ if %DO_BUILD%==1 (
 	if errorlevel 1 (
 		echo       FAILED
 		type "%TEMP%\pt_engine.txt" | findstr /i /c:"error" /c:"Error"
-		popd & exit /b 1
+		popd & goto :fail
 	)
 	popd
 	echo       ok
@@ -69,13 +82,13 @@ if %DO_BUILD%==1 (
 	if errorlevel 1 (
 		echo       FAILED
 		type "%TEMP%\pt_dlls.txt" | findstr /i /c:"error"
-		exit /b 1
+		goto :fail
 	)
 	echo       ok
 
 	echo [4/5] deploy engine, DLLs and cards to %PLAY% ...
 	python "%ENGINE%\tools\deploy.py" "%PLAY%" --arch 32
-	if errorlevel 1 ( echo       FAILED & exit /b 1 )
+	if errorlevel 1 ( echo       FAILED & goto :fail )
 )
 
 if %DO_LAUNCH%==0 (
@@ -121,3 +134,15 @@ set "GLCHK=+gl_check_errors 0"
 for %%A in (%*) do if /i "%%A"=="-glcheck" set "GLCHK=+gl_check_errors 1"
 
 call "%PLAY%\run.bat" %GLCHK% %*
+
+rem ...and a clean run must not fall THROUGH into the failure label below,
+rem which is the other half of getting exit codes right.
+exit /b 0
+
+rem ---- the only failure exit, and it is at TOP LEVEL on purpose --------
+rem `exit /b 1` from inside a parenthesised block reported 0. Everything that
+rem fails jumps here instead.
+:fail
+echo.
+echo BUILD OR TESTS FAILED - nothing was deployed and nothing was launched.
+exit /b 1

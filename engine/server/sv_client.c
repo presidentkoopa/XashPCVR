@@ -3313,6 +3313,24 @@ static void SV_ParseVRCmd( sv_client_t *cl, sizebuf_t *msg )
 			to->stick_y = MSG_ReadChar( msg );
 		}
 
+		if( FBitSet( changed, VRCMD_D_GRAB ))
+		{
+			// RANGE-CHECKED HERE, not where it is used. It is an index off the
+			// wire that will be handed to a game DLL, and the game DLL is
+			// entitled to assume anything the engine passes it is a number the
+			// engine believes in. A client claiming entity 60000 gets a zero,
+			// which the game reads as "nothing", rather than an index into
+			// whatever happens to be past the end of the edict array.
+			//
+			// This is only the index being plausible. Whether the entity is
+			// grabbable and whether the player is anywhere near it are the
+			// game's checks, because both are the game's knowledge.
+			int ent = MSG_ReadWord( msg );
+
+			to->grab_ent = ( ent > 0 && ent < svgame.numEntities )
+				? (unsigned short)ent : 0;
+		}
+
 		from = to;
 	}
 

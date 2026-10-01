@@ -410,6 +410,12 @@ static CVAR_DEFINE_AUTO( vr_pouch_radius, "20", FCVAR_ARCHIVE, "ammo pouch size 
 // inspectable, scriptable, survives a restart for nothing, and is per player
 // on their own client - which is what the plan asks for.
 static CVAR_DEFINE_AUTO( vr_holsters, "0", FCVAR_ARCHIVE, "reach to a holster to draw the weapon kept there" );
+// Part I's grab. How far from the palm an object may be and still be the thing
+// the hand closed on. Default ON because the gesture is additive - an empty
+// off hand closing on nothing has always done nothing - and because the game
+// refuses every proposal it does not like, so the worst a wrong reach does is
+// propose something the server declines.
+static CVAR_DEFINE_AUTO( vr_grab_reach, "6", FCVAR_ARCHIVE, "how far from the palm a thing can be and still be grabbed, units" );
 static CVAR_DEFINE_AUTO( vr_holster_grab, "1", FCVAR_ARCHIVE, "a holster needs the hand closed, not just passing through" );
 static CVAR_DEFINE_AUTO( vr_holster_hip, "", FCVAR_ARCHIVE, "weapon kept on the dominant hip; set it with vr_holster hip" );
 static CVAR_DEFINE_AUTO( vr_holster_chest, "", FCVAR_ARCHIVE, "weapon kept on the chest; set it with vr_holster chest" );
@@ -807,6 +813,12 @@ static struct
 	// than a linear filter, because a player facing near +/-180 averages to
 	// zero under a linear one.
 	float         torso_yaw, torso_S, torso_C, torso_Z, torso_conf;
+
+	// Part I's grab proposal, latched on the closing edge and cleared when the
+	// hand opens - so it is sent for as long as the hand is shut, which is
+	// what lets the server act on a command it receives late.
+	unsigned short grab_ent;
+	qboolean      grab_grip_prev;
 
 	vec3_t        anchor_neck, anchor_chest;
 	vec3_t        anchor_shoulder[2], anchor_hip[2];
@@ -9078,6 +9090,91 @@ Safe to call with no headset and safe to call every frame; an inactive VR
 layer simply leaves the block zeroed, which reads as "no hands, nothing held".
 ================
 */
+
+/*
+================
+VR_NearestGrabbable
+
+The entity nearest the off hand, or 0.
+
+A PROPOSAL, NOT A CLAIM. Nothing here asks whether the entity is worth picking
+up: the client cannot know, because entity_state_t carries no movetype and no
+"grabbable" flag, and it does not need to know. "What is nearest my hand" is a
+question about geometry, which the client has; everything else about the
+decision is the server's, and the game refuses a proposal it does not like.
+
+Which also means this never has to be kept in step with whatever the game
+decides is grabbable. A mod that adds a pickable bucket gets the gesture for
+free, because the engine was never told what a magazine was.
+
+ONLY ON THE EDGE OF A CLOSING HAND. A hand that is already shut and walking
+through the world should not keep proposing whatever it brushes past - that
+would be a stream of claims the server has to refuse, and on a busy frame the
+nearest thing to a closed fist is usually the player's own weapon.
+
+Measured from the GRIP pose rather than the aim pose, because the grip pose is
+where the palm is and a controller's aim pose is some distance in front of it;
+on an Index they differ by enough to miss everything you are holding.
+================
+*/
+static int VR_NearestGrabbable( void )
+{
+	frame_t *frame;
+	vec3_t hand, hang;
+	int best = 0, pnum;
+	float best_d2, reach;
+
+	if( !VR_GetHandGripWorld( VR_OffHand(), hand, hang ))
+		return 0;
+
+	reach = vr_grab_reach.value;
+
+	if( reach <= 0.0f )
+		return 0;
+
+	best_d2 = reach * reach;
+
+	// The frame the client last received, which is exactly the set of
+	// entities it is entitled to know about. Walking clgame.entities instead
+	// would include entities that have left the player's PVS and are sitting
+	// in the array with stale positions.
+	frame = &cl.frames[cl.parsecountmod];
+
+	for( pnum = 0; pnum < frame->num_entities; pnum++ )
+	{
+		entity_state_t *state = &cls.packet_entities[
+			( frame->first_entity + pnum ) % cls.num_client_entities];
+		vec3_t d, mid;
+		float d2;
+
+		if( !state || state->number <= 0 )
+			continue;
+
+		// Not the player, and not another player: a hand closing on a
+		// teammate is not a pickup and the server would refuse it anyway.
+		if( CL_IsPlayerIndex( state->number ))
+			continue;
+
+		// The middle of its bounds rather than its origin. A model's origin
+		// is wherever the artist left it - often on the floor under the
+		// object - and a magazine lying flat would read as half an inch
+		// further away than it looks.
+		VectorAverage( state->mins, state->maxs, mid );
+		VectorAdd( state->origin, mid, mid );
+
+		VectorSubtract( mid, hand, d );
+		d2 = DotProduct( d, d );
+
+		if( d2 < best_d2 )
+		{
+			best_d2 = d2;
+			best = state->number;
+		}
+	}
+
+	return best;
+}
+
 void VR_FillCmd( vrcmd_t *out )
 {
 	int i, n;
@@ -9201,6 +9298,21 @@ void VR_FillCmd( vrcmd_t *out )
 
 	out->stick_x = (signed char)( bound( -1.0f, vr.turn_x, 1.0f ) * 127.0f );
 	out->stick_y = (signed char)( bound( -1.0f, vr.turn_y, 1.0f ) * 127.0f );
+
+	// WHAT THE OFF HAND JUST CLOSED ON, on the edge only. See
+	// VR_NearestGrabbable: a proposal the game is free to refuse, computed
+	// from geometry the client has and nothing else.
+	{
+		qboolean grip = VR_GetButton( VR_BTN_OFFGRIP ) ? true : false;
+
+		if( grip && !vr.grab_grip_prev )
+			vr.grab_ent = (unsigned short)VR_NearestGrabbable();
+		else if( !grip )
+			vr.grab_ent = 0;
+
+		vr.grab_grip_prev = grip;
+		out->grab_ent = vr.grab_ent;
+	}
 
 	// The muzzle, folded in from the usercmd reserved[] carrier it has been
 	// riding in. That carrier works but is full - four slots spent on one
@@ -10216,6 +10328,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_grab );
+	Cvar_RegisterVariable( &vr_grab_reach );
 	Cvar_RegisterVariable( &vr_holsters );
 	Cvar_RegisterVariable( &vr_holster_grab );
 	Cvar_RegisterVariable( &vr_holster_hip );

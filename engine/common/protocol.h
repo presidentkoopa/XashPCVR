@@ -316,7 +316,7 @@ extern const char *const svc_goldsrc_strings[svc_lastmsg+1];
 // our own builds that disagree about the struct must refuse each other rather
 // than read each other's bytes wrong; the capability bit only says "I speak
 // this", not "I speak this revision of it".
-#define VRCMD_NET_VERSION       4
+#define VRCMD_NET_VERSION       5
 
 // Which groups of a vrcmd_t changed since the previous command in the same
 // packet. A hand that is not moving costs one byte per command.
@@ -330,6 +330,13 @@ extern const char *const svc_goldsrc_strings[svc_lastmsg+1];
 // on most commands a finger is anywhere near it. Sharing a bit would send
 // five unchanged bytes every time the finger twitched.
 #define VRCMD_D_FINGER  (1U<<3) // trigger, controls under fingers, buttons, stick
+
+// The grab proposal gets its own bit for the same reason the finger group
+// does: it is zero on almost every command and non-zero on the handful where
+// a hand closes on something. Joining VRCMD_D_STATE would resend five
+// unchanged bytes on every grab, and joining VRCMD_D_FINGER would resend two
+// unchanged bytes on every trigger twitch.
+#define VRCMD_D_GRAB    (1U<<4) // grab_ent follows
 
 // Sentinel written into usercmd_t.reserved[0] alongside a pose, so a mod that
 // uses these "left for modders" fields for its own purposes is never mistaken

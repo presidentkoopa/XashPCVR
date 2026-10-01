@@ -16,6 +16,23 @@ GNU General Public License for more details.
 #include "common.h"
 #include "server.h"
 #include "vr_gameapi.h"   // PCVR fork: optional VR interface to the game DLL
+#include "vrcmd.h"        // ...and the command layout that API revision carries
+
+// THE VENDORED WIRE STRUCT MATCHES THE API REVISION WE SPEAK.
+//
+// vrcmd.h exists twice on purpose - the game SDK carries its own copy, because
+// a mod author has no engine tree to include from - and until now nothing
+// checked that the two agreed. vrcmd.h's own comment claimed "a mismatch is
+// refused at load"; VRCMD_VERSION was compared in neither tree, and the only
+// other mention of it anywhere was a comment in protocol.h repeating the same
+// promise. A stale copy read these bytes at the wrong offsets, with no symptom
+// but nonsense.
+//
+// The game DLL asserts the same thing against its own copy, so a drift fails
+// to BUILD on whichever side was not updated. Which is where a wire layout
+// belongs: it is decided when the thing is compiled.
+STATIC_ASSERT( VRCMD_VERSION == VR_GAMEAPI_VRCMD,
+	"vrcmd.h and vr_gameapi.h disagree about the command layout" );
 #include "net_encode.h"
 #include "event_flags.h"
 #include "library.h"

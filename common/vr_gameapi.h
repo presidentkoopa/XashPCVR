@@ -46,7 +46,23 @@ the other to work.
 // speaks; a DLL that does not recognise it must return 0 and will be treated
 // as though it never exported anything, rather than reading a table whose
 // layout it is guessing at.
-#define VR_GAMEAPI_VERSION  5
+#define VR_GAMEAPI_VERSION  6
+
+// WHICH vrcmd_t LAYOUT THIS REVISION CARRIES.
+//
+// vrcmd.h is VENDORED: the game DLL has its own copy, because a mod author
+// building against the SDK has no engine tree to include from. So the two can
+// drift, and a drift means one side reads the other's bytes at the wrong
+// offsets - which has no symptom except nonsense.
+//
+// Both trees assert VRCMD_VERSION == VR_GAMEAPI_VRCMD at compile time, so a
+// copy of vrcmd.h that nobody updated cannot be built against this header at
+// all. That is better than a load-time refusal, which is what the comment in
+// vrcmd.h used to promise and what neither tree actually did: VRCMD_VERSION
+// was compared nowhere.
+//
+// BUMP BOTH when vrcmd_t changes shape.
+#define VR_GAMEAPI_VRCMD    5
 
 struct edict_s;
 
