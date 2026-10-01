@@ -207,6 +207,78 @@ capabilities that do not exist. What follows is measured, not inferred.
   OpFor build define. The M40A1 card is real and binds to the retail model; the *weapon* does not
   exist. Part H names both as its targets, so Part H work on them starts by adding the weapons.
 
+## Part I, and the physics-library question answered (1 Oct)
+
+**Part I is about half built, and the half that is built is the BODY half.** The torso solve has
+been there all along and is default on - `VR_BodyUpdate` publishes a neck, both shoulders, both
+hips and a chest in world space every frame, with per-player scaling and a confidence crossfade,
+and it is already ordered before every gesture that reads it. Five of the plan's six slot anchors
+existed before any of today's work.
+
+**Now built:** holsters on the dominant hip and the chest, default off, assigned with
+`vr_holster <hip|chest>` and drawn by reaching with a closed hand. `vr_diag 1` prints each slot's
+distance, radius and solve confidence twice a second, because "the hip holster feels wrong" is not
+a report anybody can act on and "it reads 14 when my hand is on my hip" is.
+
+**The chest anchor had been solved since the body was and read by nothing** - a declaration and one
+write, no consumer anywhere in the engine. It now has an `anchor_id` of its own (3), which matters
+because approximating the chest from the neck moves wrongly the moment the player bends forward:
+the neck anchor pitches with the head and the chest does not.
+
+### The physics library: don't take the dependency yet
+
+The plan asks for "a new move type, handled by the engine's server physics loop with the same
+physics module the client uses". **Two things are wrong with that sentence and the third is a
+recommendation.**
+
+- **There is no such client module.** `vr_hold.h` says so outright: "NO PHYSICS LIBRARY. One rigid
+  body on spring constraints is an integrator, not a simulation. The library the plan calls for is
+  wanted by the WORLD... and that is Part I's problem, not this one." So the dependency would not be
+  shared with anything. Part I would be introducing it alone.
+- **`MOVETYPE_BOUNCE` already does more than the plan credits it with.** It has angular motion
+  (`SV_AngularMove` is called for TOSS/BOUNCE with `pev->friction` as angular damping), it comes to
+  rest, and **it already reports the surface it hit to game code** - `SV_Impact` fires `pfnTouch`
+  with the plane normal even on world hits, because `SV_ClipMoveToEntity` assigns the world edict to
+  `trace.ent`. `TRACE_TEXTURE` plus `TEXTURETYPE_PlaySound` turn that into a material-specific
+  impact sound with **no engine change at all**.
+- **What a library would buy, and only this:** objects settle *flat* instead of freezing mid-spin;
+  an impact changes the spin instead of only the velocity; the collision shape is the object's shape
+  instead of an axis-aligned box that never rotates with the model; and objects can rest on each
+  other. Four things, all cosmetic-but-constantly-visible, and **none of them is required by any
+  functional claim the plan makes** about picking up, carrying, loading or re-equipping.
+
+**Recommendation: build the world objects on `MOVETYPE_BOUNCE` and revisit only if settling flat
+turns out to bother somebody in a headset.** It is the single most visible difference, so that is a
+real possibility - but it is a question worth asking of a thing that exists rather than answered by
+taking a dependency first.
+
+**And the engine already has the general home for it.** `svgame.physFuncs.SV_PhysicsEntity` exists;
+hlsdk declines it (`Server_GetPhysicsInterface` returns FALSE in `cbase.cpp`, and `cbase.h` types the
+struct away as `void *`). The smallest honest first step is therefore zero engine lines and zero new
+dependency: turn that on, spawn a dropped magazine as `MOVETYPE_BOUNCE` with friction set, and give
+it a Touch handler that plays the surface it hit. That proves spawn, simulate, network-as-an-ordinary-
+entity, surface sound and resting before anybody has to decide about a library.
+
+**The grab half is also dependency-free** and is the other large piece: one `grab_ent` byte in
+`vrcmd_t` plus a delta bit, a client-side nearest-grabbable search, a server claim check against the
+reported hand pose with a latency allowance, and drop-with-hand-velocity. `pfnGetVRCmd` already
+whole-struct-copies, so the game DLL needs no API change. The hard parts there are policy, not
+simulation - which entities are grabbable has to be networked, because `movetype` is not in
+`entity_state_t` and the client cannot filter on it.
+
+### What Part I still does not have
+
+- **Three of the six slots.** Both shoulders are spent on the melee swap and the flashlight, so
+  giving them to long guns is a behaviour change to two things that work, not new code. The off-hand
+  wrist HEV display (I-02) does not exist.
+- **Release-to-holster**, blocked on Half-Life having no empty-handed state - which is why
+  assignment is a console command.
+- **Dual wield (I-03)** exists only as a muzzle handoff (`VR_DualWieldActive`, `VR_GetOffhandFire`).
+  A real second active weapon is game-DLL scope: GoldSrc has one `m_pActiveItem` and one refire
+  timer, and both live there.
+- **A dropped weapon carrying its mechanism and round state.** `CWeaponBox` carries ammo counts
+  only; the mechanism lives in the fork's own structs. Pure game-DLL work, no engine or physics part.
+
 ## Where the plan is wrong
 
 Measured, not inferred. 65 corrections were found in one pass; these are the ones that would cost a
@@ -284,10 +356,12 @@ both could save a session.
 
 Then, in order:
 
-3. **Part I — the world and the body.** Holsters, dropping, picking up, the pouch. The largest payoff
-   for feel: it is what makes a reload *feel* like a reload, because the magazine comes off your
-   belt, and it is what makes the carded throwables throwable. **Wants a physics library behind a
-   small C wrapper, which is an engine-scope decision to put to the owner rather than assume.**
+3. **Part I's world half.** The body half is done (holsters land today). **No physics library -
+   see the Part I section: `MOVETYPE_BOUNCE` already spins, rests and reports the surface it hit,
+   and a library buys only settling flat, impact-driven spin, real shapes and stacking.** Two
+   dependency-free pieces, either order: turn on `Server_GetPhysicsInterface` and drop a magazine as
+   a bouncing entity with a surface-sound Touch handler; and the grab path - one `grab_ent` byte in
+   `vrcmd_t`, a nearest-grabbable search, a server claim check, drop with the hand's velocity.
 4. **The melee determinism gap** (defect 6). `VRStrike_Hash`, then `vr_strike` into the matrix. Small,
    and it closes a hole in the one thing the whole fixed-point design rests on.
 5. **Part H-02, the reticle at infinity** — the smallest remaining Part H item and the general

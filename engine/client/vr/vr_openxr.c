@@ -420,12 +420,15 @@ static CVAR_DEFINE_AUTO( vr_holster_hip_fwd, "2", FCVAR_ARCHIVE, "hip holster, f
 static CVAR_DEFINE_AUTO( vr_holster_hip_out, "3", FCVAR_ARCHIVE, "hip holster, outboard of the hip joint, units" );
 static CVAR_DEFINE_AUTO( vr_holster_hip_up, "-2", FCVAR_ARCHIVE, "hip holster, above the hip joint, units" );
 static CVAR_DEFINE_AUTO( vr_holster_hip_radius, "9", FCVAR_ARCHIVE, "hip holster size, units" );
-// The chest rides the NECK anchor with a drop, because the solve computes
-// anchor_chest but VR_HandInGestureSpot has no id for it yet. Adding one is a
-// three-line change; it is left until something needs the chest precisely.
-static CVAR_DEFINE_AUTO( vr_holster_chest_fwd, "5", FCVAR_ARCHIVE, "chest holster, forward of the neck joint, units" );
-static CVAR_DEFINE_AUTO( vr_holster_chest_out, "3", FCVAR_ARCHIVE, "chest holster, outboard of the neck joint, units" );
-static CVAR_DEFINE_AUTO( vr_holster_chest_up, "-8", FCVAR_ARCHIVE, "chest holster, above the neck joint, units" );
+// Measured from the solved CHEST, which is midway between the neck and the
+// hips. It had been solved since the body was and read by nothing - this is
+// its first consumer. The first draft of this slot approximated it from the
+// neck with an eight-unit drop, which moves wrongly the moment the player
+// bends forward, because the neck anchor pitches with the head and the chest
+// does not.
+static CVAR_DEFINE_AUTO( vr_holster_chest_fwd, "5", FCVAR_ARCHIVE, "chest holster, forward of the chest joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_chest_out, "3", FCVAR_ARCHIVE, "chest holster, outboard of the chest joint, units" );
+static CVAR_DEFINE_AUTO( vr_holster_chest_up, "0", FCVAR_ARCHIVE, "chest holster, above the chest joint, units" );
 static CVAR_DEFINE_AUTO( vr_holster_chest_radius, "9", FCVAR_ARCHIVE, "chest holster size, units" );
 static CVAR_DEFINE_AUTO( vr_seated, "0", FCVAR_ARCHIVE, "seated play: no physical crouch, and the view is raised to standing height" );
 static CVAR_DEFINE_AUTO( vr_seated_lift, "0", FCVAR_ARCHIVE, "extra height for seated play; normally 0 - the view is already anchored to the mod's eye position, so lifting it only makes the player tall" );
@@ -8208,6 +8211,20 @@ joint_fou is (forward, outboard, up) in the TORSO frame, and outboard is
 positive on BOTH hands: the anchor carries the side. That is what deletes the
 three hand-is-left-so-negate flips this file used to need, which were the only
 place handedness leaked into hotspot arithmetic.
+
+anchor_id picks which solved joint the offset is measured from:
+
+    0  neck      midline, at the base of the neck
+    1  shoulder  the acromion on this hand's side
+    2  hip       the hip joint on this hand's side
+    3  chest     midline, between the neck and the hips
+
+The chest was solved from the day the body was and read by NOTHING for as long
+- declaration and one write, no consumer anywhere in the engine. It is here
+because the chest is where the plan hangs grenades, satchels and tripmines, and
+because a slot approximating it from the neck with an eight-unit drop is a slot
+that moves wrongly the moment the player bends forward: the neck anchor pitches
+with the head, the chest does not.
 ================
 */
 static qboolean VR_HandInGestureSpot( int hand_id, int anchor_id,
@@ -8242,6 +8259,7 @@ static qboolean VR_HandInGestureSpot( int hand_id, int anchor_id,
 
 		if( anchor_id == 1 )      VectorCopy( vr.anchor_shoulder[hand_id], base );
 		else if( anchor_id == 2 ) VectorCopy( vr.anchor_hip[hand_id], base );
+		else if( anchor_id == 3 ) VectorCopy( vr.anchor_chest, base );
 		else                      VectorCopy( vr.anchor_neck, base );
 
 		VectorSet( tang, 0.0f, vr.torso_yaw, 0.0f );
@@ -9530,9 +9548,7 @@ is not this change's business.
 #define VR_HOLSTER_COUNT  2
 
 // Which solved anchor each slot hangs off, in VR_HandInGestureSpot's terms:
-// 0 = neck, 1 = shoulder[hand], 2 = hip[hand]. The chest has no id of its own
-// yet and the neck is the nearest thing above it, so the chest slot rides the
-// neck anchor with a downward offset - see the cvar defaults.
+// 0 = neck, 1 = shoulder[hand], 2 = hip[hand], 3 = chest.
 static const struct
 {
 	const char *name;
@@ -9540,13 +9556,14 @@ static const struct
 } vr_holster_def[VR_HOLSTER_COUNT] =
 {
 	{ "hip",   2 },
-	{ "chest", 0 },
+	{ "chest", 3 },
 };
 
 static struct
 {
 	qboolean inside;        // edge state, so a resting hand does not re-draw
 	double   next_time;     // and a rate limit, so a switch can land
+	double   next_diag;     // and a slower one for the residual print
 } vr_holster_state[VR_HOLSTER_COUNT];
 
 static convar_t *VR_HolsterCvar( int slot )
@@ -9659,7 +9676,7 @@ static void VR_UpdateHolsters( void )
 		vec3_t legacy_sbl, joint_fou;
 		qboolean inside, closed;
 		int hand;
-		float fwd, out, up, radius;
+		float fwd, out, up, radius, dist = -1.0f;
 
 		if( !cv || !cv->string[0] )
 			continue;
@@ -9700,7 +9717,7 @@ static void VR_UpdateHolsters( void )
 		}
 
 		inside = VR_HandInGestureSpot( hand, vr_holster_def[slot].anchor,
-			legacy_sbl, joint_fou, radius, radius, NULL );
+			legacy_sbl, joint_fou, radius, radius, &dist );
 
 		// The hand must CLOSE on the slot, not merely pass through it - the
 		// same rule the shoulder hotspots use, and for the same reason: a hand
@@ -9711,6 +9728,20 @@ static void VR_UpdateHolsters( void )
 
 		if( vr_holster_grab.value != 0.0f && !closed )
 			inside = false;
+
+		// HOW FAR OFF IT IS, because "the hip holster feels wrong" is not a
+		// report anybody can act on and "the hip holster reads 14 when my hand
+		// is on my hip" is. Rate-limited, under the existing vr_diag rather
+		// than a knob of its own. Same residual idea as the body solve's own
+		// debug print, which measures the off hand against the hip anchor for
+		// exactly this reason.
+		if( vr_diag.value != 0.0f && host.realtime >= vr_holster_state[slot].next_diag )
+		{
+			vr_holster_state[slot].next_diag = host.realtime + 0.5;
+			VR_DiagPrintf( "HOLSTER %s dist %.1f radius %.1f conf %.2f %s %s\n",
+				vr_holster_def[slot].name, dist, radius, vr.body_conf,
+				inside ? "IN" : "out", closed ? "closed" : "open" );
+		}
 
 		// Edge, and a rate limit. m_iId does not update until the server has
 		// acknowledged a switch, and the shoulder swap learned the hard way
