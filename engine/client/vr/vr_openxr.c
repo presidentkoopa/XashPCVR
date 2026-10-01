@@ -835,6 +835,22 @@ static struct
 	qboolean      cyl_swings;       // this weapon opens rather than being worked
 	float         cyl_roll_prev;    // last wrist roll, for the flick
 	float         part_value[VR_MAX_PARTS];
+
+	// WHICH SIMULATOR JOINT EACH PART IS, or -1 for none.
+	//
+	// The engine numbers parts in the order its own bone scan finds them; a
+	// card numbers joints in the order it declares them. Nothing makes those
+	// agree - the MP5's card declares only joint 1, because its preset keeps
+	// joint 0 for a bolt the weapon has not got - so part 0 is joint 1 there
+	// and the two numberings differ by a whole index.
+	//
+	// Posing already matched by bone NAME for exactly this reason. The input
+	// direction did not: VR_FillCmd packed part_value[part index] and the game
+	// DLL read it as part_value[joint index], so a hand that moved part 0
+	// drove joint 0 - a joint that does not exist on that weapon. Filled from
+	// the same name match that drives posing, so the two directions cannot
+	// disagree about which bone is which joint.
+	int           part_joint[VR_MAX_PARTS];
 	double        part_fired;       // when the action was last cycled by firing
 	int           part_clip;        // clip count the cycle detector last saw
 	int           part_clip_prev;   // and the count before that, for the magazine
@@ -6117,6 +6133,12 @@ static void VR_UpdateParts( void )
 	//
 	// Nothing below runs for a weapon without a card, so the existing path -
 	// and every mod that has never heard of any of this - is untouched.
+	// No card, or a part the card does not mention, means no joint. The hand
+	// then drives that part by its own index, which is what an uncarded weapon
+	// has always done and must keep doing.
+	for( i = 0; i < VR_MAX_PARTS; i++ )
+		vr.part_joint[i] = -1;
+
 	if( clgame_vr_funcs.pfnGetJointValues )
 	{
 		vr_jointvalue_t jv[VR_MAX_PARTS];
@@ -6135,6 +6157,11 @@ static void VR_UpdateParts( void )
 
 				refState.vrParts[i].driven = true;
 				refState.vrParts[i].value = bound( 0.0f, jv[j].value, 1.0f );
+
+				// The same match, kept, so the hand can be sent back to the
+				// joint it actually moved. jv[] is in joint order, so j IS the
+				// joint index.
+				vr.part_joint[i] = j;
 				break;
 			}
 		}
@@ -8855,11 +8882,27 @@ void VR_FillCmd( vrcmd_t *out )
 	// the gun's own animation has moved something.
 	n = refState.vrPartCount;
 
+	// SENT UNDER THE JOINT'S NUMBER, NOT THE PART'S.
+	//
+	// The game DLL reads part_value[k] as joint k (VRGun_FromCmd), and the two
+	// numberings are not the same list: parts are numbered by the engine's bone
+	// scan, joints by the card. Sending under the part index drove the wrong
+	// joint on any weapon where they differ - and they differ on the MP5, whose
+	// card declares only joint 1 because the preset reserves joint 0 for a bolt
+	// it has not got. Posing already matched by bone name; this is the same
+	// match applied to the other direction.
+	//
+	// Falls back to the part index for anything with no joint, which is every
+	// uncarded weapon - unchanged behaviour for them.
 	for( i = 0; i < n && i < VRCMD_MAX_PARTS; i++ )
 	{
 		float v = vr.part_value[i];
+		int   k = ( vr.part_joint[i] >= 0 ) ? vr.part_joint[i] : i;
 
-		out->part_value[i] = (byte)( bound( 0.0f, v, 1.0f ) * 255.0f );
+		if( k < 0 || k >= VRCMD_MAX_PARTS )
+			continue;
+
+		out->part_value[k] = (byte)( bound( 0.0f, v, 1.0f ) * 255.0f );
 	}
 
 	// WHICH PART IS WHICH. Provisional: the engine's bone map is the only
@@ -8886,8 +8929,16 @@ void VR_FillCmd( vrcmd_t *out )
 	// And which one a hand is actually on. A mask because a weapon can
 	// eventually have two hands on two parts; today the engine tracks one,
 	// so one bit is set.
-	if( vr.part_held >= 0 && vr.part_held < VRCMD_MAX_PARTS )
-		SetBits( out->part_held, 1U << vr.part_held );
+	// Under the joint's number too, for the same reason: the simulator reads
+	// this bit as "a hand is on joint k".
+	if( vr.part_held >= 0 && vr.part_held < VR_MAX_PARTS )
+	{
+		int k = ( vr.part_joint[vr.part_held] >= 0 )
+			? vr.part_joint[vr.part_held] : vr.part_held;
+
+		if( k >= 0 && k < VRCMD_MAX_PARTS )
+			SetBits( out->part_held, 1U << k );
+	}
 
 	if( vr_grip_valid )
 		SetBits( out->flags, VRCMD_FL_GRIP );

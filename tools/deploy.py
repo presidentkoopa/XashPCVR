@@ -132,6 +132,21 @@ def main(argv):
         if line.startswith('installed') or '/  ' in line or 'AMBIGUOUS' in line:
             print('   ' + line)
 
+    # The renderer reads its OWN file to decide which bones are grabbable parts
+    # - models/vr/weapons.txt, in a weapon/action/part format, nothing to do
+    # with the card grammar. Generated from the installed cards so the two
+    # readers cannot drift: when this was absent the renderer fell back to a
+    # hand-written cvar naming one or two bones per weapon, and the parts the
+    # cards declared were not published at all.
+    if not dry:
+        print()
+        print('renderer part list:')
+        r = subprocess.run(
+            [sys.executable, os.path.join(HERE, 'vrcard', 'make_weapons_txt.py'), root],
+            capture_output=True, text=True)
+        for line in r.stdout.splitlines():
+            print('   ' + line)
+
     print()
     if dry:
         print('dry run; nothing written.')
