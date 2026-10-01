@@ -46,7 +46,7 @@ the other to work.
 // speaks; a DLL that does not recognise it must return 0 and will be treated
 // as though it never exported anything, rather than reading a table whose
 // layout it is guessing at.
-#define VR_GAMEAPI_VERSION  4
+#define VR_GAMEAPI_VERSION  5
 
 struct edict_s;
 
@@ -68,6 +68,38 @@ typedef struct vr_jointvalue_s
 	char    bone[32];
 	float   value;          // 0 at rest, 1 at full travel
 } vr_jointvalue_t;
+
+// A control on a weapon, as the engine needs to see it.
+//
+// The engine's only job here is geometry: is a fingertip near this point. It
+// is told WHICH FINGER because Part G's table is per digit - a safety under
+// the thumb is not the same gesture as a bolt release under the index - and
+// it is told the radius because how near counts is a property of the control
+// rather than a constant. Everything about what the control DOES stays in the
+// simulator, which the server runs too.
+//
+// Position is in the weapon's own frame, in units, as the card measured it.
+typedef struct vr_control_s
+{
+	// WHICH BONE at[] IS MEASURED IN. The card records it and it travels
+	// here, by name, because the renderer and the card number bones in
+	// orders that have no reason to agree - the same reason joint posing
+	// and part matching are both by name. An empty name means the position
+	// cannot be placed in the world, and the engine must treat the control
+	// as never under anything rather than guess a frame.
+	char    bone[32];
+
+	float   at[3];
+	float   radius;
+	int     finger;         // VR_FINGER_*
+} vr_control_t;
+
+// Which digit works a control. Matches the card's `finger` vocabulary.
+#define VR_FINGER_THUMB   0
+#define VR_FINGER_INDEX   1
+#define VR_FINGER_MIDDLE  2
+#define VR_FINGER_RING    3
+#define VR_FINGER_LITTLE  4
 
 
 // What the engine can be asked.
@@ -148,6 +180,25 @@ typedef struct vr_game_funcs_s
 	// Returns how many parts were written. Zero is the normal answer, and
 	// the answer for every mod that has never heard of any of this.
 	int ( *pfnGetSynthParts )( const char *model, vr_synthpart_t *out, int max );
+
+	// ---- version 5 ----
+
+	// Where this weapon's controls are, so the engine can tell which one a
+	// thumb is on.
+	//
+	// THE BIT IS THE INDEX. controls_under in vrcmd_t is a bitmask "a bit per
+	// control in the card's order", and this returns them in that order, so
+	// out[i] is the control that bit i stands for. The engine decides nothing
+	// about what a control DOES - it reports only which are under a finger,
+	// and the simulator, which the server also runs, decides the rest. That
+	// split is Part G's and it is why the engine never needed to see a card
+	// before now.
+	//
+	// Positions are in the weapon's own frame, in units, as the card measured
+	// them. Returns how many were filled; zero for a weapon with no card, no
+	// controls, or none in hand - which is the normal answer and the answer
+	// for every mod that has never heard of any of this.
+	int ( *pfnGetControls )( vr_control_t *out, int max );
 } vr_game_funcs_t;
 
 // The export itself. Returns VR_GAMEAPI_VERSION on success, 0 to decline.
