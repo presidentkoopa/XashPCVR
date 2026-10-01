@@ -66,14 +66,14 @@ retail content the only binding target — see the card section.
 | **D** Rounds and feed | done | `hlsdk/dlls/vr_feed.*` — magazine, tube, belt, cylinder, single-shot, thrown |
 | **E** Cards and mesh surgery | **part** | parser and surgery work; **a card with a synth part cannot bind** |
 | **F** Held weapon as an object | done, gated | `engine/client/vr/vr_hold.*`, behind `vr_hold_sim`, default 0 |
-| **G** Hands on the gun | **part** | control mapping built; **grip solver not built, and not buildable as specified** |
+| **G** Hands on the gun | **mostly** | grip solver built from the authored fist; controls measured on the pistols, revolver, grenade and satchel |
 | **H** Sights and scopes | not started | — |
 | **I** World and body | not started | — |
 | **J** Half-Life's arsenal | **part** | 18 HD cards written, 6 verified clean |
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
-| **L** Malfunctions, fidelity | not started | — |
+| **L** Malfunctions, fidelity | **done** (simulator side) | `hlsdk/dlls/vr_feed.*` - three levels, three jams, deterministic rolls |
 | **M** Multiplayer | designed | split authority won a three-way design race; not built |
-| **O** Testing | **part** | 110 headless cases, 9-build determinism; nothing needing a headset |
+| **O** Testing | **part** | 117 headless cases, 9-build determinism; nothing needing a headset |
 
 **The simulator now runs.** Until 1 October it had never executed inside Half-Life at all — not
 "untested in a headset", never run. Client prediction dereferenced a model index as a pointer, then
@@ -286,7 +286,7 @@ Each of these cost a wrong implementation first.
 ## How to check it still works
 
 ```
-hlsdk-portable\dlls\vr_test_all.bat               110 cases, seven suites
+hlsdk-portable\dlls\vr_test_all.bat               117 cases, seven suites
 hlsdk-portable\dlls\vr_determinism_matrix.bat     nine builds, 12,000 commands, x87 included
 hlsdk-portable\dlls\vr_determinism_test.bat       the original x86-vs-x64 pair
 XashFWGS\tools\vrcard\vr_hold_test.bat            Part F's claims, measured
