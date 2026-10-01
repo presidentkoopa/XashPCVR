@@ -21,14 +21,33 @@ THE CONTENT CEILING, AND HOW TO BREAK IT.
 
 A VR weapon card can only drive parts that are separate bones. Measured across
 the Half-Life set, that rules out most of what a hand wants to touch: the MP5
-has no bolt and no charging handle, and NEITHER the HD nor the SD pistol has a
-magazine bone - so a pistol cannot be reloaded by hand at all, however good the
-simulator is.
+has no bolt and no charging handle bone, and NEITHER the HD nor the SD pistol
+has a magazine bone - so a pistol cannot be reloaded by hand at all, however
+good the simulator is.
 
-Those parts exist in the mesh. They are simply welded to the body, because no
-animator ever needed them to move on their own. Mesh surgery gives them a bone
-at load time: pick the vertices, hang them off a new bone, and the card can
-drive it like any other.
+SOME of those parts exist in the mesh, welded to the body because no animator
+ever needed them to move on their own. Mesh surgery gives those a bone at load
+time: pick the vertices, hang them off a new bone, and the card can drive it
+like any other. That is what the M40A1's bolt is - 22 vertices carved off a
+bone that both turned and slid, so the two motions could become two joints.
+
+AND SOME OF THEM ARE NOT THERE AT ALL, which this used to claim otherwise and
+cost somebody a day to find out. Two measured cases:
+
+  THE HD MP5 HAS NO CHARGING HANDLE. Above z 4.0 on `carbine`, the rearmost
+  vertex is at y +1.78 - and the weapon extends back to y +5.48. There is no
+  tab, no T-handle, nothing protruding from the top or rear of the receiver.
+  The 605 vertices on that bone are a receiver, a carry handle, a front sight
+  and a stock. You cannot carve a part out of vertices that were never drawn.
+
+  NEITHER PISTOL HAS A MAGAZINE, and not merely no magazine BONE - no
+  magazine. Proved by posing the reload: nothing leaves the grip.
+
+RELOCATE NEVER INSERT means exactly that. This pass cannot draw geometry, so a
+part the artist never modelled is out of its reach by construction, and the
+answer for those is a separate small model posed by the joint - which is ours
+to ship, needs no change to the player's files, and has at least these two
+callers waiting. See PCVR_WEAPONS_STATUS.md.
 
 RELOCATE, NEVER INSERT. A studio model is one blob of internal offsets, so
 growing an array in place would shift every byte after it and invalidate every

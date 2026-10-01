@@ -279,6 +279,56 @@ simulation - which entities are grabbable has to be networked, because `movetype
 - **A dropped weapon carrying its mechanism and round state.** `CWeaponBox` carries ammo counts
   only; the mechanism lives in the fork's own structs. Pure game-DLL work, no engine or physics part.
 
+## Parts the artist never drew: the attached-prop proposal (owner asked, 1 Oct)
+
+**The question:** the MP5 cannot be racked. Can we crack the model open in Blender and add a bone?
+
+**Yes, and it is the worst of the three options.** The answer is a proposal, because it is an engine
+change.
+
+**First, the measurement, because `mod_surgery.h` claimed otherwise and has been corrected.** Mesh
+surgery carves a bone out of vertices that already exist - that is what the M40A1's bolt is, 22
+vertices split off a bone that both turned and slid. It is RELOCATE NEVER INSERT by construction, so
+it cannot draw geometry. And the geometry is genuinely absent here:
+
+- **The HD MP5 has no charging handle.** Above z 4.0 on `carbine`, the rearmost vertex is at
+  **y +1.78** while the weapon extends back to **y +5.48**. No tab, no T-handle, nothing proud of the
+  receiver's top or rear. 605 vertices of receiver, carry handle, front sight and stock.
+- **Neither pistol has a magazine** - not merely no magazine bone. Proved earlier by posing the
+  reload: nothing leaves the grip.
+
+**Option A - edit the model (Blender, or decompile/studiomdl).** It would work, and it costs more than
+it looks:
+
+1. **The card stops binding to retail.** Binding is `bones + seqs + FNV-1a of the bone names`. Add a
+   bone and the fingerprint changes, so the card matches our edited file and **not** the file in the
+   player's own Half-Life install - which is the distribution model (*"we ship our Xash64VR and use a
+   local install of half life"*). Every player would need our .mdl, not theirs.
+2. **It means redistributing a modified Valve asset.** Fine on one machine; a different question in a
+   package.
+3. **The decompile/recompile round trip regenerates the whole file**, so all 50 bones, 8 sequences and
+   every measured travel in the card have to be re-measured and re-verified, not just the fingerprint.
+
+**Option B - a separate small model, posed by the joint. This is the recommendation.** Ship *our*
+charging handle as a tiny .mdl, parented to the weapon's body bone, moved by joint 0's value. The
+player's files are untouched, the card binds to retail as it does today, and the asset is ours to
+ship.
+
+**It already has two callers, which is what makes it a capability rather than a favour to the MP5:**
+the MP5's charging handle and the pistol's magazine. A third is any mod weapon whose artist welded
+its parts together.
+
+The engine can already draw an extra model in the hand - `VR_DrawHeldRound` does exactly that - so
+the new part is attaching a prop to a *named bone of the viewmodel* and offsetting it by a joint
+value. Files it touches: `engine/client/vr/vr_openxr.c` (the draw, beside `VR_DrawHeldRound`), the
+card grammar in `hlsdk-portable/dlls/vr_card.cpp` for a `prop` block naming a model, a bone and an
+axis, and `engine/ref_api.h` only if the renderer needs a second bone matrix - which it may, since
+the readback is currently a single last-writer-wins slot.
+
+**Option C - accept it.** The MP5 is a closed-bolt self-loader and the card already carries
+`chamber_on_seat`: seating a magazine chambers a round, which is what the real weapon does and means
+you never *need* to rack it. This is the status quo and it is not wrong, it is just less fun.
+
 ## Where the plan is wrong
 
 Measured, not inferred. 65 corrections were found in one pass; these are the ones that would cost a
