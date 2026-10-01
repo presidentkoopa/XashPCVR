@@ -185,6 +185,23 @@ joint 1  bone "hammer"  hinge  travel 0.74  rest 0
 # +0.92 about a bore on the centreline.
 control mag_latch  at 0.92 0.37 0.01  finger thumb  kind button
 
+# THE HAMMER UNDER THE THUMB. Part G asks for this by name - "thumb the hammer
+# for a single-action shot" - and it is the one control that does not release
+# anything. Every other control lets something go; a hammer is DRAWN, which is
+# why Part G gives it the stick rather than a button, and why the simulator
+# works the joint instead of releasing a catch. Releasing would drop the
+# hammer the moment a thumb touched it, which is the trigger's job.
+#
+# It needs no catch and must not have one - see the note on joint 1 above -
+# so the simulator finds the hammer joint by its hammer_cock mark instead.
+#
+# Measured: the spur is the hammer's own geometry furthest up and back, the
+# six topmost vertices of its rearmost third, at 0.02 2.44 0.91 in the body
+# frame. That is a little inboard and below the grab point at 0.20 2.83 0.77,
+# which is right: the grab point is where a whole hand takes the hammer, and
+# this is where one thumb sits on the spur.
+control hammer  at 0.02 2.44 0.91  finger thumb  kind lever
+
 # The firing chamber: SHELL03's rest position, the top chamber, the one under
 # the barrel and under the hammer.
 chamber at 0.01 0.33 0.85
