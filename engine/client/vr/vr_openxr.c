@@ -572,6 +572,32 @@ typedef enum
 	VRA_COUNT
 } vr_action_id_t;
 
+// THE HEADER'S VR_BTN_* MUST EQUAL THESE, and a comment saying so was not
+// enough. Inserting VRA_TRIGGER above shifted every action from here down by
+// one while vr_openxr.h kept the old numbers, and VR_GetButton indexes vr.btn[]
+// with the header's value directly - so for two days VR_BTN_OFFGRIP read the
+// MENU button and no weapon part in the game could be taken hold of, while
+// VR_BTN_RELOAD read USE and the off-hand trigger dropped magazines by itself.
+//
+// Nothing warned. The build was clean, the actions bound, the log said the
+// cards had loaded, and the only evidence was grip=0 on 2,250 consecutive
+// diagnostic samples.
+//
+// Now the build fails instead. Add an action, and these fail until the header
+// is renumbered to match.
+STATIC_ASSERT( VR_BTN_TRIGGER    == VRA_TRIGGER,    "vr_openxr.h VR_BTN_TRIGGER is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_JUMP       == VRA_JUMP,       "vr_openxr.h VR_BTN_JUMP is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_CROUCH     == VRA_CROUCH,     "vr_openxr.h VR_BTN_CROUCH is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_ATTACK     == VRA_ATTACK,     "vr_openxr.h VR_BTN_ATTACK is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_ATTACK2    == VRA_ATTACK2,    "vr_openxr.h VR_BTN_ATTACK2 is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_USE        == VRA_USE,        "vr_openxr.h VR_BTN_USE is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_RELOAD     == VRA_RELOAD,     "vr_openxr.h VR_BTN_RELOAD is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_FLASHLIGHT == VRA_FLASHLIGHT, "vr_openxr.h VR_BTN_FLASHLIGHT is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_NEXTWEAP   == VRA_NEXTWEAP,   "vr_openxr.h VR_BTN_NEXTWEAP is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_PREVWEAP   == VRA_PREVWEAP,   "vr_openxr.h VR_BTN_PREVWEAP is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_MENU       == VRA_MENU,       "vr_openxr.h VR_BTN_MENU is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_OFFGRIP    == VRA_OFFGRIP,    "vr_openxr.h VR_BTN_OFFGRIP is out of step with vr_action_id_t" );
+
 static const struct
 {
 	const char *name;

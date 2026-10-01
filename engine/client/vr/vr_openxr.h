@@ -127,18 +127,34 @@ qboolean VR_SelectOpen( void );
 // controller input
 //
 
-// Must stay in step with vr_action_id_t in vr_openxr.c.
-#define VR_BTN_JUMP        2
-#define VR_BTN_CROUCH      3
-#define VR_BTN_ATTACK      4
-#define VR_BTN_ATTACK2     5
-#define VR_BTN_USE         6
-#define VR_BTN_RELOAD      7
-#define VR_BTN_FLASHLIGHT  8
-#define VR_BTN_NEXTWEAP    9
-#define VR_BTN_PREVWEAP    10
-#define VR_BTN_MENU        11
-#define VR_BTN_OFFGRIP     12	// off-hand grip: grab / two-hand a weapon
+// MUST STAY IN STEP WITH vr_action_id_t IN vr_openxr.c, and this comment used
+// to be the only thing enforcing it. It did not work: VRA_TRIGGER was inserted
+// at position 2 when the trigger became an axis, and these numbers were not
+// moved - so every one of them pointed at the action BEFORE the one it names.
+// VR_GetButton indexes vr.btn[] with these values directly and has no idea.
+//
+// What that cost: VR_BTN_OFFGRIP read the MENU button, so no weapon part could
+// ever be taken hold of and the whole carded weapon simulator was unreachable
+// from the player's hands. VR_BTN_RELOAD read USE - the off-hand trigger - so
+// pressing it dropped a magazine and toggled a revolver's cylinder. Every
+// button below position 2 was off by one for two days.
+//
+// The STATIC_ASSERTs beside the enum in vr_openxr.c now fail the BUILD if these
+// ever drift again. Do not remove them, and do not renumber one list without
+// the other.
+#define VR_BTN_TRIGGER     2	// the trigger is an AXIS, not a button - the slot
+				// exists so the numbering stays visibly aligned
+#define VR_BTN_JUMP        3
+#define VR_BTN_CROUCH      4
+#define VR_BTN_ATTACK      5
+#define VR_BTN_ATTACK2     6
+#define VR_BTN_USE         7
+#define VR_BTN_RELOAD      8
+#define VR_BTN_FLASHLIGHT  9
+#define VR_BTN_NEXTWEAP    10
+#define VR_BTN_PREVWEAP    11
+#define VR_BTN_MENU        12
+#define VR_BTN_OFFGRIP     13	// off-hand grip: grab / two-hand a weapon
 
 // Thumbstick locomotion, already deadzoned and scaled to HL move units.
 // Values are relative to the current view direction, matching how the engine
