@@ -18,13 +18,23 @@
 #
 # DELIBERATELY NO JOINTS, and this is the trap on this model. vrcardgen
 # reports 12 drivable joints here and every one of them is wrong: they are
-# the creature's anatomy, not a mechanism. `Bone16` is the biggest mover in
-# the model at 7.22 units, but it is a jaw opening in `fidgetnip` - an idle
-# fidget - not a part a hand grabs and drives. A joint declared here would
-# hand that bone to the simulator, which poses it from a joint value, and the
-# snark would hold its mouth open instead of nipping. The shock roach does
-# declare its segments, because those move AS IT FIRES; nothing on the snark
-# does, so the snark's own sequences keep every bone.
+# the creature's anatomy, not a mechanism.
+#
+# The number this comment used to lead with was wrong twice over and is worth
+# correcting precisely, because the conclusion is right and the reasoning for
+# it should be too. It said `Bone16` was "the biggest mover in the model at
+# 7.22 units ... a jaw opening in fidgetnip". Measured: 7.22 is in FIDGETFIT,
+# not fidgetnip - fidgetnip moves Bone16 by 4.57. And Bone16's own local
+# translation is 0.000 in all six sequences: it only rotates in place. The 7.22
+# is its ORIGIN being carried about by the Bip02 Neck1/Head chain rotating
+# above it, which is a different claim entirely and matters, because a joint
+# measures the bone's own travel and this bone has none.
+#
+# The conclusion stands and is the reason for the whole comment: a joint
+# declared here would hand that bone to the simulator, which poses it from a
+# joint value, and the snark would hold its mouth open instead of nipping. The
+# shock roach does declare its segments, because those move AS IT FIRES;
+# nothing on the snark does, so the snark's own sequences keep every bone.
 #
 # MEASURED: 83 bones, 6 sequences - idle1, fidgetfit, fidgetnip, down, up,
 # throw - and no reload and no fire among them. Posed in its own root's

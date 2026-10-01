@@ -13,8 +13,19 @@
 # vertex at 0.92 0.37 0.01. So one card is correct here by measurement, not by
 # the files happening to match.
 #
-# The SD rig is a DIFFERENT model (44 bones, 0xba7f43f7) and keeps its own
-# card in cards/valve.
+# THE SD RIGS ARE DIFFERENT MODELS, and there are three of them, not one.
+# Measured: valve 66/8/0xf5d877cb, gearbox 64/8/0x893606ab, bshift
+# 67/8/0x7355a006. None of them is carded against retail content.
+#
+# An earlier revision of this comment said the SD rig was "44 bones,
+# 0xba7f43f7" and pointed at cards/valve/v_357.card. That number was copied
+# from the sibling card rather than measured, and no v_357 anywhere on disk has
+# 44 bones. What cards/valve/v_357.card actually binds to is the Half-Life VR
+# Mod's rig, which is a mod's content and not something a player with a stock
+# install has - so on retail Half-Life that card matches nothing at all.
+#
+# The point of recording a sibling's fingerprint in a comment is so the next
+# person knows which rigs are still uncovered. A wrong one is worse than none.
 #
 # WHAT THE HD RIG GIVES US THAT THE SD RIG DID NOT: a hammer that is actually
 # animated. The SD card had to leave the hammer undeclared because nothing

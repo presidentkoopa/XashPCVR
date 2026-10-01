@@ -56,6 +56,24 @@ match  bones 12  seqs 11  hash 0x09482809
 # is the floor's whole job: a player walking about with it should not be
 # dealing a trickle of damage to everything they brush past.
 #
+# EXCEPT THAT THE FLOOR CANNOT DO THAT JOB YET, AND THE NUMBERS ABOVE CANNOT
+# SETTLE IT. Every speed in the table is ANIMATION-LOCAL: the arm rig posed in
+# place, the viewmodel's own frame. VRStrike_Step is handed a WORLD position
+# (vr_strike.h:107) and the plan has the server sweeping the reported pose
+# (PCVR_WEAPONS_PLAN.md:488), so in the world frame the head is also carried at
+# the player's locomotion speed - and Half-Life's sv_maxspeed is 320 u/s. A
+# running player with a perfectly still hand clears both this floor and the
+# 300 cap, so walking past something would deal FULL damage rather than none,
+# which is the exact opposite of what the floor is for. Worse, VRSTRIKE_REARM
+# is 25 u/s, so a moving player's sweep would never re-arm after the first hit.
+#
+# This is generic to every melee card - the default 60, the knife's 35 and the
+# wrench's 90 are all worse - and it cannot be measured out of a card, because
+# the fix is to sweep the head's velocity RELATIVE TO THE PLAYER rather than in
+# the world. Nothing outside vr_strike_test.cpp calls VRStrike_Step yet, so
+# nothing has been wrong in play; the numbers here are honest about the
+# animation and will need revisiting the moment melee is wired to a world pose.
+#
 # `full 300` is the gentlest swing the model performs, attack1 at 287. It
 # belongs at the gentlest and not at the average, because in stock Half-Life
 # all three crowbar animations do the same `plrDmgCrowbar` (crowbar.cpp:264)
@@ -63,9 +81,17 @@ match  bones 12  seqs 11  hash 0x09482809
 # game itself calls a swing is a full hit, and the cap above that is doing
 # its other job: a swing amplified by a tracking spike is still one crowbar.
 #
-# The band is narrow - 150 to 300, where the knife runs 35 to 180 and the
-# wrench 90 to 420. It is narrow because the gap this model measures between
-# carried and swung is narrow, and widening it either way would mean lying:
+# The band is narrow - 150 to 300. The knife's 35-180 and the wrench's 90-420
+# are NOT comparable bands and were quoted here as though they were: both of
+# those cards put their strike point at 0.00 0.00 0.00, the body bone's origin,
+# while this one is 18.95 units out at the head. Re-measured at their own
+# declared points, the wrench's fastest swing is 171.7 u/s - so its cap of 420
+# is unreachable and it can never score full damage - and the knife's is 435.9.
+# A number measured at a different point on a different weapon cannot calibrate
+# this one, and the siblings were set by feel in any case.
+#
+# It is narrow because the gap this model measures between carried and swung is
+# narrow, and widening it either way would mean lying:
 # downwards, damaging what you walk past; upwards, refusing full damage to a
 # blow Half-Life scores at full.
 #

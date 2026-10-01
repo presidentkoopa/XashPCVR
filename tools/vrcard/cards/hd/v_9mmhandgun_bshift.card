@@ -109,13 +109,25 @@ synth magazine  from "Hands mesh"
 # magazine and the magazine's latch to the slide.
 joint 1  bone "magazine"  slide  travel 3.81  rest 0
 
-# AND IT IS NOT CLEAR UNTIL IT IS ALL THE WAY OUT. The preset puts that
-# crossing at 0.35, which is right when the travel is the whole arc a reload
-# animation carries a magazine through; here the travel IS the magazine's own
-# measured length, so it is free of the well only at the end of it. 0.95
-# rather than 1.00, because a point at the very end of a joint's travel is a
-# crossing a hand can never quite make.
-    point mag_clear at 0.95
+# THE PRESET'S 0.35 IS RIGHT HERE, and an override at 0.95 was wrong.
+#
+# The reasoning for the override was that this travel IS the magazine's own
+# length, so the magazine is only free of the well at the end of it. That is
+# computed on Box02's seated span, and Box02 is not what moves: joint 1 drives
+# the CARVED STUB, and the carve box selects 28 vertices spanning Y 2.32..3.55
+# - a height of 1.23, not 3.81. The body's heel is at Y 3.55, so the stub is
+# clear of the gun after 1.23 of 3.81 units, which is 0.32 of travel. The
+# preset's 0.35 lands almost exactly there.
+#
+# At 0.95 the detent's two-way hysteresis (VRJ_DETENT_HYST, 3% of travel) fires
+# the seated event on the way IN at 0.92 - with the magazine still three and a
+# half units out of the butt - and demands a 3.73-unit drag to get it out, most
+# of which is grip geometry stretching as a band.
+#
+# Part E says this in the other direction and it is worth quoting, because the
+# override read it backwards: "a magazine's measured travel is how far the
+# reload animation carries it ... while it is actually free of the well much
+# sooner" (PCVR_WEAPONS_PLAN.md:211).
 
 # The magazine latch keeps the preset's seat at 0.02 and the preset's
 # breakout, which is what makes a deliberate pull take the magazine out. That
@@ -135,13 +147,31 @@ joint 1  bone "magazine"  slide  travel 3.81  rest 0
 # hammer, and a hammer the simulator owns is a hammer frozen somewhere no hand
 # can reach it. It keeps the animation it has.
 #
-# NO CONTROLS. Part J wants a magazine release and a slide stop under the
-# thumb, and this model marks the position of neither - no bone, no
-# attachment, no separable geometry for either, and a control is a point in
-# space. Both jobs are still done by hand, which is the other half of what
-# Part J asks for: the latch's breakout means a deliberate pull takes the
-# magazine out, and `releases_past` on the slide stop means a tug sends the
-# slide home.
+# BOTH CONTROLS, AND THE MODEL DOES MARK THEM. An earlier revision of this card
+# said "this model marks the position of neither - no bone, no attachment, no
+# separable geometry for either, and a control is a point in space." The last
+# clause is true and the conclusion does not follow: a control is a point, and
+# a point does not need a bone. Both bosses are in the body mesh and listing
+# the body's vertices by x finds them at once - a five-vertex cluster at
+# x 1.04..1.12, y -2.93..-2.63 (the slide-stop boss under the slide) and
+# thirteen more at x 1.07..1.12, y -1.09..-0.45 (the magazine release behind
+# the trigger guard). Their centroids are the two points below, and they agree
+# digit for digit with the ones measured independently off the 51-bone rig.
+#
+# It matters more on this card than on that one. With no control declared, the
+# magazine's only way out is the latch's breakout - and once broken out the
+# latch is never re-engaged, because VRJoint_Engage for VRC_MAG_LATCH is called
+# only from VRGun_Init.
+#
+# Both are inert until the engine's grip solver lands, since controls_under is
+# hard zero until a thumb can be solved. Declared anyway: the measurement is
+# the expensive half and it is done.
+control mag_latch   at 1.08 -0.73 -0.31  finger thumb  kind button
+control slide_lock  at 1.10 -2.79  0.19  finger thumb  kind button
+#
+# Both jobs remain doable by hand as well, which is the other half of what Part
+# J asks for: the latch's breakout means a deliberate pull takes the magazine
+# out, and `releases_past` on the slide stop means a tug sends the slide home.
 #
 # NO STRIKE LINE. Part J gives every firearm a pistol whip, and a card that
 # declares no strike inherits exactly that default - which is what a pistol
