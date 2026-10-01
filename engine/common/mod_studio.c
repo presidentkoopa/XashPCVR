@@ -289,34 +289,73 @@ card generator include too. That is the point of it being a header: three
 callers, one definition, no chance of a separator byte's worth of drift
 silently stopping every card from binding.
 
-Loads the model if it is not already loaded, because the question is usually
-asked about a view model the moment a weapon is drawn. Returns false for
-anything that is not a studio model, which the caller must treat as "do not
-apply the card" rather than as "apply it anyway".
+READ FROM THE FILE ON DISK, NOT FROM THE LOADED MODEL, and that is the whole
+correctness of this function.
+
+A fingerprint identifies THE FILE THE ARTIST SHIPPED. The loaded model is not
+always that file: Mod_LoadStudioModel runs mesh surgery during load and
+replaces mod->cache.data with a grown buffer carrying an extra bone, so a
+fingerprint taken from the cache reports more bones than the model has and a
+different name hash, because the synthetic bone's name is now in it. An earlier
+version of this function read the cache through Mod_StudioExtradata, which
+meant any card declaring a synthetic part could never bind - and failed in the
+worst available way, because the surgery is driven by a deliberately
+unchecked query and still ran. The player got a carved mesh with vanilla
+behaviour.
+
+Reading the shipped bytes also makes this query independent of the model cache
+altogether: it answers before a model is loaded, and asking never drags a load
+in as a side effect.
+
+Returns false for anything that is not a studio model, which the caller must
+treat as "do not apply the card" rather than as "apply it anyway".
 ===============
 */
 qboolean Mod_StudioFingerprint( const char *name, int *bones, int *seqs, unsigned int *namehash )
 {
-	model_t     *mod;
-	studiohdr_t *hdr;
+	byte          *buf;
+	fs_offset_t    len = 0;
+	studiohdr_t   *hdr;
 	mstudiobone_t *bone;
-	unsigned int h = VR_FINGERPRINT_BASIS;
-	int i;
+	unsigned int   h = VR_FINGERPRINT_BASIS;
+	size_t         need;
+	int            i;
 
 	if( !name || !name[0] )
 		return false;
 
-	mod = Mod_ForName( name, false, false );
+	buf = FS_LoadFile( name, &len, false );
 
-	if( !mod )
+	if( !buf )
 		return false;
 
-	hdr = (studiohdr_t *)Mod_StudioExtradata( mod );
-
-	if( !hdr || hdr->numbones <= 0 )
+	if( (size_t)len < sizeof( studiohdr_t ))
+	{
+		Mem_Free( buf );
 		return false;
+	}
 
-	bone = (mstudiobone_t *)((byte *)hdr + hdr->boneindex );
+	hdr = (studiohdr_t *)buf;
+
+	if( hdr->ident != IDSTUDIOHEADER || hdr->version != STUDIO_VERSION
+		|| hdr->numbones <= 0 || hdr->numbones > MAXSTUDIOBONES
+		|| hdr->boneindex < (int)sizeof( studiohdr_t ))
+	{
+		Mem_Free( buf );
+		return false;
+	}
+
+	// The bone array has to be inside the file we actually read. A truncated
+	// or hostile model must not be walked off the end of its own buffer.
+	need = (size_t)hdr->boneindex + (size_t)hdr->numbones * sizeof( mstudiobone_t );
+
+	if( need > (size_t)len )
+	{
+		Mem_Free( buf );
+		return false;
+	}
+
+	bone = (mstudiobone_t *)( buf + hdr->boneindex );
 
 	for( i = 0; i < hdr->numbones; i++ )
 		h = VR_HashBoneName( h, bone[i].name );
@@ -324,6 +363,8 @@ qboolean Mod_StudioFingerprint( const char *name, int *bones, int *seqs, unsigne
 	if( bones )    *bones = hdr->numbones;
 	if( seqs )     *seqs = hdr->numseq;
 	if( namehash ) *namehash = h;
+
+	Mem_Free( buf );
 
 	return true;
 }
