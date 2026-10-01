@@ -39,7 +39,7 @@ retail content the only binding target — see the card section.
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
 | **L** Malfunctions, fidelity | not started | — |
 | **M** Multiplayer | designed | split authority won a three-way design race; not built |
-| **O** Testing | **part** | 107 headless cases, 9-build determinism; nothing needing a headset |
+| **O** Testing | **part** | 110 headless cases, 9-build determinism; nothing needing a headset |
 
 **The simulator now runs.** Until 1 October it had never executed inside Half-Life at all — not
 "untested in a headset", never run. Client prediction dereferenced a model index as a pointer, then
@@ -203,11 +203,24 @@ Each of these cost a wrong implementation first.
   two fields to values `VRGun_Init` already left them holding. Mutate by increment, not assignment.
 - **Verifying a build in a tree that holds untracked files proves nothing** about the tree anyone else
   clones. `tools/audit_build_refs.py` now checks every build reference against git.
+- **`if errorlevel 1` does not catch a crash.** It means "errorlevel >= 1", and an access violation
+  exits -1073741819. The suite runner printed every case, faulted, and said "all suites pass". Test
+  exactly for zero. `if exist <exe> <exe>` lies the same way: an absent executable runs nothing and
+  leaves ERRORLEVEL alone, so it reads as a pass.
+- **Fix every instance, then look for a fifth.** The spring defect had four. The first pass fixed
+  two, and the two it missed were the two whose own cards already documented the behaviour the engine
+  did not implement - which is what a half-done sweep looks like from the outside.
+- **Removing a force means replacing what it held.** Taking the cylinder's return spring away made the
+  detent's hysteresis band a reachable resting place, because the open flag is latched from that
+  crossing - so a half-closed cylinder read shut and would not fire. A latched flag's mark must sit
+  where a hand does not leave the part.
+- **No spring and no damping is not a mechanism, it is a projectile.** Nothing dissipates energy, so
+  any nudge coasts to a travel limit.
 
 ## How to check it still works
 
 ```
-hlsdk-portable\dlls\vr_test_all.bat               107 cases, seven suites
+hlsdk-portable\dlls\vr_test_all.bat               110 cases, seven suites
 hlsdk-portable\dlls\vr_determinism_matrix.bat     nine builds, 12,000 commands, x87 included
 hlsdk-portable\dlls\vr_determinism_test.bat       the original x86-vs-x64 pair
 XashFWGS\tools\vrcard\vr_hold_test.bat            Part F's claims, measured
