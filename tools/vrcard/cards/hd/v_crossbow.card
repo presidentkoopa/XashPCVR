@@ -167,3 +167,32 @@ joint 1  bone "Clip Master"  slide  travel 8.35  rest 0
 # the measurements above is -y, established from the geometry instead: the
 # bow limbs root at y -19.50 and the body's vertices run from y -20.64 to
 # +6.86, so the business end is -y.
+
+# ---------------------------------------------------------------------------
+# THE SCOPE, MEASURED - and this model does carry one, 135 vertices of it
+# riding on `crossbow parent`. Not a declaration yet, for the same reason as
+# the M40A1's: `optic` is not one of the parser's sixteen keywords and a
+# seventeenth fails the whole card. Recorded so the measuring is done once.
+#
+#   tools\vrcard\find_optics.py <model> --body "crossbow parent"
+#
+# In the `crossbow parent` frame, forward at -y as established above.
+#
+#   optical axis      x  0.026   z  2.949
+#   objective (front) y -3.00    radius 0.64     (see the caveat below)
+#   eyepiece  (rear)  y  0.76    radius 0.64
+#
+# THE FRONT FACE IS THE ONE NUMBER THAT IS NOT SETTLED. The tube is stepped,
+# and where its rings get grouped by radius decides whether the forward end
+# reads as y -3.00 or y -3.69; a direct cylinder fit over the whole cluster
+# says -3.69, the ring grouping says -3.00. Somebody should look at the model
+# and say which is the glass before this becomes a declaration. The axis and
+# the rear face are not in doubt - three independent measurements agree on
+# them to within four hundredths.
+#
+# NO TURRETS TO CHECK IT AGAINST, unlike the M40A1: this rig has no scope
+# bone, no lens bone and no adjustment knobs. What makes the fit believable
+# anyway is that it is the only cylinder on the model that sits ON the
+# centreline (+0.03) and WELL above the body (+3.81 of the mid) - the two
+# that outrank it on roundness are the bow limbs, at x +1.68 and -1.72, which
+# are a mirrored pair, and nothing carries two scopes.

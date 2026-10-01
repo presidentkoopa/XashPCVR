@@ -80,3 +80,36 @@ joint 2  bone "m40a1_bolt"  hinge  travel 0.60  rest 0
     # exactly what the paragraph above says a bolt handle does not have.
     spring 0
     grab  point 0.43 1.53 0.05  radius 2.0
+
+# ---------------------------------------------------------------------------
+# THE SCOPE, MEASURED. Not a declaration yet: the card parser accepts sixteen
+# top-level keywords and fails a whole card on a seventeenth, and `optic` is
+# not one of them. These are the numbers, in the repo, so that the day the
+# parser and the renderer can take them nobody has to measure again.
+#
+#   tools\vrcard\find_optics.py <model> --body m40a1_stock
+#
+# All in the `m40a1_stock` frame like every other position in this card, with
+# forward at -x (the barrel runs to x -25.63; the bolt's rearward travel is
+# declared +x above, which agrees).
+#
+#   optical axis      y  0.002   z  3.163
+#   objective (front) x -7.82    radius 1.07
+#   eyepiece  (rear)  x -0.17    radius 0.78
+#   tube length       7.65, in two steps: a 1.07 bell from -7.82 to -5.41 and
+#                     a 0.77 tube from -4.11 to -0.17
+#
+# AND THE MODEL CONFIRMS IT INDEPENDENTLY. `m40a1_sideknob` and
+# `m40a1_topknob` - the windage and elevation turrets this card's header
+# already identifies - sit 0.80 and 0.82 off that axis, which is the tube's
+# own radius: a turret's bone is placed on the tube wall. A turret is
+# perpendicular to the tube, so the one not displaced sideways states the
+# axis's y and the one not displaced vertically states its z. Between them:
+# y -0.032, z 3.163. The cylinder fit, which never looks at a bone, says
+# y 0.002, z 3.163. Two independent measurements of one axis agreeing to three
+# hundredths of a unit.
+#
+# NO LENS BONE, and there is nothing to be done about that: this model has no
+# bone for the scope, the glass, or the eyepiece. A lens can only ever be a
+# measured point in the body's frame, which is what `control` and `strike`
+# already are.

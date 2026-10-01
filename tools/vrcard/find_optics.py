@@ -77,31 +77,29 @@ def long_axis(verts):
 
 
 def forward_sign(verts, axis):
-    """Which end is the muzzle.
+    """Which end is the muzzle: NEGATIVE along the long axis, by convention.
 
-    By geometry, not by the attachment: vrcardgen's `_frame` reads the first
-    attachment's bone translation and falls back to -y, and on the crossbow -
-    which has no attachments at all - that fallback is the only reason the
-    numbers in its card are right. Here the rule is that a muzzle is THIN and a
-    receiver is FAT, which is true of every v_ model measured so far and is
-    checkable from the printed profile when it is not.
+    Every v_ model measured in this fork points down the negative of its body
+    bone's longest axis. The HD crossbow's body runs y -20.64..+6.86 with the
+    bow limbs rooted at -19.50, and the M40A1's stock runs x -25.63..+2.61 with
+    the barrel at -25.63 - which is also why that card declares its bolt's
+    rearward travel as +x.
+
+    A FIRST VERSION GUESSED THIS FROM THE GEOMETRY and got the crossbow exactly
+    backwards. The rule it used was that a muzzle is thin and a receiver is fat,
+    which is true of a rifle and false of a crossbow: a crossbow's front end
+    carries the bow limbs and is the widest part of the weapon, so it measured
+    as the receiver and the stock measured as the muzzle. Every number that
+    followed - objective, eyepiece, which face is glass - came out reversed.
+
+    So this states the convention instead of inferring it, prints it, and prints
+    the extent beside it so it can be checked at a glance. `--forward` overrides
+    it for the model where the convention does not hold, and the day one turns
+    up is the day this becomes a table rather than a rule.
     """
-    lo = min(p[axis] for p in verts)
-    hi = max(p[axis] for p in verts)
-    span = hi - lo
-    if span <= 0.01:
-        return -1
-    cross = [a for a in range(3) if a != axis]
-
-    def fatness(sel):
-        if len(sel) < 3:
-            return 0.0
-        c = [sum(p[a] for p in sel) / len(sel) for a in cross]
-        return max(math.hypot(p[cross[0]] - c[0], p[cross[1]] - c[1]) for p in sel)
-
-    near_lo = fatness([p for p in verts if p[axis] <= lo + span * 0.1])
-    near_hi = fatness([p for p in verts if p[axis] >= hi - span * 0.1])
-    return -1 if near_lo <= near_hi else 1
+    del verts
+    del axis
+    return -1
 
 
 def _slices(verts, axis, step):
@@ -362,6 +360,10 @@ def main(argv):
     b0 = min(p[B] for p in verts)
     b1 = max(p[B] for p in verts)
 
+    # The body's own middle on the vertical cross axis, so "above the bore" is
+    # reported against the weapon rather than against the bone's origin.
+    mid_b = ( b0 + b1 ) / 2.0
+
     found = []
     a = a0
     while a <= a1 + 1e-6:
@@ -428,6 +430,38 @@ def main(argv):
                                        t['l0'], t['l1']):
             print('      beside it: bone "%s" at %.2f %.2f %.2f, %.2f off the axis'
                   % (name, p[0], p[1], p[2], d))
+
+        # WHERE IT SITS, because a scope sits ABOVE the bore and ON the
+        # centreline, and almost nothing else on a gun does both. In every v_
+        # model measured here z is up and is never the long axis, so the
+        # lateral axis is A and the vertical is B; when that does not hold
+        # there is no "above" to report and this says nothing rather than
+        # something wrong.
+        if L != 2:
+            print('      sits %+.2f off the centreline (%s), %+.2f relative to the'
+                  ' body mid (%s)'
+                  % (t['a'], 'xyz'[A], t['b'] - mid_b, 'xyz'[B]))
+
+            # A MIRRORED PAIR IS NOT AN OPTIC. The crossbow's two bow limbs fit
+            # as cleanly as its scope and outrank it; so do a double barrel's
+            # barrels and a bipod's legs. Nothing on a weapon carries two
+            # scopes, so a candidate with a twin across the centreline can be
+            # set aside without opening the model.
+            twin = None
+            for other in tubes:
+                if other is t or abs(t['a']) < 0.5:
+                    continue
+                if ( abs(other['l0'] - t['l0']) < 1.2
+                        and abs(other['l1'] - t['l1']) < 1.2
+                        and abs(other['a'] + t['a']) < 0.6
+                        and abs(other['radius'] - t['radius']) < 0.35 * t['radius'] ):
+                    twin = other
+                    break
+
+            if twin is not None:
+                print('      MIRRORED PAIR: a twin sits at %s=%+.2f over the same'
+                      ' run - two of a thing' % ('xyz'[A], twin['a']))
+                print('      is not an optic. A bow limb, a barrel, a bipod leg.')
 
         fp = [0.0, 0.0, 0.0]
         rp = [0.0, 0.0, 0.0]
