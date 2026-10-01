@@ -6155,12 +6155,36 @@ static void VR_UpdateParts( void )
 				if( Q_stricmp( refState.vrParts[i].name, jv[j].bone ))
 					continue;
 
-				refState.vrParts[i].driven = true;
-				refState.vrParts[i].value = bound( 0.0f, jv[j].value, 1.0f );
+				// AT REST, WITH NOBODY ON IT, THE ANIMATION GETS IT BACK.
+				//
+				// A declared joint used to own its bone for as long as the
+				// weapon was held, which meant the mod's own animation could
+				// never move it again. That is right for a slide being worked
+				// and wrong for everything else: the gauss and the displacer
+				// declare their spinners so a hand can turn them, and pinning
+				// those stopped the guns spinning when they fired.
+				//
+				// So the simulator claims a part only when it has something to
+				// say about it - the hand is on it, or it is away from rest.
+				// The moment either is true the claim is immediate and total,
+				// which is what a slide needs; the moment both stop being true
+				// the bone goes back to the animation that owns it the rest of
+				// the time.
+				{
+					float v = bound( 0.0f, jv[j].value, 1.0f );
+					qboolean mine = ( vr.part_held == i ) || ( v > 0.001f );
+
+					if( mine )
+					{
+						refState.vrParts[i].driven = true;
+						refState.vrParts[i].value = v;
+					}
+				}
 
 				// The same match, kept, so the hand can be sent back to the
 				// joint it actually moved. jv[] is in joint order, so j IS the
-				// joint index.
+				// joint index. Recorded whether or not the part is claimed this
+				// frame - it is which joint the bone IS, not who owns it.
 				vr.part_joint[i] = j;
 				break;
 			}
