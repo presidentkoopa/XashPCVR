@@ -162,7 +162,9 @@ In the order I would take them:
 - **Grenades: one mechanism, both behaviours.** The pin starts nothing; your grip holds the spoon;
   a thumb control releases it deliberately, which is cooking, and throwing releases it too.
 - **Prying: dropped.** There is nothing in Half-Life to pry.
-- **Haptics: later.** Part G's table is written and unbuilt.
+- **Haptics: the platform has them.** `VR_Haptic` is implemented and fired from eight call
+  sites - weapon fire, impacts, a magazine seating, a cylinder latching. What is deferred is only
+  Part G's per-mechanism table (a detent clicking, a catch engaging), which is written and unbuilt.
 - **Retail content is the target.** We ship the engine, the player brings the game. (Owner, 1 Oct.)
 - **HD rigs preferred where they exist**, our own VR-mod rips where they are better and we have them.
   (Owner, 1 Oct.)
