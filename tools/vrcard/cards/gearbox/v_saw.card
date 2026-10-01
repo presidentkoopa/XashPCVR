@@ -27,7 +27,11 @@ joint 0  bone "Object05"  slide  travel 17.49  rest 0
 # The top cover. It stays where it is put - a cover has a detent, not a
 # spring, which is why it carries no return.
 joint 1  bone "Object02"  hinge  travel 1.68  rest 0
-    point cover_open at 0.50
+    # Near shut rather than half way: cover_open is latched from this
+    # crossing, and at half travel its hysteresis band is where a hand
+    # that half-closes the cover leaves it - reading shut while the
+    # cover is visibly up. Anything not seated is open for loading.
+    point cover_open at 0.12
     grab  point 0.00 0.00 0.00  radius 3.5
 
 # `saw_clipbox` is the ammunition box and `v_saw_round1..5` are the belt

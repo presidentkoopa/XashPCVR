@@ -67,4 +67,8 @@ joint 1  bone "m40a1_clip"  slide  travel 4.81  rest 0
 # pulling a bolt handle down, which is why it carries no catch: its own
 # stiffness against the hand is what holds it.
 joint 2  bone "m40a1_bolt"  hinge  travel 0.60  rest 0
+    # Stated, not assumed: silence means "use the default for this kind
+    # of joint", and that default is a pistol slide's return - which is
+    # exactly what the paragraph above says a bolt handle does not have.
+    spring 0
     grab  point 0.43 1.53 0.05  radius 2.0
