@@ -5,6 +5,40 @@ anybody — or any later session — can pick the work up without reconstructing
 
 Last updated 1 October 2026.
 
+## IT RUNS
+
+**1 October 2026: the weapon simulator worked in the game for the first time.**
+Confirmed in a headset: the pistol slide racks, the revolver cylinder swings out
+and back smoothly, the shotgun pump works, the MP5 fires and grips well.
+
+Everything built before today was real code that had never once executed where a
+player could feel it. Four separate faults stood between the simulator and the
+hands, and none of them were in the simulator:
+
+1. **Client prediction had never run.** A model index used as a string pointer,
+   then a step of zero milliseconds, then a loopback that never negotiated the
+   hand channel so the server never stepped either.
+2. **EVERY VR BUTTON WAS OFF BY ONE.** `vr_openxr.h`'s VR_BTN_* constants index
+   `vr.btn[]` directly and must equal `vr_action_id_t`. Inserting VRA_TRIGGER
+   shifted the enum and the header was not renumbered, so VR_BTN_OFFGRIP read
+   the MENU button - no weapon part in the game could be grabbed, by anyone,
+   ever - and VR_BTN_RELOAD read USE, so the off-hand trigger dropped magazines
+   on its own. Twelve STATIC_ASSERTs now fail the build if it recurs.
+3. **The renderer read a different file from the game DLL.** The game DLL parses
+   `vr/cards/*.card`; the renderer parses `models/vr/weapons.txt` to decide which
+   bones are grabbable. That file did not exist, so the renderer fell back to a
+   cvar naming one or two bones per weapon from before cards existed.
+   `tools/vrcard/make_weapons_txt.py` generates it from the cards now, on every
+   deploy.
+4. **The hand was sent back under the wrong number.** Posing matched parts to
+   joints by bone name; input did not, so on any weapon whose part order differs
+   from its joint numbering the hand drove the wrong joint.
+
+And one that hid all four: **the deploy tool copied `xash.dll` and the two game
+DLLs and nothing else.** `ref_gl.dll`, `filesystem_stdio.dll`, `menu.dll`,
+`vgui_support.dll` and the launcher were never deployed - the renderer in the
+play install was missing the very commit that teaches it to read cards.
+
 ## The two documents
 
 - [`PCVR_WEAPONS_PLAN.md`](PCVR_WEAPONS_PLAN.md) — *XashPCVR Weapons: The Full Build*, Parts A–O.
