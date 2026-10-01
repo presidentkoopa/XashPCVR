@@ -93,6 +93,19 @@ typedef struct ref_overview_s
 #define RF_DRAW_OVERVIEW	(1<<2)		// overview mode is active
 #define RF_ONLY_CLIENTDRAW	(1<<3)		// nothing is drawn by the engine except clientDraw functions
 
+// PCVR fork: this pass renders into an offscreen target rather than into the
+// window or an eye - a scope's objective, a security monitor, a mirror, a rear
+// view. The renderer takes the viewport as the target's own extent with no
+// y-flip against the window, leaves the viewmodel out (the camera is not the
+// player's eye), and contributes nothing to once-per-frame state.
+//
+// IT CANNOT BE RF_DRAW_CUBEMAP, which is the only existing flag that takes the
+// raw-viewport branch and would otherwise have done. RF_DRAW_CUBEMAP also
+// returns early from R_DrawStudioModel and R_DrawSpriteModel, so a view built
+// on it shows world brushes and nothing else: no soldiers, no headcrabs, no
+// muzzle flashes. A scope image with no people in it is not a scope image.
+#define RF_OFFSCREEN_TARGET	(1<<4)		// drawn into a texture, not into a view
+
 // intermediate struct for viewpass (or just a single frame)
 //
 // NOTE: this struct crosses the ENGINE <-> RENDERER (ref_*.dll) boundary only.

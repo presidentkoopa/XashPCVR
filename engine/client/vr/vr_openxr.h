@@ -387,6 +387,42 @@ void     VR_EndEye( int eye );
 void     VR_EndFrame( void );
 
 //
+// OFFSCREEN VIEW TARGETS
+//
+// A view rendered from somewhere that is not the player's eyes, into a texture
+// something else can sample: a scope's objective, a security monitor, a
+// mirror, a rear view. Nothing in this interface names any of them.
+//
+// Declared here because the implementation sits beside `vrgl`, the engine's
+// only access to OpenGL - see the long note at the top of that section in
+// vr_openxr.c. The R_ prefix is deliberate: a monitor on a wall is not VR, and
+// a caller should not have to pretend it is.
+//
+// Acquire once with a name and a square size; render each frame; ask for the
+// texnum when drawing. The texnum reads 0 until something has rendered into
+// the target, so a caller cannot accidentally draw uninitialised memory.
+int      R_AcquireViewTarget( const char *name, int size );
+void     R_ReleaseViewTarget( int target );
+int      R_ViewTargetTexnum( int target );
+qboolean R_RenderViewTarget( int target, const vec3_t origin,
+	const vec3_t angles, float fov );
+void     R_FreeViewTargets( void );
+
+// The per-frame hook: renders whatever targets are due this frame. Called from
+// V_RenderView between posing the world and the first eye, which is the only
+// point that is after pfnCalcRefdef and before any eye FBO is bound.
+void     VR_RenderViewTargets( void );
+
+// Copy a target into whatever framebuffer is bound, at a rectangle in its
+// coordinates. A monitor, a HUD inset, a picture-in-picture - and the way the
+// capability is tested before anything can draw it on a lens.
+void     VR_BlitViewTarget( int target, int x, int y, int w, int h );
+
+// The self-test's own draw, once per eye while that eye's FBO is bound. Does
+// nothing unless vr_viewtarget_test is set.
+void     VR_DrawViewTargetTest( void );
+
+//
 // tracking queries (used later by input / gameplay layers)
 //
 const vr_pose_t *VR_GetHMDPose( void );

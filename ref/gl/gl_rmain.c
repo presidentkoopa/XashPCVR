@@ -561,12 +561,17 @@ void R_SetupGL( qboolean set_gl_state )
 
 	if( !set_gl_state ) return;
 
-	if( RI.rvp.vr_active )
+	if( RI.rvp.vr_active || FBitSet( RI.rvp.flags, RF_OFFSCREEN_TARGET ))
 	{
 		// PCVR fork: an HMD eye renders into an OpenXR swapchain FBO whose size
 		// is unrelated to the window, so the y-flip against gpGlobals->height
 		// below would be wrong. The viewport covers the whole eye texture.
 		// Same reasoning as the cubemap/mirror path underneath.
+		//
+		// An RF_OFFSCREEN_TARGET pass is the same case for the same reason: its
+		// target is a square texture of its own size, and flipping it against
+		// the window's height would put it off the bottom of a 1080-high
+		// window and clip it.
 		pglViewport( RI.rvp.viewport[0], RI.rvp.viewport[1], RI.rvp.viewport[2], RI.rvp.viewport[3] );
 	}
 	else if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ))
@@ -977,7 +982,10 @@ void R_RenderScene( void )
 	// frametime is valid only for normal pass
 	// PCVR fork: also zero it for the second eye - it drives particle and tracer
 	// integration, which would otherwise advance twice per displayed frame.
-	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ) && ( !RI.rvp.vr_active || RI.rvp.vr_eye == 0 ))
+	// An offscreen target is a THIRD pass over the same frame, so it
+	// contributes zero for exactly the reason the second eye does.
+	if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP | RF_OFFSCREEN_TARGET )
+		&& ( !RI.rvp.vr_active || RI.rvp.vr_eye == 0 ))
 		tr.frametime = gp_cl->time -   gp_cl->oldtime;
 	else tr.frametime = 0.0;
 
@@ -1134,7 +1142,11 @@ void R_RenderFrame( const ref_viewpass_t *rvp )
 	// and tr.realframecount must fire exactly once per FRAME, not once per eye -
 	// tr.realframecount is the same-frame dedupe key for player gait and is
 	// exported to mods, so double-stepping it corrupts animation.
-	if( !RI.rvp.vr_active || RI.rvp.vr_eye == 0 )
+	// ...and an offscreen target renders BEFORE either eye, with vr_active
+	// false, so without this it would satisfy the condition and fire the
+	// viewmodel events and step tr.realframecount ahead of eye 0.
+	if(( !RI.rvp.vr_active || RI.rvp.vr_eye == 0 )
+		&& !FBitSet( RI.rvp.flags, RF_OFFSCREEN_TARGET ))
 	{
 		if( !FBitSet( RI.rvp.flags, RF_ONLY_CLIENTDRAW ))
 			R_RunViewmodelEvents();

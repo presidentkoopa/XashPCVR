@@ -139,6 +139,11 @@ static CVAR_DEFINE_AUTO( vr_menu_leash, "35", FCVAR_ARCHIVE, "degrees the head m
 static CVAR_DEFINE_AUTO( vr_menu_pitch_sign, "-1", FCVAR_ARCHIVE, "flip if the menu anchor and pointer move the wrong way vertically" );
 CVAR_DEFINE_AUTO( vr_hands, "1", FCVAR_ARCHIVE, "pin the viewmodel to the right controller" );
 CVAR_DEFINE_AUTO( vr_hud, "1", FCVAR_ARCHIVE, "draw the 2D HUD/menu inside the headset" );
+CVAR_DEFINE_AUTO( vr_viewtarget_test, "0", 0, "render a rear view into an offscreen target and blit it into the corner of each eye" );
+
+// The handle the test above holds while it is on, so turning it off gives
+// the texture back. -1 is "none"; a target handle is an index.
+static int vr_test_target = -1;
 
 // Calibration offset for the hand/weapon mesh's local "forward" axis, applied
 // on top of the tracked pose. Live-reported: wrist-to-fingertip pointed at
@@ -10012,6 +10017,7 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_hand_pivot_up );
 	Cvar_RegisterVariable( &vr_hands );
 	Cvar_RegisterVariable( &vr_hud );
+	Cvar_RegisterVariable( &vr_viewtarget_test );
 	Cmd_AddCommand( "vr_status", VR_Status_f, "report OpenXR VR state" );
 
 	VR_DiagOpen();
@@ -10420,6 +10426,407 @@ no_depth:
 		sc->depth_handle ? "submitted" : "private" );
 	return true;
 }
+
+/*
+=================================================================
+AN OFFSCREEN VIEW TARGET
+
+A view rendered from somewhere that is not the player's eyes, into a texture
+something else can then sample. A rifle scope's objective is the caller that
+prompted it (Part H-03); a security monitor showing a corridor, a mirror, a
+rear view and a dropped camera are the same thing and get it for nothing.
+
+Nothing here knows what a scope is. A caller says "give me a square texture
+this big", then each frame "render the world from here, looking this way, this
+narrow", and "what is the texnum". Whoever draws it learns only that a texnum
+now has a picture in it.
+
+WHY IT LIVES IN THIS FILE. The engine does not normally link OpenGL; `vrgl`
+above is the whole of the engine's access to it, it is static to this
+translation unit, and VR_CreateSwapchain is the only existing engine code that
+builds and validates an FBO. Putting a second FBO owner in its own file would
+mean promoting vrgl to a shared header first. If a third caller ever needs it,
+that is the right move and this should move with it.
+
+THE ENGINE CANNOT MAKE A TEXTURE, which is the one awkward part. vrgl has
+thirteen entry points and not one of them is glGenTextures - by design, since
+ref_gl owns texture management. So the texture is created by the RENDERER
+through GL_CreateTexture, which engine/client already calls this way for the
+cinematic texture, and its real GL name is fetched back with PARM_TEX_TEXNUM;
+only the FBO wrapping happens here. The renderer therefore knows the texture
+as an ordinary Xash texnum and can bind it like any other.
+=================================================================
+*/
+#define VR_MAX_VIEW_TARGETS 4
+
+typedef struct vr_viewtarget_s
+{
+	char      name[64];       // the Xash texture name, for GL_CreateTexture
+	int       size;           // square; a scope's image has no aspect to keep
+	int       texnum;         // Xash texnum, which is what a caller draws with
+	GLuint_t  fbo;
+	GLuint_t  depth_rb;
+	qboolean  live;
+	qboolean  drawn;          // something has rendered into it since it was made
+} vr_viewtarget_t;
+
+static vr_viewtarget_t vr_targets[VR_MAX_VIEW_TARGETS];
+
+/*
+================
+R_ViewTargetFree
+
+Drop a target's GL objects. Safe on a partially built one, for the same
+reason VR_DestroySession is.
+================
+*/
+static void R_ViewTargetFree( vr_viewtarget_t *t )
+{
+	if( t->fbo && vrgl.loaded )
+		vrgl.DeleteFramebuffers( 1, &t->fbo );
+
+	if( t->depth_rb && vrgl.loaded )
+		vrgl.DeleteRenderbuffers( 1, &t->depth_rb );
+
+	if( t->texnum )
+		ref.dllFuncs.GL_FreeTexture( t->texnum );
+
+	memset( t, 0, sizeof( *t ));
+}
+
+/*
+================
+R_AcquireViewTarget
+
+A handle, or -1. Idempotent on the name: asking twice for the same name at the
+same size hands back the one that already exists, so a caller may ask every
+frame without keeping track.
+================
+*/
+int R_AcquireViewTarget( const char *name, int size )
+{
+	vr_viewtarget_t *t = NULL;
+	GLenum_t status;
+	int i, gl_name;
+
+	if( !name || !name[0] || size < 16 || size > 4096 )
+		return -1;
+
+	for( i = 0; i < VR_MAX_VIEW_TARGETS; i++ )
+	{
+		if( vr_targets[i].live && !Q_strcmp( vr_targets[i].name, name ))
+			return vr_targets[i].size == size ? i : -1;
+	}
+
+	if( !VR_LoadGLFuncs( ))
+		return -1;
+
+	for( i = 0; i < VR_MAX_VIEW_TARGETS; i++ )
+	{
+		if( !vr_targets[i].live )
+		{
+			t = &vr_targets[i];
+			break;
+		}
+	}
+
+	if( !t )
+	{
+		Con_Printf( S_ERROR "R_AcquireViewTarget: all %d targets in use\n",
+			VR_MAX_VIEW_TARGETS );
+		return -1;
+	}
+
+	memset( t, 0, sizeof( *t ));
+	Q_strncpy( t->name, name, sizeof( t->name ));
+	t->size = size;
+
+	// The renderer makes the texture; this only wraps it. TF_NOMIPMAP because
+	// nothing minifies a scope image, and TF_CLAMP because sampling past the
+	// edge should not fetch the far side of the view.
+	t->texnum = ref.dllFuncs.GL_CreateTexture( t->name, size, size, NULL,
+		TF_NOMIPMAP | TF_CLAMP );
+
+	if( !t->texnum )
+	{
+		Con_Printf( S_ERROR "R_AcquireViewTarget: %s texture failed\n", name );
+		memset( t, 0, sizeof( *t ));
+		return -1;
+	}
+
+	gl_name = ref.dllFuncs.RefGetParm( PARM_TEX_TEXNUM, t->texnum );
+
+	if( !gl_name )
+	{
+		Con_Printf( S_ERROR "R_AcquireViewTarget: %s has no GL name\n", name );
+		R_ViewTargetFree( t );
+		return -1;
+	}
+
+	vrgl.GenFramebuffers( 1, &t->fbo );
+	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, t->fbo );
+	vrgl.FramebufferTexture2D( GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+		GL_TEXTURE_2D_T, (GLuint_t)gl_name, 0 );
+
+	// Depth of its own. A view of the world with no depth buffer draws the
+	// world in whatever order the renderer happens to walk it.
+	vrgl.GenRenderbuffers( 1, &t->depth_rb );
+	vrgl.BindRenderbuffer( GL_RENDERBUFFER_EXT, t->depth_rb );
+	vrgl.RenderbufferStorage( GL_RENDERBUFFER_EXT, GL_DEPTH_COMPONENT24_EXT,
+		size, size );
+	vrgl.FramebufferRenderbuffer( GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
+		GL_RENDERBUFFER_EXT, t->depth_rb );
+
+	status = vrgl.CheckFramebufferStatus( GL_FRAMEBUFFER_EXT );
+	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, 0 );
+
+	if( status != GL_FRAMEBUFFER_COMPLETE_EXT )
+	{
+		Con_Printf( S_ERROR "R_AcquireViewTarget: %s FBO incomplete (0x%x)\n",
+			name, status );
+		R_ViewTargetFree( t );
+		return -1;
+	}
+
+	Con_Printf( "view target %d: %s, %dx%d, texnum %d\n",
+		(int)( t - vr_targets ), name, size, size, t->texnum );
+
+	t->live = true;
+	return (int)( t - vr_targets );
+}
+
+void R_ReleaseViewTarget( int target )
+{
+	if( target < 0 || target >= VR_MAX_VIEW_TARGETS )
+		return;
+
+	if( !vr_targets[target].live )
+		return;
+
+	R_ViewTargetFree( &vr_targets[target] );
+}
+
+/*
+================
+R_ViewTargetTexnum
+
+The Xash texnum, or 0 while nothing has been rendered into it yet. A caller
+that drew an untouched target would be putting uninitialised memory on a lens,
+so "not ready" and "no such target" deliberately answer the same.
+================
+*/
+int R_ViewTargetTexnum( int target )
+{
+	if( target < 0 || target >= VR_MAX_VIEW_TARGETS )
+		return 0;
+
+	if( !vr_targets[target].live || !vr_targets[target].drawn )
+		return 0;
+
+	return vr_targets[target].texnum;
+}
+
+/*
+================
+R_RenderViewTarget
+
+One pass, from `origin` along `angles`, `fov` degrees across, into the target's
+own texture.
+
+ONCE PER FRAME, BEFORE THE EYES, which is the whole reason this is a pass of
+its own rather than something drawn during one: the image inside a scope is the
+same image for both eyes. Two eyes looking down one tube see one picture, so
+rendering it per eye would cost twice as much for an identical result - and the
+eye that is not at the eyepiece sees no image at all.
+
+It is also why RF_OFFSCREEN_TARGET has to exist. This pass runs with vr_active
+false and before eye 0, so without the flag it would take the window's y-flip
+for its viewport, draw the player's own weapon into the middle of the image,
+step tr.realframecount ahead of the eyes, and advance tr.frametime a third time
+in one frame.
+================
+*/
+qboolean R_RenderViewTarget( int target, const vec3_t origin,
+	const vec3_t angles, float fov )
+{
+	vr_viewtarget_t *t;
+	ref_viewpass_t rvp;
+
+	if( target < 0 || target >= VR_MAX_VIEW_TARGETS )
+		return false;
+
+	t = &vr_targets[target];
+
+	if( !t->live || !vrgl.loaded )
+		return false;
+
+	if( fov < 0.1f || fov > 170.0f )
+		return false;
+
+	memset( &rvp, 0, sizeof( rvp ));
+
+	rvp.viewport[0] = 0;
+	rvp.viewport[1] = 0;
+	rvp.viewport[2] = t->size;
+	rvp.viewport[3] = t->size;
+
+	VectorCopy( origin, rvp.vieworigin );
+	VectorCopy( angles, rvp.viewangles );
+
+	// Square, so one fov serves both axes. A scope's eyepiece is round and a
+	// monitor is cropped to taste; neither wants the window's aspect baked in.
+	rvp.fov_x = fov;
+	rvp.fov_y = fov;
+
+	rvp.viewentity = cl.viewentity;
+	rvp.flags = RF_DRAW_WORLD | RF_OFFSCREEN_TARGET;
+
+	// vr_active stays FALSE deliberately. It means "build the projection from
+	// an HMD's four asymmetric half-angles", and this view has none: it is a
+	// symmetric frustum like any ordinary camera.
+	rvp.vr_active = false;
+
+	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, t->fbo );
+
+	GL_RenderFrame( &rvp );
+
+	vrgl.BindFramebuffer( GL_FRAMEBUFFER_EXT, 0 );
+
+	// Hand the viewport back. The eye loop sets its own and so does the 2D
+	// layer, but the flat window path does not, and leaving a 512-square
+	// viewport behind on a frame where VR is off shrinks the whole screen into
+	// the corner.
+	vrgl.Viewport( 0, 0, (GLint_t)refState.width, (GLint_t)refState.height );
+
+	t->drawn = true;
+	return true;
+}
+
+/*
+================
+R_FreeViewTargets
+
+Every target, for shutdown and for a renderer restart - the texnums belong to
+a ref_dll that is about to stop existing.
+================
+*/
+void R_FreeViewTargets( void )
+{
+	int i;
+
+	for( i = 0; i < VR_MAX_VIEW_TARGETS; i++ )
+	{
+		if( vr_targets[i].live )
+			R_ViewTargetFree( &vr_targets[i] );
+	}
+}
+
+/*
+================
+VR_BlitViewTarget
+
+Copy a target into whatever framebuffer is bound, at a rectangle in its
+coordinates. Within vrgl's existing entry points, so it costs nothing new.
+
+Not a lens, and not pretending to be: a lens needs the per-eye parallax maths
+and a round mask, and that belongs in the renderer where the textured-quad
+code already lives. This is the plain version - a monitor, a HUD inset, a
+picture-in-picture - and it is what makes the capability testable before any
+of that exists.
+================
+*/
+void VR_BlitViewTarget( int target, int x, int y, int w, int h )
+{
+	vr_viewtarget_t *t;
+
+	if( target < 0 || target >= VR_MAX_VIEW_TARGETS )
+		return;
+
+	t = &vr_targets[target];
+
+	if( !t->live || !t->drawn || !vrgl.loaded || !vrgl.BlitFramebuffer )
+		return;
+
+	// The destination framebuffer is whatever the caller has bound - an eye,
+	// or the window. Only the READ binding changes, and it is put back.
+	vrgl.BindFramebuffer( GL_READ_FRAMEBUFFER_T, t->fbo );
+	vrgl.BlitFramebuffer( 0, 0, t->size, t->size,
+		x, y, x + w, y + h, GL_COLOR_BUFFER_BIT_T, GL_LINEAR_T );
+	vrgl.BindFramebuffer( GL_READ_FRAMEBUFFER_T, 0 );
+}
+
+/*
+================
+VR_RenderViewTargets
+
+The per-frame pass. Called from V_RenderView after the world is posed and
+before the first eye.
+
+TODAY THIS ONLY SERVES ITS OWN TEST, and that is deliberate. The capability
+underneath is general and finished; the first real caller is Part H-03's
+scope, which additionally needs a card that can declare a lens and a renderer
+that can draw a texture on a disc with per-eye parallax - neither of which
+exists yet.
+
+So rather than land an untested capability and hope, `vr_viewtarget_test 1`
+renders the world from the player's own head looking BACKWARD and blits it
+into the corner of each eye. A rear view is the right test image because it is
+impossible to mistake for a rendering accident: if what appears in the corner
+is the corridor behind you, moving as you move, then the texture, the FBO, the
+flag, the viewport, the depth buffer, the viewmodel suppression and the
+once-per-frame gating are all correct, and the only thing left for a scope is
+where the picture gets drawn.
+================
+*/
+void VR_RenderViewTargets( void )
+{
+	vec3_t org, ang;
+
+	if( !vr_viewtarget_test.value )
+	{
+		// Give the memory back rather than holding a megabyte of texture for
+		// a test nobody is running.
+		if( vr_test_target >= 0 )
+		{
+			R_ReleaseViewTarget( vr_test_target );
+			vr_test_target = -1;
+		}
+		return;
+	}
+
+	if( vr_test_target < 0 )
+	{
+		vr_test_target = R_AcquireViewTarget( "*vr_viewtarget_test", 512 );
+		if( vr_test_target < 0 )
+			return;
+	}
+
+	if( !VR_GetListener( org, ang ))
+		return;
+
+	// Looking the other way. Pitch kept, so leaning changes what you see.
+	ang[YAW] += 180.0f;
+
+	R_RenderViewTarget( vr_test_target, org, ang, 90.0f );
+}
+
+/*
+================
+VR_DrawViewTargetTest
+
+The other half of the self-test, called once per eye while that eye's FBO is
+bound. Keeps its own handle and its own cvar check so the eye loop does not
+have to know either.
+================
+*/
+void VR_DrawViewTargetTest( void )
+{
+	if( !vr_viewtarget_test.value || vr_test_target < 0 )
+		return;
+
+	VR_BlitViewTarget( vr_test_target, 16, 16, 320, 320 );
+}
+
 
 /*
 ================
@@ -12172,5 +12579,13 @@ int      VR_GetCylinderImpulse( void ) { return 0; }
 qboolean VR_GetFlashlightSource( vec3_t out_org, vec3_t out_fwd ) { return false; }
 void     VR_Begin2D( void ) { }
 void     VR_End2D( void ) { }
+int      R_AcquireViewTarget( const char *name, int size ) { return -1; }
+void     R_ReleaseViewTarget( int target ) { }
+int      R_ViewTargetTexnum( int target ) { return 0; }
+qboolean R_RenderViewTarget( int target, const vec3_t origin, const vec3_t angles, float fov ) { return false; }
+void     R_FreeViewTargets( void ) { }
+void     VR_BlitViewTarget( int target, int x, int y, int w, int h ) { }
+void     VR_RenderViewTargets( void ) { }
+void     VR_DrawViewTargetTest( void ) { }
 
 #endif

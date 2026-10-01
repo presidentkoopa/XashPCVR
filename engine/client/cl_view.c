@@ -680,6 +680,16 @@ void V_RenderView( void )
 			VR_DrawHeldRound();
 		}
 
+		// OFFSCREEN VIEW TARGETS, and this is the only place they can go.
+		//
+		// After pfnCalcRefdef, so the world is posed and views[] exists; before
+		// the eye loop, so the pass runs ONCE per frame rather than once per
+		// eye - the image inside a scope is the same image for both eyes - and
+		// so that it binds and unbinds its own FBO without ever disturbing
+		// VR_BeginEye's. Framebuffer 0 is current here, which is what it
+		// expects and what it restores.
+		VR_RenderViewTargets();
+
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )
 		{
 			ref_viewpass_t eye_rvp = views[0];	// inherit flags/viewentity from the mod
@@ -688,6 +698,12 @@ void V_RenderView( void )
 				continue;
 
 			GL_RenderFrame( &eye_rvp );
+
+			// The view-target self-test, drawn while this eye's FBO is bound:
+			// a rear view in the corner, proving the whole offscreen path
+			// before anything exists that could put it on a lens. Draws
+			// nothing unless its cvar is set, and owns its own handle.
+			VR_DrawViewTargetTest();
 
 			// The mod's additional passes, in the order it produced them -
 			// matching the flatscreen do/while. These keep the mod's OWN

@@ -47,7 +47,9 @@ qboolean R_CullModel( const cl_entity_t *e, const vec3_t absmin, const vec3_t ab
 		if( ENGINE_GET_PARM( PARM_DEV_OVERVIEW ))
 			return true;
 
-		if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP ) && !ENGINE_GET_PARM( PARM_THIRDPERSON ) && CL_IsViewEntityLocalPlayer())
+		// RF_OFFSCREEN_TARGET joins RF_DRAW_CUBEMAP: a pass whose camera is not
+		// the player's eye culls the viewmodel away rather than keeping it.
+		if( !FBitSet( RI.rvp.flags, RF_DRAW_CUBEMAP | RF_OFFSCREEN_TARGET ) && !ENGINE_GET_PARM( PARM_THIRDPERSON ) && CL_IsViewEntityLocalPlayer())
 			return false;
 
 		return true;
