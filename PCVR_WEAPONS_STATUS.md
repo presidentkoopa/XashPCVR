@@ -68,7 +68,7 @@ retail content the only binding target — see the card section.
 | **F** Held weapon as an object | done, gated | `engine/client/vr/vr_hold.*`, behind `vr_hold_sim`, default 0 |
 | **G** Hands on the gun | **mostly** | grip solver built from the authored fist; six cards now carry measured controls, none a placeholder |
 | **H** Sights and scopes | **part** | zoom suppressed for hand-loaders; offscreen view targets built and self-testable; both scopes measured. No lens syntax, no lens drawing. |
-| **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What is missing is the slots themselves - holstering and drawing - not the body under them. |
+| **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What is missing is the slots themselves - holstering and drawing - not the body under them. | **Since: holsters (hip, chest), a dropped magazine as a real bouncing entity with surface sounds and walk-over recovery, and the grab path end to end - vrcmd_t v5 `grab_ent`, a client proposal, a server claim check. No physics library taken.**
 | **J** Half-Life's arsenal | **part** | 18 HD cards written, 6 verified clean |
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
 | **L** Malfunctions, fidelity | **done** (simulator side) | `hlsdk/dlls/vr_feed.*` - three levels, three jams, deterministic rolls |
@@ -446,6 +446,32 @@ written down rather than remembered.
   input determinism at 5.3.
 
 ## Traps already paid for
+
+**`playtest.bat` reported SUCCESS on a failed build.** It printed FAILED, stopped before deploying,
+and handed back exit 0 - because `exit /b 1` from inside the parenthesised `if %DO_BUILD%==1 ( ... )`
+block does not set the script's exit code. Found by breaking the game DLL on purpose and watching it
+return 0 with `error C2059` on screen. Fixed: every failure path jumps to a top-level `:fail`, with
+an explicit `exit /b 0` before it. **Verified both ways, which is the only way to trust a runner.**
+Third member of a family this file already names twice: a runner that cannot report its own failure
+turns a loud failure into a silent one.
+
+**`$LASTEXITCODE` after a pipeline is the PIPELINE's code, not the command's.** `& cmd /c "..." | 
+Select-String ...; $LASTEXITCODE` reads Select-String's status. Capture it into a variable on the
+same line as the call, before anything else runs. This hid the bug above for most of a session.
+
+**`vrcmd.h` exists TWICE and nothing checked that the copies agreed.** The game SDK vendors its own,
+deliberately, because a mod author has no engine tree to include from - and the header's own comment
+promised "a mismatch is refused at load". It was not: `VRCMD_VERSION` was compared in neither tree,
+and the only other mention of it anywhere was a comment in `protocol.h` repeating the promise. A
+stale copy read the engine's bytes at the wrong offsets with no symptom but nonsense. Now
+`vr_gameapi.h` carries `VR_GAMEAPI_VRCMD` and both trees assert equality at COMPILE time. **When
+`vrcmd_t` changes shape, bump both.**
+
+**A Python edit script that asserts its anchors aborts the WHOLE batch on the first miss.** One
+combined script meant to patch four files failed its second assertion, so files three and four were
+silently never touched - and the grep afterwards only checked file one. Either patch one file per
+script, or check every anchor before writing any of them.
+
 
 **A test that passes either way measures nothing, and this one did.** The first version of the
 saturating-arithmetic test drove a joint with absurd card values and asserted it stayed inside its
