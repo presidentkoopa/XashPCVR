@@ -106,4 +106,18 @@ echo  yet - they need the grip solver, which is not built.
 echo ------------------------------------------------------------------
 echo.
 
-call "%PLAY%\run.bat" %*
+rem gl_check_errors is a DEVELOPER DIAGNOSTIC, not a fault indicator, and
+rem run.bat launches with -dev 2 which switches it on. It calls glGetError at
+rem the top of entity drawing and prints whatever is pending - and GL errors
+rem are sticky, so one upstream call that a driver dislikes prints once per
+rem entity per frame forever. That is how one run produced 7,508 identical
+rem lines and drowned the log that actually matters.
+rem
+rem Off by default so the game is usable and the log is readable. To chase a
+rem rendering fault, pass -glcheck and read what it says - but note the file
+rem and line it prints are where the error was DETECTED, not where it was
+rem caused.
+set "GLCHK=+gl_check_errors 0"
+for %%A in (%*) do if /i "%%A"=="-glcheck" set "GLCHK=+gl_check_errors 1"
+
+call "%PLAY%\run.bat" %GLCHK% %*

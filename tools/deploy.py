@@ -34,17 +34,38 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE_REPO = os.path.dirname(HERE)
 HLSDK = os.path.join(os.path.dirname(ENGINE_REPO), 'hlsdk-portable')
 
+# EVERY module the engine build produces, not just xash.dll.
+#
+# This list used to hold only xash.dll and the two game DLLs, and that cost a
+# play session: a brand-new engine was deployed on top of a renderer five days
+# old and a filesystem module five WEEKS old, and the result was 7,508
+# GL_INVALID_OPERATION errors in one run. These pieces share interface structs
+# and are versioned together by being built together; deploying one without the
+# others is an ABI mismatch waiting to be blamed on whatever changed last.
+#
+# game_launch/xash3d.exe is included for the same reason - it is the host
+# process and loads xash.dll.
+def _engine(build):
+    return [
+        (os.path.join(ENGINE_REPO, build, 'engine', 'xash.dll'), 'xash.dll'),
+        (os.path.join(ENGINE_REPO, build, 'ref', 'gl', 'ref_gl.dll'), 'ref_gl.dll'),
+        (os.path.join(ENGINE_REPO, build, 'filesystem', 'filesystem_stdio.dll'), 'filesystem_stdio.dll'),
+        (os.path.join(ENGINE_REPO, build, '3rdparty', 'mainui', 'menu.dll'), 'menu.dll'),
+        (os.path.join(ENGINE_REPO, build, '3rdparty', 'vgui_support', 'vgui_support.dll'), 'vgui_support.dll'),
+        (os.path.join(ENGINE_REPO, build, 'game_launch', 'xash3d.exe'), 'xash3d.exe'),
+    ]
+
+
+def _game(build):
+    return [
+        (os.path.join(HLSDK, build, 'dlls', 'Release', 'hl.dll'), os.path.join('valve', 'dlls', 'hl.dll')),
+        (os.path.join(HLSDK, build, 'cl_dll', 'Release', 'client.dll'), os.path.join('valve', 'cl_dlls', 'client.dll')),
+    ]
+
+
 PIECES = {
-    '32': [
-        (os.path.join(ENGINE_REPO, 'build', 'engine', 'xash.dll'), 'xash.dll'),
-        (os.path.join(HLSDK, 'build', 'dlls', 'Release', 'hl.dll'), os.path.join('valve', 'dlls', 'hl.dll')),
-        (os.path.join(HLSDK, 'build', 'cl_dll', 'Release', 'client.dll'), os.path.join('valve', 'cl_dlls', 'client.dll')),
-    ],
-    '64': [
-        (os.path.join(ENGINE_REPO, 'build64', 'engine', 'xash.dll'), 'xash.dll'),
-        (os.path.join(HLSDK, 'build64', 'dlls', 'Release', 'hl.dll'), os.path.join('valve', 'dlls', 'hl.dll')),
-        (os.path.join(HLSDK, 'build64', 'cl_dll', 'Release', 'client.dll'), os.path.join('valve', 'cl_dlls', 'client.dll')),
-    ],
+    '32': _engine('build') + _game('build'),
+    '64': _engine('build64') + _game('build64'),
 }
 
 
