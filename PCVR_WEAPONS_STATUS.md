@@ -73,7 +73,7 @@ retail content the only binding target — see the card section.
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
 | **L** Malfunctions, fidelity | **done** (simulator side) | `hlsdk/dlls/vr_feed.*` - three levels, three jams, deterministic rolls |
 | **M** Multiplayer | designed | split authority won a three-way design race; not built |
-| **O** Testing | **part** | **119** headless cases, 9-build determinism; nothing needing a headset. **vr_strike and vr_card are not in the determinism matrix at all** - see below |
+| **O** Testing | **part** | **124** headless cases, 9-build determinism; nothing needing a headset. **vr_strike and vr_card are not in the determinism matrix at all** - see below |
 
 **The simulator now runs.** Until 1 October it had never executed inside Half-Life at all — not
 "untested in a headset", never run. Client prediction dereferenced a model index as a pointer, then
@@ -403,8 +403,20 @@ Candidates worth measuring the models for, in rough order of how much they
 would add:
 
 - **shotgun, MP5** - fold out the stock. Less climb, slower to bring on target.
-- **revolver** - thumb the hammer for single action: slower, steadier, and it is
-  already a declared joint with a hammer_cock detent.
+  **BLOCKED, and worth knowing why before anyone starts:** the consequence
+  needs a recoil consumer and there isn't one. Weapon kick in this codebase is
+  not `punchangle`-based (the weapons only READ punchangle to offset aim), and
+  in VR muzzle climb should move the WEAPON rather than the view - which is
+  Part F, whose `vr_hold_sim` defaults 0 and three of whose five functions have
+  no engine call site. Building "while this joint is past this detent, scale
+  recoil by K" today would be a card keyword feeding nothing.
+- **revolver** - ~~thumb the hammer for single action~~ **DONE, 1 Oct.**
+  `vrtriggercfg_t` gained `break_cocked`; the preset states an 85%
+  double-action pull and a 40% single-action one, so thumbing the hammer gives
+  a short crisp break and not thumbing it gives you most of the travel. General
+  rather than a revolver case - a card states `fire ... break 85 break_cocked
+  40` and any weapon gets it. **This also means a card can tune its trigger at
+  all, which nothing could do before.**
 - **pistol** - a press check. Draw the slide a quarter inch and see brass.
 - **crossbow** - flip the scope up out of the way.
 - **gauss, displacer** - the spinners are already hand-turnable; make spinning
