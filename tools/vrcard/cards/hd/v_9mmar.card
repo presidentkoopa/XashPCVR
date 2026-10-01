@@ -1,0 +1,118 @@
+# Half-Life HD MP5 / 9mmAR. Measured by vrcardgen, finished by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd ship
+# three v_9mmar.mdl files of three different SIZES - 115608, 153584 and 94900
+# bytes - but the same RIG: 50 bones, 8 sequences, hash 0xb72952b7, and the
+# same 10.145-unit magazine travel in all three. What differs is the arm and
+# hand mesh (the weapon's share of the vertices is 60.7/60.4/62.1%), which
+# the fingerprint does not look at. So this one card binds to all three, and
+# the three are NOT byte-identical files.
+#
+# THE WEAPON IS THREE BONES. `carbine` is the body (bone 0, root-parented,
+# 605 verts, 60.7%), and it has exactly two children: `tube` and `clip`.
+# Everything else in the 50 is the Bip01 arm rig. So this rig has no bolt and
+# no charging handle, exactly like the SD rig - the content ceiling that Part
+# E's mesh surgery (E-02) exists to break, and which names the MP5 as its
+# first target.
+#
+# Two consequences, both stated below rather than worked around:
+#
+#   chamber_on_seat  - with no bolt to work, seating a magazine has to be
+#                      what chambers a round. This flag is the concession the
+#                      plan describes, and mesh surgery retires it.
+#   no_slide_lock    - the slide stop would engage on an empty magazine and
+#                      then nothing could ever release it, because the joint
+#                      a hand would grab does not exist on this model. A gun
+#                      that locks itself open forever is worse than one that
+#                      does not lock open at all.
+#
+# THE GRENADE LAUNCHER TUBE IS NOT SYNTHETIC HERE. Part J lists it as a part
+# mesh surgery has to create; on this rig it already has its own bone. `tube`
+# owns 51 vertices, 5.1% of the mesh, in four rings along the barrel axis:
+# 14.48 units long, mean cross-section radius 1.2, centred about 3 units
+# below the bore (the muzzle attachment is at 0.5 -27.0 2.0, so the bore sits
+# at Z ~ +2 and the tube's rings at Z ~ -1), spanning Y -23.12 to -8.80 in
+# the body's frame. That is an M203-style under-barrel launcher and nothing
+# else.
+#
+# It is still NOT A JOINT, for two measured reasons. It never moves: posed
+# through all eight sequences, `tube` sits at exactly (0.70 -16.01 0.81)
+# relative to `carbine` in every frame of every one, including `grenade`
+# (seq 2), which only recoils the body. And there is nothing for it to feed:
+# the card format has one feed path, and the grenade launcher is a second
+# one that R-08 has not built yet. Declaring a joint here would mean
+# inventing a travel for a part the animators never moved, which is worse
+# than leaving the geometry where the next person can find it - hence the
+# numbers above.
+
+weapon v_9mmar
+match  bones 50  seqs 8  hash 0xb72952b7
+
+# 50 rounds is MP5_MAX_CLIP in dlls/weapons.h:127. 600 rpm is hl.dll's own
+# rate: mp5.cpp:187 sets the next primary attack 0.1s out, which is 600 a
+# minute exactly.
+#
+# AND THAT IS WHY IT IS 600 AND NOT THE REAL GUN'S 800. Everything else on
+# this weapon is hand-worked and wants a loose rpm, because the mechanism is
+# the limiter. This one has no mechanism to be the limiter - there is no
+# action joint with a bone, so nothing the player does paces the shots. The
+# rpm IS the mechanism, and the only number that can never become an
+# invisible second timer is hl.dll's own.
+type   magazine_slide  capacity 50  rpm 600
+feed   chamber_on_seat  no_slide_lock
+
+# Half-Life's MP5 is automatic only. The semi position is the real MP5A3's,
+# and Part G's selector exists to offer it; the auto position is what the
+# game has always done.
+fire   semi auto  rpm 600
+
+# JOINT 0 IS THE PRESET'S ACTION, AND IT KEEPS NO BONE. magazine_slide
+# declares it, and it stays bodiless on purpose: with `self_loading` still
+# set the simulator cycles it on recoil and the feed rules move rounds
+# through it, which is right - the gun does cycle. It simply cannot be drawn
+# cycling, and no hand can grab it, because the geometry is not there. When
+# mesh surgery lands, joint 0 gets a `synth` charging handle and this card
+# drops `chamber_on_seat`.
+
+# JOINT 1: the magazine. Preset order makes joint 0 the action and joint 1
+# the magazine, so the clip has to be 1; numbering it 0 would silently hand
+# it the slide's catches.
+#
+# Travel 10.14 is measured, not quoted: posed through `reload` (seq 3) with
+# the magazine's position taken relative to `carbine` rather than to the
+# world, it leaves over frames 8-11, sits out from 11 to 28, and returns over
+# 29-32, moving 10.145 units along the body's -Z and rotating by nothing at
+# all. A clean straight drop. (The SD rig's is 16.71 and tilts 1.11 radians
+# on the way out; this is a different magazine on a different receiver, which
+# is exactly why the card binds by fingerprint.)
+#
+# `mag_clear` at 0.42 OVERRIDES the preset's 0.35, and this is the one number
+# on the card the preset got wrong. The magazine's top vertex sits at Z +0.97
+# in the body's frame; the receiver vertices directly above the magazine's
+# footprint bottom out at Z -3.33. So the magazine is inside the well by
+# 4.30 units and is free of it after 4.30 of 10.145 travel - 42%, not 35%.
+# At the preset's 0.35 the player's hand is given the magazine while 0.8
+# units of it are still in the gun.
+#
+# The grab point is the centroid of the magazine's 30 vertices in its own
+# bone space, and 2.5 is measured too: the furthest of those vertices is
+# 2.48 units from the centroid in the plane across the travel axis.
+joint 1  bone "clip"  slide  travel 10.14  rest 0
+    point mag_clear at 0.42
+    grab  point 0.00 1.19 0.04  radius 2.5
+
+# NO CONTROL LINE, AND NO CATCH OVERRIDE. The HK paddle release is welded to
+# the receiver - it is `carbine` geometry, not a bone - so there is no
+# measured point to put a thumb on, and the magazine latch's position is the
+# preset's default because there is no latch on this model to measure. Both
+# are a preview-and-pick-by-eye job, like the pistol's magazine box, not
+# something to derive from anatomy.
+#
+# NO `eject at` EITHER. hl.dll throws MP5 brass from a view-space fudge
+# (ev_hldm.cpp:671, forward 20 / right -12 / up 4) that puts the case out of
+# the LEFT side of the gun; it is not a measurement of this model and there
+# is no ejection-port bone to measure instead.
+#
+# NO `strike`. Every firearm inherits the weak pistol-whip default from
+# VRStrike_DefaultCfg, which is what the other firearm cards do; nothing
+# about this weapon's butt has been measured to justify changing it.

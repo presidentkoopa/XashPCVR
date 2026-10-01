@@ -1,0 +1,177 @@
+# Half-Life .357 revolver (Colt Python), HD rig. Measured by vrcardgen and by
+# posing this model's own sequences; carded by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd all
+# fingerprint 60 bones / 8 seqs / 0xed2a677b, so this card binds all three.
+#
+# They are NOT the same file - 191056, 228772 and 120908 bytes, three
+# different MD5s, and three different whole-model extents (22.60, 20.08,
+# 23.29). The difference is the ARMS: each HD pack ships its own hand mesh on
+# the same weapon. Every number this card uses was taken from all three and
+# came back identical - the same 396 body vertices, the same 73-vertex
+# cylinder, the same 1.0996 swing, the same -0.7365 hammer, the same latch
+# vertex at 0.92 0.37 0.01. So one card is correct here by measurement, not by
+# the files happening to match.
+#
+# The SD rig is a DIFFERENT model (44 bones, 0xba7f43f7) and keeps its own
+# card in cards/valve.
+#
+# WHAT THE HD RIG GIVES US THAT THE SD RIG DID NOT: a hammer that is actually
+# animated. The SD card had to leave the hammer undeclared because nothing
+# ever moved it, which left Part J's "thumb the hammer for a single-action
+# shot" unbuilt. Here `hammer` turns 0.7365 radians - 42.2 degrees - and the
+# animation holds it there, so the travel is measured rather than invented and
+# joint 1 is a real part.
+#
+# Part J: "Thumb the latch, swing the cylinder out, muzzle up to dump,
+# speedloader or single rounds, flick shut. Thumb the hammer for a
+# single-action shot with a lighter trigger; or pull through double-action.
+# Chambers advance one per cock." All of that is the `revolver` preset plus the
+# two joints below; the rest of it - dumping on muzzle_up, a speedloader
+# filling six chambers at once, the cylinder advancing on a cock and on a
+# double-action pull - is already in vr_feed and needs nothing from the card.
+#
+# HOW THE SWING WAS MEASURED. `revolver` is bone 14, parented to the weapon
+# body `python`, and it is the crane: `speed_loader` and `Rounds` (which
+# parents the six SHELL bones) hang off it, so the chambers and their brass
+# swing with it. In `reload` it turns about its own +Y - which is the bore
+# axis - by 1.0996 rad, over frames 21 to 27, and holds there until frame 100.
+# No translation on any axis and nothing on the other two rotations, so one
+# hinge describes it exactly. The cylinder's vertex centroid travels 2.08
+# units doing it (+1.96 X, -0.70 Z): the bone's origin sits 1.95 units below
+# the cylinder's centre, which is the crane pin, so turning about the bore
+# axis swings the cylinder sideways out of the frame instead of spinning it in
+# place.
+#
+# NOT DECLARED, deliberately:
+#   trigger          - bone 12, turns 0.6136 rad, but only in `fidget1`. It is
+#                      driven by the analog trigger axis and the sear, not by a
+#                      hand grabbing it, and a joint nothing can reach is a
+#                      part the simulator would freeze. Left to the animation.
+#   speed_loader     - bone 15, arrives from 66.4 units away during `reload`.
+#                      That is an OBJECT on the feed path (VRCARRY_LOADER), not
+#                      a joint; vr_feed already fills six chambers from one
+#                      when the cylinder is open.
+#   SHELL01..SHELL06 - six rounds, 0.85 units out from the cylinder axis. Also
+#                      the feed path's, not joints. A card declaring six hinges
+#                      would have the simulator driving the brass.
+#   lasersight_mesh  - bone 59, 71 vertices, 6.2% of the mesh, never animated
+#                      in any of the 8 sequences. It is the HD pack's
+#                      laser-sight geometry riding on the body bone. Nothing
+#                      about it moves, so it is not a joint.
+#   strike           - no `strike` line, so this takes the pistol-whip default
+#                      from VRStrike_DefaultCfg like every other firearm.
+#
+# `fire1` MOVES NOTHING ON THE GUN. Across all 60 bones it animates only the
+# right upper arm, forearm, hand and trigger finger - wrist-flip recoil, with
+# the hammer and the cylinder dead still. So the hammer and trigger travels
+# could only be taken from `fidget1`, the twirl idle, which is the one
+# sequence that works them. Still a measurement off this model either way.
+
+weapon v_357
+match  bones 60  seqs 8  hash 0xed2a677b
+
+# Six chambers because there are six SHELL bones, evenly spaced 0.85 units out
+# from the cylinder axis.
+#
+# rpm 300 IS THE ONE NUMBER HERE THAT IS NOT A MEASUREMENT. A rate cannot be
+# read off a model, and the rate the animation implies - 31 frames of `fire1`,
+# about 58 rpm - is exactly the invisible second timer a hand-worked weapon
+# must not have. 300 is carried over from the SD card so that both rigs of the
+# same revolver behave alike; the double-action pull and the cylinder's
+# advance are the real limiter.
+type   revolver  capacity 6  rpm 300
+
+# THE HAMMER'S STROKE IS NEGATIVE, AND A JOINT LINE HAS NO WAY TO SAY SO.
+#
+# `hammer` turns about its local X, which is the body's X: from rest 0 to
+# -0.7365 rad at full cock. Its whole animated span in `fidget1` is 0.8024,
+# because the hammer also bounces 0.0659 rad FORWARD of rest as it falls. A
+# joint's 0..1 is rest..travel, so letting the engine bracket this bone off
+# its animation would hand joint 1 a range that starts 0.0659 forward of rest
+# and runs the wrong way.
+#
+# So the bone is REWRITTEN - no vertex moves and no bone is added, the motion
+# is simply restated - as a pure turn about -X of 0.74 rad. Joint 1's 0 is
+# then rest and its 1 is full cock, which is what the detent below assumes.
+# Measured: the animation's own full-cock dwell is -0.7340 held over frames 92
+# to 102, 99.7% of the -0.7365 peak, so the top of the stroke IS full cock and
+# there is no half-cock notch anywhere in the sequence to find.
+synth hammer  from "hammer"  rewrite
+      hinge  axis -1.0 0.0 0.0   travel 0.74
+
+# JOINT 0 IS THE CYLINDER, because the `revolver` preset says so: it makes
+# joint 0 the cylinder and sets feed.cyl_joint to 0, and joint 1 the hammer.
+# Numbering them the other way round would hand the hammer the cylinder's
+# cyl_open detent and the cylinder the hammer's cock.
+joint 0  bone "revolver"  hinge  travel 1.10  rest 0
+    # THE CYLINDER LATCH, and it is the magazine latch's catch doing the job.
+    # VRC_MAG_LATCH is the only catch in vr_feed's vocabulary that means "this
+    # holds a part shut, it starts engaged, and a thumb lets it go" - and
+    # nothing outside VRGun_Preset and VRGun_Init ever looks at the id, so
+    # using it on a cylinder is not a borrowed magazine rule, it is the latch
+    # idea under the only name the format has for it. Position and breakout
+    # are the magazine_slide preset's own numbers: 2% of travel, and
+    # VRGUN_LATCH_BREAKOUT = 10000, so a deliberate pull opens it too while
+    # the engine still reports no control under any finger.
+    catch mag_latch  at 0.02  holds 1  breakout 10000
+
+    # OPEN AT 0.90, NOT THE PRESET'S 0.50, and it is measured. Take the
+    # frame's standing breech as the body's own vertices behind the cylinder
+    # face (y 0.29 to 0.90) and its silhouette in X/Z, then swing the six
+    # chamber mouths through the measured 1.0996: all six are clear of that
+    # silhouette at 0.90 of the swing and not before. At the preset's 0.50 the
+    # cylinder is half out and three mouths are still behind the breech, which
+    # would let a player dump live rounds through solid steel. vr_joint's 3%
+    # detent hysteresis means this trips at 0.93, so the cylinder has to be
+    # swung right out - which is what a reload is.
+    point cyl_open   at 0.90
+
+    # The cylinder's measured vertex centroid, closed. Its furthest vertex
+    # from that centre is 1.52 in X, 1.21 in Y and 1.53 in Z, so a 2.0 sphere
+    # there covers the fluted body and reaches nothing else on the gun.
+    grab  point 0.02 -0.92 0.11  radius 2.0
+
+# JOINT 1: the hammer, rewritten above to rest..full-cock.
+joint 1  bone "hammer"  hinge  travel 0.74  rest 0
+    # The preset's hammer_cock sits at 0.80 with 30% resist. The travel here
+    # is the cock stroke itself and the animation's hold is at 0.997 of it, so
+    # the cock point moves up to 0.90 - which with the 3% hysteresis trips at
+    # 0.93, the last of the thumb's draw. The resist is restated because a
+    # restated detent OVERRIDES the preset's rather than adding to it, and
+    # VRF_PCT(30) is what makes a hammer feel like a hammer rather than a
+    # free-swinging flap.
+    #
+    # NO SEAR CATCH, and that is deliberate. A revolver is double action, so
+    # VRFeed_NeedsCocking returns 0 for it and feed.action_joint stays
+    # VRJ_NO_JOINT - which is also the only joint vr_feed ever releases a
+    # VRC_SEAR on. A sear declared here would engage at full cock and nothing
+    # in the simulator would ever let it go, leaving the hammer stuck back for
+    # the rest of the weapon's life. The detent alone is enough: crossing it
+    # sets hammer_cocked and advances the cylinder one chamber, which is Part
+    # J's "chambers advance one per cock".
+    point hammer_cock at 0.90  resist 0.30
+
+    # The thumb spur, measured on the model at rest: the hammer vertex
+    # furthest up and back. It sits 1.12 from the hammer's centroid, so 1.5
+    # covers the whole thumb-reachable top of it without swallowing the
+    # backstrap.
+    grab  point 0.20 2.83 0.77  radius 1.5
+
+# THE LATCH UNDER THE THUMB. Part G puts a cylinder latch on a face button,
+# which is `kind button`. The position is the body's outermost vertex in the
+# slice immediately behind the cylinder face - x 0.92, y 0.37, z 0.01 - on the
+# side the cylinder swings toward, which is where a Python's thumbpiece is.
+# The frame is measurably thicker on that side: the slice runs x -0.55 to
+# +0.92 about a bore on the centreline.
+control mag_latch  at 0.92 0.37 0.01  finger thumb  kind button
+
+# The firing chamber: SHELL03's rest position, the top chamber, the one under
+# the barrel and under the hammer.
+chamber at 0.01 0.33 0.85
+
+# Where the brass leaves. Posed at frame 28 of `reload`, cylinder fully out:
+# its rear face centre is at 1.97 0.29 -0.60. The chambers run along the bore
+# axis, so cases come out along +Y, straight back - which is what tipping the
+# muzzle up turns into a fall.
+eject   at 1.97 0.29 -0.60  dir 0.00 1.00 0.00

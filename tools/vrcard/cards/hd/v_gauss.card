@@ -1,0 +1,89 @@
+# Half-Life tau cannon (gauss). Measured by vrcardgen off the HD viewmodel,
+# finished by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd ship
+# the same rig: 15 bones, 9 sequences, hash 0x6108f516, 619 vertices, the same
+# muzzle attachment and the same spinner turn in every sequence, all three
+# measured. gearbox_hd's file is 1284 bytes smaller, which is texture data and
+# not rig, so the one fingerprint covers all three.
+#
+# Part J: "Hold the secondary to charge: the barrel spinner (`Spinner`, 344 deg)
+# spins up, haptics ramp, overcharge hurts as in Half-Life. Recoil pushes the
+# player opposite to the muzzle, so the Gauss jump works by pointing the gun
+# down and releasing. No hand reload: it draws from the uranium reserve."
+#
+# THE PLAN'S 344 DEGREES IS THE DISPLACER'S NUMBER, NOT THIS ONE. Measured
+# here, unwrapped about the bore and sampled every frame, the spinner turns
+# 6.2832 rad - 360.00 deg, one exact revolution - in `spinup`, `spin`, `fire`
+# and `fire2` alike. 343.7 deg (5.999 rad) is what cards/gearbox/v_displacer
+# records off the Opposing Force displacer's own `spinner`; 344 looks to have
+# been carried across. The number below is this model's.
+#
+# NO PRESET, SO THE JOINT IS DECLARED. Every preset in dlls/vr_gun.cpp hands
+# down feed flags this weapon must not have - magazine_slide a slide lock and
+# a magazine latch, tube_pump a tube, revolver a cylinder, single_shot a sear,
+# belt a cover. The gauss is fed from the uranium reserve and has no action,
+# so it states its one part the way the displacer and the shock roach do, and
+# inherits no feed rules at all.
+#
+# THE BODY NEVER MOVES. GaussMesh owns 580 of 619 vertices (93.7%) and its six
+# channels are at their rest values in all nine sequences - no recoil kick, no
+# reload, nothing. Every frame of animation this weapon has is the spinner.
+# That is why the recoil of Part J belongs to the player's body through Part F
+# and not to a joint here.
+
+weapon v_gauss
+match  bones 15  seqs 9  hash 0x6108f516
+
+# JOINT 0: the barrel spinner, turning about the bore.
+#
+# `Spinner` owns no vertices. It is the pivot; the geometry that turns is
+# `Object02`, 39 vertices (6.3%), reached through the inert `Bone02`. Posing
+# `Spinner` carries both with it, which is why the joint names the pivot and
+# not the mesh - driving `Object02` would spin the ring about its own corner.
+#
+# THE AXIS IS THE BORE, measured and not assumed. Across spinup, spin, fire
+# and fire2 the spinner's rotation axis sits on GaussMesh -Y to five decimal
+# places (deviation 0.00000; only `fidget` wobbles, by 0.007). GaussMesh -Y is
+# forward: the muzzle attachment is at (-1.5, -17.0, 0.0). The axis passes
+# through x = -1.400, z = -0.140, which is `Spinner`'s own origin, and
+# `Object02`'s vertices ring it from 0.88 to 2.66 units out, 2.27 units deep.
+# A disc on the bore, spinning in place.
+#
+# TRAVEL IS ONE TURN because that is the whole of its motion: 6.2832 rad net
+# in spinup (0.8 to 24 deg/frame, accelerating), in spin (24.0 deg/frame dead
+# even, 15 frames to the revolution, the loop) and in fire and fire2 (35 deg
+# /frame decaying). `fire` sweeps 375 deg and settles back to 360, which is
+# overshoot at the end of the shot, not a longer turn. `idle` wobbles 19 deg;
+# `fidget` spins three full turns; idle2, holster and draw do not move it.
+#
+# FOUR DECIMALS, NOT TWO, AND ON PURPOSE. The parser's decimal reader and
+# vr_card_check's printer both truncate (vr_card.cpp:169, vr_card_check.cpp
+# :116), so `6.28` stores 6.27999 and prints back as 6.27 - a number the next
+# reader has to talk themselves out of. 6.2832 stores 6.28318 and prints 6.28,
+# and is the measurement anyway.
+#
+# NO CATCH AND NO DETENT. A spinner has neither, and the detent vocabulary in
+# vr_card.cpp:247-257 has no name for "charged" - feed, eject, mag_clear,
+# cyl_open, hammer_cock, pin_clear, cover_open and nothing else. Whatever
+# drives the charge drives this part's angle directly; a point named here
+# would be a point nothing listens for.
+#
+# The grab point is `Object02`'s vertex centroid in the weapon frame, and the
+# radius covers the ring it sweeps. Declared for completeness, as on the
+# displacer: there is nothing here for a hand to work, because the secondary
+# trigger is what spins it up.
+joint 0  bone "Spinner"  hinge  travel 6.2832  rest 0
+    grab  point -1.40 0.33 -0.08  radius 3.0
+
+# NO `type`, NO `fire`, NO `capacity`. Without a type line the parser leaves
+# the trigger at VRTrigger_DefaultCfg's own semi-automatic at a 60 ms cycle -
+# about 1000 rpm, which is as loose as it gets, and right: the charge is the
+# limiter on this weapon, and a stated rpm would only be a second timer that
+# refuses a shot the player has earned.
+#
+# NO strike line either, so the weapon takes VRStrike_DefaultCfg's weak
+# pistol-whip - the same as the displacer and the shock roach. 23.4 units of
+# machined steel probably deserves better than the default, but nothing in
+# this model measures a striking face, so it is left where the parser puts it
+# rather than invented.

@@ -1,0 +1,144 @@
+# Half-Life HD shotgun (SPAS-12). Measured by hand off valve_hd's model,
+# because vrcardgen returns NOTHING for this rig - see the next paragraph.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd ship
+# three v_shotgun.mdl files of three different SIZES - 167880, 205856 and
+# 97992 bytes - and they are NOT byte-identical. What they share is the RIG:
+# 52 bones, 10 sequences, hash 0xf086fed6, and the same 3.4298-unit fore-end
+# travel in all three. Only the arm and hand mesh differs (the weapon's share
+# of the vertices is 41.3 / 41.1 / 42.2% of 1021 / 1027 / 999), and the
+# fingerprint does not look at vertices. So this one card binds to all three.
+#
+# VRCARDGEN FINDS NO JOINTS ON THIS MODEL, AND IT IS WRONG. It reports "0
+# drivable joints" and drafts a card that says the weapon has nothing
+# drivable. The cause is find_body (vrcardgen.py:474): it starts from the
+# first attachment and takes whichever of the muzzle's ancestors-and-their-
+# children owns the most mesh. On this rig the one attachment is on bone 35
+# `Bip01 R Hand` - the HD animators hung the muzzle flash off the hand, not
+# off the gun - so the search never sees the weapon at all and settles on
+# `R_Arm_bone`, 6.2%. Everything that is actually the shotgun is a SIBLING of
+# that chain, exactly like the v_egon case the function's own comment
+# describes. Measured here by dumping every bone instead.
+#
+# THE WEAPON IS FOUR BONES, and they are the only root-parented subtree in
+# the model that is not Bip01:
+#
+#   15  Reciever   root-parented, 422 verts (41.3%)   the body
+#   16  Stock      child of Reciever, 195 verts       never animated
+#   17  Stock2     child of Stock,     27 verts       never animated
+#   18  Charger    child of Reciever,  47 verts (4.6%) THE FORE-END
+#
+# `Charger` is the pump, and it is the only thing on the gun that moves
+# relative to the gun. Its rest transform relative to `Reciever` is the
+# identity - offset (0,0,0), rotation (0,0,0), axes measured parallel to the
+# body's to four decimals - so every number below is simultaneously in the
+# bone's space and in the weapon's.
+#
+# Its vertices span Y -18.32..-6.66 and Z -4.81..+0.70 in the body's frame,
+# wrapping under and around the magazine tube (the body's own geometry sits at
+# Z ~ -3 across Y -28..-16). Forward is -Y: the muzzle attachment resolves to
+# (1.75 -25.59 3.72) in the body's frame. So the fore-end is below the bore,
+# ahead of the receiver, and it travels +Y, which is REARWARD. A pump pulled
+# back. There is nothing else it could be.
+#
+# `shell` (bone 14) is NOT a joint. It is parented to `Bip01 L Finger02`,
+# eleven bones into the left arm, and it is the shell the hand carries - an
+# arriving object the feed path owns, not a part of the weapon.
+
+weapon v_shotgun
+match  bones 52  seqs 10  hash 0xf086fed6
+
+# 8 is SHOTGUN_MAX_CLIP, dlls/weapons.h:128.
+#
+# 300 rpm IS DELIBERATELY LOOSE, and the looseness is measured. The pump is
+# the limiter on this weapon, and the only thing an rpm can add is a second,
+# invisible timer that refuses a shot the player has earned. The floor the
+# model itself demonstrates: `pump` runs at 30 fps and the fore-end goes back
+# over frames 4-8 and forward over 8-11 - seven frames, 233 ms for a complete
+# cycle. 300 rpm is a 200 ms gate, under that floor, so a hand that has
+# actually worked the action is never told to wait. (hl.dll's own 0.75 s
+# between shots, shotgun.cpp:178, is 80 rpm; that number paces an animation
+# nobody is playing any more.)
+type   tube_pump  capacity 8  rpm 300
+
+# NO `feed` LINE, AND THAT IS THE RIGHT ANSWER rather than an omission. The
+# tube_pump preset sets VRFEED_FL_TUBE and nothing else (vr_gun.cpp:109-117):
+# no self_loading, because a pump gun is worked by hand, and no slide_lock,
+# because a pump has nothing to lock it open. Both of the flags the other
+# firearm cards have to clear are already clear here. Restating them would be
+# noise.
+
+# JOINT 0: the fore-end, and the preset's action joint - tube_pump declares
+# exactly one joint and sets feed.action_joint = 0, so `Charger` has to be 0.
+#
+# Travel 3.43 is measured, not quoted: posed through all ten sequences with
+# the bone's position taken relative to its own rest pose, `Charger` moves
+# 3.4298 units along the body's +Y and rotates by EXACTLY nothing - all three
+# rotation channels are flat to the last bit in every frame of every
+# sequence. A clean straight stroke. It moves in three sequences and only
+# three: `pump`, `shoot` and `shoot_big`, because Half-Life pumps the gun as
+# part of firing. Once a hand owns the joint the animation is irrelevant.
+#
+# (The SD rig's fore-end is also called `Charger` and also travels ~3.42,
+# which is why binding by name would have been a coin flip and binding by
+# fingerprint is not. The two are different models with different bone counts
+# and different hashes.)
+#
+# The grab point is the centroid of the fore-end's 47 vertices, which is in
+# the body's frame for the reason given above. The radius is measured the
+# same way the MP5's is: the furthest of those vertices is 3.23 units from
+# the centroid in the plane ACROSS the travel axis, so 3.2 is the hand's
+# reach, not a guess. (In 3D the furthest is 6.42, but that is half the
+# fore-end's length, not its thickness.)
+joint 0  bone "Charger"  slide  travel 3.43  rest 0
+    grab  point 0.82 -12.59 -2.49  radius 3.2
+
+# THE FEED AND EJECTION POINTS KEEP THE PRESET'S 0.40 AND 0.85, and that is
+# honest rather than lazy. Nothing in this model shows a round moving through
+# the action: there is no case bone, no round bone on the gun, and the three
+# sequences the fore-end moves in move the fore-end and the body and nothing
+# else. Where in the stroke a shell actually feeds or leaves has NOT been
+# measured, and a fabricated number would be worse than a default that is
+# openly a default.
+#
+# THE LOADING GATE HAS NO FIELD, SO HERE IS THE MEASUREMENT instead, for
+# whoever adds one. `reload` (seq 3, 16 fps) carries `shell` from the pouch
+# to the gate over frames 1-4, in the body's frame:
+#
+#   f1  base (  0.02  -2.36  -9.38)
+#   f2  base ( -0.09  -3.53  -5.80)
+#   f3  base (  0.11  -4.59  -3.03)
+#   f4  base (  0.14  -5.70  -2.28)   tip ( -0.00  -7.20  -1.18)
+#
+# So the shell arrives from below and behind and is pushed tip-first up and
+# forward along (-0.08 -0.81 +0.59), ending under the receiver at Y ~ -5.7.
+# The receiver's underside across Y -8..-4 bottoms out at Z -0.23, so the
+# gate mouth is that spot on the belly of the gun - which is where a SPAS-12
+# keeps it. Note that at full travel the fore-end's rear edge reaches Y -3.23
+# and covers this: on the real gun you load with the action forward.
+#
+# NO `chamber at`. Part D's press check wants the chambered shell drawn at a
+# declared position, and this model has no round in the chamber to measure -
+# `shell` is only ever in the left hand. Picking the breech by eye off a
+# preview is a different job from measuring, and this card does not pretend
+# to have done it.
+#
+# NO `eject at`. hl.dll throws shotgun brass from a view-space fudge
+# (ev_hldm.cpp:561 and :614, forward 32 / right -12 / up 6) which puts the
+# hull out of the LEFT side of the gun and is not a measurement of this model
+# at all. There is no ejection-port bone to measure instead.
+#
+# NO `fire` LINE. The preset's VRTrigger_DefaultCfg already gives it semi and
+# only semi, which is what a pump gun has. PART J'S DOUBLE-BARREL SECONDARY -
+# "pulling through a second stop fires both" - IS NOT ON THIS CARD, because
+# the format cannot say it: break_at and reset_at are trigger config the card
+# grammar does not expose, and a two-stage trigger needs a second break point
+# and a two-round shot. `shoot_big` (seq 2) exists and pumps the same single
+# fore-end, so the content is there waiting; the card format is what is
+# missing.
+#
+# NO `strike`. Every firearm inherits the weak pistol-whip default from
+# VRStrike_DefaultCfg, as the other firearm cards do. A shotgun butt-stroke
+# deserves better than a pistol whip and `Stock`/`Stock2` are right there
+# with 222 vertices between them - but nothing about that butt has been
+# measured, and the default is at least not a wrong measurement.

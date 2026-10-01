@@ -1,0 +1,129 @@
+# Half-Life HD rocket launcher. Measured by vrcardgen off valve_hd, finished
+# by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd all
+# ship this same rig: 50 bones, 9 sequences, hash 0x1e3e8964, and the rocket
+# seats at the same place in all three to three decimals. The three FILES are
+# not identical - 197352, 228080 and 122120 bytes, bshift_hd being the small
+# one because it keeps its textures outside the model - but binding is by
+# fingerprint, not by bytes, so one card covers them and declines everything
+# else. Retail SD is a different rig and still has no card: valve is 32 bones
+# / 10 seqs / 0x862bb646, and gearbox and bshift are both 31 / 8 / 0x27652336.
+# (cards/valve/v_rpg.card is 54 bones / 0x58602f2c - the VR tree's own model,
+# not a retail one. It binds to none of these.)
+#
+# Part J: "Slide a rocket into the tube until it latches. Shoulder it. The
+# laser follows the muzzle, so the rocket is steered by hand."
+#
+# ONE ROUND AND NO ACTION, the same verdict as the SD sibling. There is
+# nothing on this launcher for a hand to work: no bolt, no magazine, no
+# cover, no hammer. The rocket IS the loading gesture, and `single_shot` is
+# built for exactly that - vr_gun.cpp:132 says so in as many words ("a weapon
+# that does not need it - the RPG - simply leaves it undeclared and loads at
+# the port"), and vr_feed.cpp:641's single-shot rule is literally "a rocket
+# slid into the tube ... if the chamber is empty, what the hand is carrying
+# goes in it". No `needs_cock` either: VRFeed_NeedsCocking already answers no
+# for a SINGLE weapon, because a launcher has no striker to set, and one that
+# insisted on being cocked would fire exactly once and then be inert.
+#
+#
+# WHAT THE MODEL HAS. Three bones in the weapon subtree and no more, out of
+# 872 vertices:
+#
+#   Rlauncher    463 verts, 53.1%, root-parented  - the body
+#   Rocket        62 verts,  7.1%, child of body  - the rocket itself
+#   Cylinder01    37 verts,  4.2%, child of body  - housing on the tube side
+#
+# The other 47 bones are the arm, hand and finger rig. The body's geometry
+# gives the tube: the bore axis is the line x=-1.305 z=0.187, the muzzle is a
+# ring of twelve vertices at radius 2.63-2.74 about that axis at y=-14.76,
+# and the rear of the tube is at y=+9.46 - 24.22 units of tube, with the grip
+# hanging to z=-8.05 under the middle of it. FORWARD IS -Y, which is what the
+# rocket standing proud of the muzzle proves and what vrcardgen's fallback
+# frame already assumes.
+#
+# THERE ARE NO ATTACHMENTS ON THIS MODEL - numattachments is 0 - so the
+# muzzle that Part J's laser is meant to follow cannot be read off an
+# attachment. It can be read off the geometry, and it is: (-1.305, -14.76,
+# 0.187), pointing down -Y. The card format has no muzzle keyword, so that
+# measurement is recorded in this comment and nowhere else.
+#
+#
+# TRAP 1: `travel 60.90` IS NOT A MECHANISM. vrcardgen reports the Rocket
+# bone travelling 60.90 units, and it does - but not into anything. That is
+# the full span of its Z channel across all nine sequences, from +0.269
+# part-way through `reload` to -60.628 part-way through `holster2`. The four
+# EMPTY-launcher sequences - fire, idle2, draw2, holster2 - park the rocket
+# at about (-1.305, +13.2, -58.1), 58.3 units below the seat, which is how
+# the artists hid it on a launcher with nothing in the tube; the four LOADED
+# ones - idle, fidget, draw1, holster1 - all hold it seated. 60.90 is the
+# distance between a hiding place and a seat. The SD card met the same
+# artefact and called it ten thousand units: same lie, different clothes.
+#
+# THE REAL INSERTION, posed off `reload` frame by frame: the hand brings the
+# rocket in from (14.598, 7.663, -17.013) on frame 0, swings and aligns it in
+# front of the muzzle through frame 33, then pushes it home over frames 33-38
+# - 5.997 units along the bore. The rocket's tail finishes at y=-10.043,
+# which is 4.72 units inside the muzzle ring, and its nose stands 8.69 units
+# proud of it: THIS LAUNCHER IS MUZZLE-LOADED, like the RPG-7 it is drawn
+# from. The rocket is 13.41 units long and its widest point is radius 1.86,
+# against a bore of about 2.6.
+#
+# None of those is a joint travel, because the rocket is not a joint.
+# vrcardgen classifies it as "arrives from outside - an object, not a joint",
+# and the feed path owns it: the renderer draws it from chamber state, which
+# is what makes the model's park-it-offscreen trick unnecessary.
+#
+# TRAP 2: `Cylinder01 hinge travel 6.23` IS A GIMBAL ALIAS, and the drafted
+# card offers it as joint 0. Posing it says otherwise. Its euler channels
+# flip frame to frame between (-1.571, -3.142, -1.571) and (+1.571, -6.283,
+# +1.571), and those two eulers are the SAME ORIENTATION - both resolve to
+# the matrix x=(0,1,0) y=(0,0,1) z=(1,0,0). The 6.225 radians is the encoder
+# crossing a gimbal, not the part turning. Measured as an orientation rather
+# than as a channel, the part tilts 0.3229 rad - 18.50 degrees - at frame 25
+# of `fidget`, and EXACTLY ZERO in all eight other sequences; its vertices
+# sweep 0.45 units further there than their static extent, and 0.00 anywhere
+# else.
+#
+# So it stays undeclared, for three reasons. Taking joint 0 would hand the
+# single_shot preset's sear and its hammer_cock detent to a sight housing.
+# Declaring it at any index would take it off the fidget animation that is
+# the only thing which ever moves it, freezing it. And eighteen degrees once
+# per idle is not something a hand has any reason to reach for.
+
+weapon v_rpg
+match  bones 50  seqs 9  hash 0x1e3e8964
+
+type   single_shot  rpm 150
+# The rate is deliberately loose. On a weapon like this the MECHANISM is the
+# limiter - you cannot shoot faster than you can get the next rocket out of
+# the pouch and into the muzzle - so a low rpm only adds a second, invisible
+# timer that refuses to fire when the player has done everything right. 150
+# rpm is a 400 ms floor, there to keep two shots out of one millisecond and
+# nothing more. Half-Life's own 1.5 s between shots was the length of an
+# animation, and the animation is no longer in charge.
+#
+# NO JOINT LINES. `single_shot` declares joint 0 with a hammer_cock detent
+# and a sear, and on this weapon that joint stays bone-less and inert on
+# purpose: nothing engages a sear without `needs_cock`, and with no eject
+# detent action_open is never set, so the launcher fires from rest the way it
+# should. That is the preset used as written, not worked around.
+
+# WHERE THE ROCKET SITS when the chamber is live: the Rocket bone's own rest
+# origin in the weapon's frame, which is also where `reload` leaves it on
+# frame 38 and where idle, fidget, draw1 and holster1 all hold it. Identical
+# in valve_hd, gearbox_hd and bshift_hd. Part E has the renderer draw the
+# chambered round's model at this position, and that is what replaces the
+# model's park-it-offscreen trick for an empty tube.
+chamber at -1.305 -16.423 0.187
+
+# NO `eject`. "NOTHING IS LEFT BEHIND by a bolt or a rocket" - vr_feed.cpp
+# empties the chamber rather than marking it spent on a SINGLE weapon, so
+# there is no case to throw and no port to throw it through. There is none in
+# the mesh either.
+#
+# NO `strike`. Part J gives every firearm a butt-stroke, and the parser hands
+# the pistol-whip default to any card that declares none, which is what this
+# one does. Twenty-four units of steel tube deserves better than the default,
+# but a strike's two speeds are not measurable off a model and nobody has
+# chosen them, so they stay at the default rather than being invented here.

@@ -1,0 +1,161 @@
+# Half-Life's crossbow, the HD rig. Measured by vrcardgen off
+# valve_hd/models/v_crossbow.mdl, cut and carded by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES - BUT NOT BECAUSE THE FILES ARE THE SAME.
+# valve_hd, gearbox_hd and bshift_hd ship three DIFFERENT crossbow files:
+# 229476, 257492 and 281688 bytes, and 1011, 1017 and 989 vertices. What they
+# share is the rig and the weapon - 73 bones with the same names in the same
+# order, 12 sequences, hash 0xb6f36d2f, and every vertex of the crossbow
+# itself in the same place. The three differ only in the arm and hand mesh,
+# which is not the weapon. Checked: every geometric number in this card -
+# the two grab points, both radii, all four boxes quoted below - comes out
+# identical on all three files.
+#
+# The SD rigs are genuinely different models and want their own cards: valve
+# is 56 bones / 0x60e2e198, gearbox 70 / 0x4000585d, bshift 55 / 0x6bb29bce.
+# They do share this one's travels (Slide 9.96, Clip Master 8.36), so the
+# mechanism below should port; the geometry must be re-measured.
+#
+# Part J: "string `Slide` (10.0); bolt rack `Clip Master` (8.4). Draw the
+# string back to its catch, lay a bolt in the groove, fire." Part D puts it
+# under single shot, and the `single_shot` preset names this weapon in so
+# many words: "The crossbow gives it a bone and a sear, and then drawing the
+# string IS the reload."
+#
+# THE MODEL HANDS THE WHOLE MECHANISM OVER, which is rare. Measured:
+#
+#   `Slide` is the string and its nut, 48 vertices, travelling 9.96 units
+#   along the stock. Its two ends are the two states of the weapon: at
+#   local y -4.76 the string is home (released), at +5.10 it is drawn, and
+#   the model's own bind pose is the drawn end, 99% of travel. `fire1`
+#   runs it from drawn to home in six frames and then spends forty-two
+#   drawing it back again, which is this animation's own opinion of how
+#   long a re-draw takes - about a second and a half.
+#
+#   THE LIMBS ARE NOT JOINTS, THEY ARE THE STRING'S CONSEQUENCE. `LA1..LA4`
+#   and `RA1..RA4` flex by 0.18 and 0.20 radians, and they do it in exact
+#   lockstep with the string in every sequence either of them moves in -
+#   string at 0.00 of travel gives LA1 0.000 rad, 0.33 gives 0.031, 0.55
+#   gives 0.059, 0.72 gives 0.086, 0.92 gives 0.142, 0.99 gives 0.183, with
+#   no frame anywhere that moves one without the other. A renderer lerping
+#   the bracketed pose by the string's joint value therefore bends the bow
+#   for free. Declaring the limbs as joints would hand the player two
+#   hinges that mean nothing and let them flex a bow whose string has not
+#   moved.
+#
+#   `Clip Master` is the bolt rack: 8.35 units down the z axis plus a
+#   0.46-radian pitch and a 0.41-radian roll, all one gesture, out and back
+#   again inside `reload` frames 12-48. It owns no mesh itself; its
+#   children do - `Bone20`, the 13-vertex plate that hangs under the stock,
+#   and four reserve bolt tails on `Ammomid`, `Ammomid01..03`.
+#
+# A COMPOUND MOTION IS STILL ONE JOINT. Unlike the M40A1's bolt, the rack's
+# drop and its tilt are not two independent axes a hand could work
+# separately - they are one pull, and the animation moves them together on
+# one curve. One value drives the lerp and the whole gesture comes with it,
+# so the rack needs no carving.
+
+weapon v_crossbow
+match  bones 73  seqs 12  hash 0xb6f36d2f
+
+# NO CAPACITY AND NO RPM, BOTH DELIBERATE.
+#
+# `single_shot` reads neither: there is no magazine and no tube, the groove
+# holds the one bolt, and VRFeed_Clip reports 1 or 0 for a weapon flagged
+# SINGLE. A `capacity 5` here would look like Half-Life's clip size and
+# would be read by nothing.
+#
+# The rate is left at the parser's default - 60 ms, a thousand a minute -
+# because on this weapon the rate is NOT the limiter and must not pretend
+# to be. Nothing fires until the string is back on its sear, and the
+# animation says that is about a second and a half of hand work. Any rpm
+# low enough to bite would be a second, invisible timer refusing a shot
+# from a player who has drawn the string and laid a bolt in.
+type   single_shot
+
+# AND IT WILL NOT FIRE UNTIL IT IS COCKED. The preset sets SINGLE and
+# nothing else, because the other single shot in the game - the RPG - has no
+# string to draw. This is the flag that makes drawing the string the reload.
+feed   needs_cock
+
+# JOINT 0: THE STRING, and joint 0 is where `single_shot` puts the action
+# (feed.action_joint = 0), so it cannot go anywhere else.
+#
+# `rest 0` is the released end, and it has to be: the limbs are the spring,
+# and a bow pulls its string FORWARD. That is also what makes firing work -
+# the sear lets go and the string runs home under the same spring a hand was
+# fighting.
+#
+# The cock point and the sear are the preset's own 90% and 95% of travel,
+# left alone because there is nothing on this model to measure them against:
+# the sear is inside the stock and has no bone. At 9.96 units of travel they
+# fall at 8.96 and 9.46, which is a string drawn all the way back to the nut,
+# and the bind pose sits at 99% - just past the catch, where a cocked
+# crossbow belongs.
+#
+# The grab point is the cocking handle, not the middle of the part. 28 of
+# the string bone's 48 vertices are a tab out at x 3.54..4.09 dropping to
+# z -3.10 - a handle on the side of the stock - and their centroid and
+# enclosing radius are the numbers below. The other 20 are the nut and the
+# string itself, on the centreline behind the bolt's nock, which is not
+# something a hand closes on.
+joint 0  bone "Slide"  slide  travel 9.96  rest 0
+    grab  point 3.77 -2.66 -0.73  radius 2.40
+
+# JOINT 1: THE BOLT RACK, AND IT FEEDS NOTHING. Under `single` the bolt
+# comes from the pouch and goes in the groove by hand, so the rack is not
+# the magazine and gets no `mag_clear` and no `mag_latch` - on a weapon with
+# mag_joint unset both would be points nothing listens to, which is the one
+# thing a card must never contain.
+#
+# It is here because it is a real part with real geometry and a measured
+# travel, and a player should be able to swing it open and look at the four
+# bolts in it. It carries no catch for the same reason the M40A1's bolt
+# handle carries none: there is no latch bone on this model to measure, and
+# a catch with no modelled release is a part that locks shut forever.
+#
+# Grabbed on the bolts rather than on the plate. The four reserve tails are
+# 112 vertices clustered under the stock; that centroid and enclosing radius
+# are the numbers below, and the sphere clears the string's handle by 1.6
+# units so the two parts cannot be grabbed by mistake for one another.
+joint 1  bone "Clip Master"  slide  travel 8.35  rest 0
+    grab  point 0.00 -6.49 -5.68  radius 3.30
+
+# NO `chamber at`, BECAUSE THE MODEL ALREADY DRAWS THE BOLT. `chamber_at`
+# exists for a weapon whose chambered round has no geometry; this one has
+# `Bone18`, 41 vertices of bolt from y -14.67 to -6.39, parented through
+# `Bolt` to the string so it rides the draw and goes with the shot.
+# Declaring a chamber position would draw a second bolt beside the first.
+#
+# WHAT THE MODEL DOES INSTEAD OF HIDING THINGS: when there is no bolt
+# loaded, `Bolt` is translated 45.17 units behind the weapon - at `reload`
+# frame 0 its mesh sits at y +20.59..+28.87, twenty units past the back of
+# a body that ends at +6.86 - and a spent reserve bolt is parked 50.02 units
+# away the same way. Those two travels are the largest numbers in the model
+# and neither is a joint; they are off-screen, which is this engine's way of
+# saying invisible. Anything that chooses to show or hide the bolt itself
+# wants to know that.
+#
+# NO `eject`, because SINGLE means nothing is left behind: "A crossbow bolt
+# and a rocket leave the weapon entirely - there is no case to eject."
+#
+# NO CONTROL. The sear is released by the trigger, in VRFeed_Fire, which is
+# the whole of how a crossbow works. A `control sear` would be mapped to
+# stick-pulled-back by Part G and would give the player a second, silent way
+# to dump the string off its catch.
+#
+# NOT JOINTS, and worth saying so: `Ammo Rotator` turns 0.131 radians -
+# roughly the 0.105 that separates two of the four `Ammobone` spokes - which
+# is the rack indexing itself one place per shot. It is decoration on a feed
+# path that holds one bolt. `Bone18` is the bolt. `Bone20` and the four
+# `Ammomid` tails are the rack's own mesh and move with it.
+#
+# LEFT AT DEFAULTS, every one of them for want of something to measure: the
+# string's spring, damping and recoil (a bow's limbs are stiff, and nothing
+# in a .mdl says how stiff); the strike, so this inherits Part J's
+# pistol-whip default; and the muzzle, because THIS MODEL HAS NO
+# ATTACHMENTS AT ALL - numattachments is 0, so there is no muzzle_pos to
+# read and `_frame` falls back to -y. The forward direction used throughout
+# the measurements above is -y, established from the geometry instead: the
+# bow limbs root at y -19.50 and the body's vertices run from y -20.64 to
+# +6.86, so the business end is -y.

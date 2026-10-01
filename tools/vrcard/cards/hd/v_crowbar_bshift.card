@@ -1,0 +1,90 @@
+# Blue Shift HD crowbar. Measured by vrcardgen, finished by hand.
+#
+# Part J: "A physical object with mass. Hits are found by sweeping the
+# crowbar's head (declared in the card) between consecutive commands against
+# hitboxes and the world, on the server; damage scales with the head's speed
+# at contact, with a floor below which nothing happens. Wedge the tip into a
+# breakable vent, grate or crate and lever it: sustained torque applies
+# damage until it gives."
+#
+# This is the weapon vr_strike.cpp was written for, so the card is the whole
+# mechanism: no type, because nothing feeds it, and no joints, because
+# nothing on it moves relative to itself. What it has is a head and a tip,
+# and this card is where they get declared.
+#
+# WHICH MODEL. bshift_hd's crowbar is its own rig and not a copy of anything:
+# 12 bones where valve has 11, bshift 26, and valve_hd and gearbox_hd 47
+# apiece. All six retail crowbars hash differently, so this card binds to
+# bshift_hd and declines the rest rather than driving the wrong geometry.
+# The rig is one weapon bone - `Bip01 R Hand`, carrying all 256 crowbar
+# vertices - plus an arm and a sleeve on `R_Arm_bone`. There is nothing to
+# pose, which is why the generator found 0 drivable joints and was right.
+#
+# THE COORDINATES BELOW ARE THAT BONE'S SPACE, which for a one-bone weapon is
+# the weapon frame. The crowbar runs along +z from a butt at z -6.10 to the
+# bend at z 20.18, a 1.28-square bar through the grip, and the claw turns out
+# in +x to x 8.27. 27.17 units corner to corner.
+
+weapon v_crowbar
+match  bones 12  seqs 11  hash 0x09482809
+
+# THE HEAD IS THE SMALLEST BALL THAT HOLDS IT. Separating the crowbar from
+# the hand by texture (`crowbar_01.bmp`, 256 verts; the hand and sleeve are
+# their own meshes) leaves a far-end mass at z >= 17.5 that is the bend, the
+# claw and the wedge together: 192 vertices, x 2.56..8.27, y 0.72..2.87,
+# z 17.94..20.18. Its minimal enclosing sphere is centred here with a radius
+# of 2.894, and that ball contains all 192 and exactly none of the 64 shaft
+# vertices behind them. So the swept capsule is the head and nothing else -
+# no guesswork, and the shaft does not get to hit people.
+#
+# THE SPEEDS ARE THE MODEL'S OWN. Posing every sequence and tracking that
+# head point through the arm rig gives, in units per second at the head:
+#
+#     idle1 / idle2 / idle3      peak    3 / 3 / 2      carried
+#     holster                    peak   89              carried
+#     draw                       peak  133              carried
+#     attack1 (= ATTACK1HIT)     peak  287              swung
+#     attack2hit                 peak  456              swung
+#     attack3 / attack3hit       peak  588              swung
+#
+# (attack1miss peaks at 837 on its last frame alone, where the animation
+# snaps back to idle. That is an animation artefact, not a swing, and it is
+# discounted.)
+#
+# `from 150` is just above the fastest motion on this model that is NOT an
+# attack - the draw, at 133. Below that the crowbar is being carried, which
+# is the floor's whole job: a player walking about with it should not be
+# dealing a trickle of damage to everything they brush past.
+#
+# `full 300` is the gentlest swing the model performs, attack1 at 287. It
+# belongs at the gentlest and not at the average, because in stock Half-Life
+# all three crowbar animations do the same `plrDmgCrowbar` (crowbar.cpp:264)
+# - the animation chosen is a rotation, not a damage tier. So anything the
+# game itself calls a swing is a full hit, and the cap above that is doing
+# its other job: a swing amplified by a tracking spike is still one crowbar.
+#
+# The band is narrow - 150 to 300, where the knife runs 35 to 180 and the
+# wrench 90 to 420. It is narrow because the gap this model measures between
+# carried and swung is narrow, and widening it either way would mean lying:
+# downwards, damaging what you walk past; upwards, refusing full damage to a
+# blow Half-Life scores at full.
+#
+# (vr_card_check prints the radius back as 2.89. The card's decimal reader
+# is integer arithmetic and truncates, so 2.90 is held as 2.89996 - still
+# wide enough to hold the head's farthest vertex at 2.895.)
+strike point 5.45 1.61 18.08  radius 2.90  from 150  full 300
+
+# THE PRY TIP IS THE FLATTENED WEDGE, and the mesh says which end that is.
+# The bar is 1.28 x 1.28 through the shaft and stays round through the bend,
+# but the eight vertices past x 8.0 spread 1.91 units in y and only 0.11 in
+# z: a flat plate, which is the prying end and the nail fork. Their centroid
+# is this point. The radius is half that measured 1.91-unit width - the width
+# of crack the wedge engages - and not half its thickness, because 0.05 is
+# not a radius, it is a rounding error.
+#
+# `from` and `full` are ONE PAIR OF FIELDS shared by strike and pry
+# (vr_card.cpp:1006-1014 writes `card->strike.min_speed` either way), so this
+# line deliberately carries neither. Repeating them here would silently
+# retune the swing, and prying is a torque held against a breakable, not a
+# speed.
+pry    point 8.14 1.92 18.16  radius 0.95

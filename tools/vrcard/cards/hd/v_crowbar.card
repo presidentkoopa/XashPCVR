@@ -1,0 +1,95 @@
+# Half-Life HD crowbar. Measured off retail valve_hd/models/v_crowbar.mdl
+# with vrcardgen and by hand.
+#
+# Part J: "A physical object with mass. Hits are found by sweeping the
+# crowbar's head (declared in the card) between consecutive commands against
+# hitboxes and the world, on the server; damage scales with the head's speed
+# at contact, with a floor below which nothing happens. Wedge the tip into a
+# breakable vent, grate or crate and lever it: sustained torque applies
+# damage until it gives."
+#
+# So this card has two jobs and no third: say where the head is, and say
+# where the tip is. It declares no type and no joints, because a crowbar is
+# not fed and nothing on it moves relative to itself. The whole bar is 256
+# vertices rigidly weighted to one bone, `Bip01 R Hand`, which vrcardgen
+# names as the weapon body; the other 46 bones are the arms, hands and
+# fingers of the Gordon-hands rig this HD viewmodel is built on. vrcardgen
+# finds 0 drivable joints here, and that is the right answer, not a failure.
+#
+# ONE RIG, TWO GAME DIRECTORIES. valve_hd and gearbox_hd ship v_crowbar.mdl
+# at different sizes - 143,036 and 186,756 bytes, different md5, because the
+# embedded skins differ - but the rigs do not: the same 47 bone names in the
+# same order, the same 11 sequences, the same 256 crowbar vertices to three
+# decimals, and the same animation data, verified by posing all eleven
+# sequences in both files and getting head speeds that agree to 0.1 u/s. One
+# fingerprint, so one card serves both.
+#
+# The other crowbars are OTHER rigs and this card declines them, which is
+# the whole point of binding by fingerprint: valve 11 bones 0x3684cfae,
+# gearbox 12 bones 0x3de0b9d4, bshift_hd 12 bones 0x09482809. Each needs its
+# own card measured from its own file.
+#
+# COORDINATES ARE IN THE WEAPON BODY BONE'S SPACE, `Bip01 R Hand`. That is
+# where the bar's vertices live and the bar is rigid in it, so for this model
+# that space IS the weapon's own frame. The gearbox melee cards' `point 0.00
+# 0.00 0.00` is that same bone's origin, which sits inside the grip - which
+# is why this card states a head instead.
+#
+# THE BAR, from the 256 vertices of bodypart 0 (`v_crowbar_reference`, skin
+# crowbar_01.bmp) - from the VERTICES, because every bounding box in this
+# model's header is (0,0,0) like every other retail valve model's:
+#
+#   bounds    x  2.14 ..  8.29    y -0.27 .. 2.88    z -6.11 .. 20.16
+#   length    26.27 along z; 26.39 between its two farthest vertices
+#   grip      z ~ 0, where the right hand's own 22 mesh vertices centre
+#             at (2.55, -0.29, 0.06)
+#   back hook z -6.11 .. -2.92, 48 vertices, bent up and away from the shaft
+#   shaft     bare: not one vertex between z 7.0 and z 17.9
+#   head      the far 2.2 units, z 17.93 .. 20.16 - 192 of the 256 vertices
+
+weapon v_crowbar
+match  bones 47  seqs 11  hash 0x0f0d2e34
+
+# THE HEAD is the centroid of those 192 vertices. The claw there is flat and
+# bent: 5.70 across in x, 2.15 through in y, 2.23 along in z, with a prong
+# reaching out to x 8.29 at z 18.15 and a chisel end carrying on to z 20.16.
+# `radius` is half the claw's measured width, so the swept capsule is as fat
+# as the claw is and no fatter. The prong's outer corner sits 3.97 from the
+# point and is the one part the capsule does not reach: better than fattening
+# every sweep by a unit everywhere else in order to catch it.
+#
+# `from` and `full` are bracketed by what this model's own animations do to
+# this exact point, each played at its own fps:
+#
+#   idle1 / idle2 / idle3    peak   1.8 ..  3.4 u/s   standing with it
+#   holster                  peak          88.6 u/s   putting it away
+#   draw                     peak         132.9 u/s   whipped up offscreen
+#   attack1                  peak  293.7, mean 160.6  the jab
+#   attack2                  peak  494.7, mean 282.9
+#   attack3                  peak  590.1, mean 201.0  the big swing
+#
+# from 100 - above everything the bar does while it is being carried rather
+# than swung (the holster's 88.6, and 29x the fastest idle), and well under
+# the weakest swing's own MEAN of 160.6, so an honest swing always counts and
+# standing about with it never does. The draw's 132.9 is the stock animation
+# flinging the bar up from below the screen; in VR the player's hand brings
+# it up, so that is not a carry speed this floor has to clear.
+#
+# full 300 - attack1, Half-Life's weakest crowbar swing, peaks at 293.7 at
+# this point, so a swing that matches the game's own jab earns the whole of
+# the crowbar's damage. Capping there rather than at attack3's 590 is
+# deliberate: Part L asks that a practised player BEAT the canned animation,
+# not that they put a shoulder behind every hit to equal it. attack2 and
+# attack3 are both comfortably past the cap, which is what a cap is for.
+strike  point 4.43 1.51 18.96  radius 2.85  from 100  full 300
+
+# THE TIP, for Part J's prying: the centroid of the 16 vertices farthest from
+# the grip - the chisel end, 20.2 units out, at the extreme z. Its
+# cross-section there measures 1.76 across by 0.71 through, so `radius` is
+# its own half-width, 0.90. A thin wedge, because that is what it is.
+#
+# `pry` writes the same `from` and `full` fields that `strike` does
+# (vr_card.cpp:1006-1015 - only `point` and `radius` are per-pry), so this
+# block states those two and nothing else, and leaves the speeds where the
+# strike above set them.
+pry     point 4.55 1.54 20.09  radius 0.90

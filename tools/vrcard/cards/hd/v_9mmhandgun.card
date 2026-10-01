@@ -1,0 +1,146 @@
+# Half-Life HD 9mm pistol (a Glock 17). Measured by vrcardgen, posed and cut
+# by hand. ONE CARD, TWO GAME DIRECTORIES: valve_hd and gearbox_hd ship this
+# rig byte for byte, so the single fingerprint below covers both.
+#
+# Part J: "Magazine release under the thumb drops the magazine; seat a new
+# one; slide-stop press or a tug on the slide sends it home. Locks back on
+# empty. Press-check by easing the slide."
+#
+# The rig is the SD pistol's, re-exported: `Hands mesh` is the body, `Hands
+# mesh 2` the slide, `Hands mesh 3` the hammer, all hanging off `Bip01 R
+# Hand`. The body's own frame, read off the POSED model rather than the bind
+# pose (the bind pose has it axis-aligned and pointing nowhere):
+#
+#     +X is the shooter's LEFT, +Y is DOWN the grip, +Z is REARWARD.
+#
+# Everything below is in that frame. The muzzle attachment lands at
+# (0.30 -5.33 -7.30) in it, which is how the frame was established.
+#
+# THIS RIG HAS A MAGAZINE BONE AND IT CANNOT BE USED. `Box02` is 50 vertices
+# of real magazine body, 3.81 units long - the part the SD model does not
+# have at all. Two measurements rule it out:
+#
+#   it is ROOT-PARENTED, and its bind pose puts it 34.2 units from the weapon
+#   body. A card can give a bone a new motion (`synth ... rewrite`) but
+#   nothing in the format can move a bone's bind value, so in the eight
+#   sequences that do not animate it the magazine would hang in mid-air;
+#
+#   and its one animation is a pantomime, not a stroke: across `reload` it
+#   travels 24.45 units and turns 336 degrees, following the off hand out of
+#   frame and back. The engine brackets a part from whichever sequence moves
+#   it furthest, so driving `Box02` would fly the magazine in from off-screen
+#   rotating instead of sliding it out of the magwell.
+#
+# So the magazine is CARVED OUT OF THE GRIP, the way the SD card does it -
+# but `Box02` is what told us how far it has to go. See the synth below.
+
+weapon v_9mmhandgun
+match  bones 51  seqs 9  hash 0xea5e27df
+
+# Capacity from the game DLL, not from the model: GLOCK_MAX_CLIP is 17
+# (dlls/weapons.h). The rpm is deliberately LOOSE. Half-Life's own fastest
+# glock cadence is GlockFire's 0.2 s cycle - 300 rpm - so 400 sits above
+# anything the stock weapon does and never becomes a second timer refusing a
+# shot the mechanism has already allowed.
+type   magazine_slide  capacity 17  rpm 400
+
+# THE MAGAZINE, CUT FROM THE BUTT OF THE GRIP.
+#
+# The grip is 38 vertices in five low-poly rings - front and rear edges
+# alternating at y 1.5, 1.8, 2.4, 2.9 with a cap at 3.3-3.55 - because the
+# hand mesh covers everything above y 1.44 and the artist modelled none of
+# it. The box takes the bottom three rings, 28 vertices spanning y 2.32 to
+# 3.55, and cuts between ring pairs so the frame keeps the ten vertices of
+# grip the fingers actually wrap.
+#
+# The pivot is the top face of the cut, on the column's centre in x and z, so
+# the part hinges on nothing and simply slides.
+#
+# The axis is local +Y, down the grip. Fitted over the whole grip column the
+# footprint drifts 0.001 per unit in z - nothing - and 0.078 in x, which is
+# the asymmetric vertex count on the left face rather than a rake. The column
+# is straight to within what 38 vertices can resolve.
+#
+# TRAVEL 3.64 IS BOX02'S LENGTH, which is the one thing the unusable bone is
+# good for. Posing `reload` frame by frame, the magazine is best seated at
+# frame 28: floorplate at y 3.45 against the grip butt's 3.55, top at y
+# -0.19, spanning 3.638 along the magwell. A magazine travels its own
+# insertion depth to come free, so that is the stroke.
+synth magazine  from "Hands mesh"
+      box   -0.80 2.30 -1.40   1.30 3.60 1.60
+      pivot  0.58 2.32 0.40
+      axis   0.0 1.0 0.0   travel 3.64
+
+# JOINT 0: THE SLIDE. 133 vertices, 15.4% of the mesh, and it moves in
+# exactly two sequences - `reload` and `shoot_empty` - which is to say it
+# moves when the gun runs dry and not when it does not.
+#
+# Travel 3.32 is vrcardgen's number, the span on the dominant axis. The full
+# three-axis displacement from rest to the rearmost pose is 3.38, 97% of it
+# rearward along +Z with a 0.80 dip in +Y the animator put there; both are
+# inside the 10% the loader allows either way.
+joint 0  bone "Hands mesh 2"  slide  travel 3.32  rest 0
+
+    # THE LOCK-BACK POSITION, MEASURED, not the preset's 95%. In
+    # `shoot_empty` the slide snaps to 3.28 rearward on frames 3-4 and then
+    # settles to 2.18 and HOLDS there for the remaining fifteen frames - and
+    # `reload` opens with it still at 2.18 and only releases it on frame 30.
+    # That held pose is the slide stop, and 2.176 of 3.317 is 0.656.
+    #
+    # `holds -1` and `releases_past` are restated because a catch line
+    # replaces the preset's entry whole: dropping them would leave a slide
+    # that locks open and cannot be sent home by pulling on it, which is half
+    # of what Part J asks for.
+    catch slide_lock at 0.66  holds -1  releases_past
+
+    # The bone's own vertex centroid, as vrcardgen measures it.
+    grab  point 0.07 0.15 1.26  radius 2.5
+
+# The feed and ejection points keep the preset's 40% and 85%. Where in the
+# stroke the case actually leaves is not marked anywhere in this model, and a
+# guessed number would read as a measured one.
+
+# JOINT 1: the magazine the surgery just made. Its grab point is the cut's
+# centroid expressed in the new bone's space, which is the pivot subtracted:
+# (0.584 3.003 0.403) less (0.58 2.32 0.40).
+#
+# A SEAM OPENS WHILE IT DROPS. The cut is 1.23 units long and the stroke is
+# 3.64, so for the last 2.4 units there is daylight where the magazine body
+# would be. That gap is the part nobody modelled, not a mistake in the
+# numbers; closing it wants a magazine world model, not a bigger box.
+joint 1  bone "magazine"  slide  travel 3.64  rest 0
+    grab  point 0.00 0.68 0.00  radius 2.0
+
+# The mag_clear point keeps the preset's 35%. Nothing on this model marks
+# where the magazine is clear of the well - the well itself was never
+# modelled - so there is nothing to measure it against.
+
+# THE TWO CONTROLS PART J NAMES. Neither is a modelled lever: on this rig the
+# slide stop and the magazine release are texture. What IS modelled is the
+# frame's left face, and it is proud in exactly the two places a Glock puts
+# them. Each position below is the centroid of that cluster:
+#
+#   five vertices at x 1.04-1.12, y -2.93 to -2.63, z -0.04 to 0.35 - a boss
+#   on the left of the frame immediately under the slide, where the slide
+#   stop lever sits;
+#
+#   thirteen vertices at x 1.07-1.12, y -1.09 to -0.45, z -0.59 to -0.09 -
+#   the left face behind the trigger guard at the top of the grip, where the
+#   magazine release sits.
+#
+# Both are buttons under the thumb. Neither is load-bearing: the slide can
+# still be sent home by pulling it past its catch, and the magazine still
+# comes out on a deliberate tug against its latch, so a thumb that misses
+# these costs the player nothing.
+control slide_lock  at 1.10 -2.79 0.19   finger thumb  kind button
+control mag_latch   at 1.08 -0.73 -0.31  finger thumb  kind button
+
+# `Hands mesh 3` is the hammer and is NOT declared, for the SD card's reason
+# and one more of its own. It owns 26 vertices at the rear above the bore
+# line and turns about the lateral axis only in `reload` and `shoot_empty`.
+# Its 1.750 radian span is a LIE: frame 1 of `shoot_empty` throws it -1.33
+# radians - 76 degrees the wrong way - for a single frame as a recoil snap,
+# and the real stroke, scored against its neighbours the way the engine does
+# it, is 0.42 radians. A 24-degree hammer with no control to cock it is a
+# part the simulator would freeze where no hand can reach it, so it keeps the
+# animation it has.

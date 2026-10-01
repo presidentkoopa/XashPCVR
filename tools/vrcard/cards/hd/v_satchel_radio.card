@@ -1,0 +1,112 @@
+# Half-Life HD satchel detonator. Measured by vrcardgen, finished by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd each
+# ship their own v_satchel_radio.mdl - 157340, 197596 and 77400 bytes, so NOT
+# the same file - but the same rig and the same radio. 50 bones in the same
+# order, 5 sequences, one fingerprint 0xb99afb57, and the three weapon bones'
+# 598 vertices agree to the thousandth in all three. What differs is the arms
+# (908, 914 and 886 vertices in all): Gordon's sleeve, Shephard's, Barney's.
+# So one card serves them, and it serves them BY FINGERPRINT rather than by
+# which directory it happens to sit in.
+#
+# Part J: "The detonator is a radio in the hand (Half-Life ships
+# v_satchel_radio.mdl); press its button with the thumb."
+#
+# THE BUTTON IS THE WHOLE WEAPON, which is why there is no `type` line. The
+# radio holds no rounds, has no magazine, no chamber and nothing to eject; a
+# preset would hand it a feed path with nothing to put in it. The satchels
+# themselves are objects in the world (Part I) with a card of their own, and
+# this model has no attachments at all - not even a muzzle, because there is
+# nothing here that points at anything.
+
+weapon v_satchel_radio
+match  bones 50  seqs 5  hash 0xb99afb57
+
+# JOINT 0: THE BUTTON, and the only thing on this model a hand can work.
+#
+# `Object02` is a 61-vertex cap, 0.99 x 0.44 x 0.99 units, parented to the
+# body (`Cylinder02`, 515 verts, 3.63 x 1.67 x 11.87) and sitting dead centre
+# across the radio's width with its top face flush with the case: the cap's
+# top is at body-frame y 0.985 against the body's own y max of 0.98.
+#
+# It moves in `fire` and in no other sequence, along the body's -Y and
+# nothing else: y 0.5446 at rest down to 0.2789 pressed. That is 0.2656 units
+# of travel, straight down into the case. Rest is UP, so `rest 0`.
+#
+# NO SPRING AND NO DAMPING STATED, because the defaults already are a button.
+# They return a joint to rest in about 0.1 s, critically damped; the model's
+# own `fire` runs at 50 fps and takes the cap down in 2 frames (0.04 s),
+# holds it 4 (0.08 s) and lets it back up over 3 (0.06 s). Same order, and a
+# momentary button is exactly what a sprung joint already is.
+#
+# The grab point is the cap's measured vertex centroid in its own bone space,
+# (0.000, 0.266, -0.001). The radius is the cap's measured half-diagonal
+# across its face - 0.70 - rounded up to 1.00 so the thumb's solved tip
+# (Part G; this rig's thumb segments are 1.13, 2.37 and 1.07 units) arrives
+# on it without the player hunting for it.
+
+joint 0  bone "Object02"  slide  travel 0.27  rest 0
+    point hammer_cock at 0.90
+    grab  point 0.00 0.27 0.00  radius 1.00
+
+# WHY `hammer_cock` ON A BUTTON. The point vocabulary is fixed (k_detents,
+# vr_card.cpp:248-257) and has no "button" in it. `hammer_cock` is the one
+# crossing in it that means "past here the thing goes off", which is what the
+# bottom of this button is, and it is the crossing vr_feed answers by setting
+# hammer_cocked - "the detonator has been worked" - for the weapon code to
+# read and clear.
+#
+# 0.90 IS MEASURED, NOT PICKED. The animation takes the cap to 100% of its
+# travel on frame 7 and then holds it between 100% and 94.1% for four frames
+# before letting it up. A point at 0.90 is therefore crossed exactly once on
+# the way down and once on the way back, and the creep in between cannot
+# chatter it. Anything above 0.941 would.
+#
+# vr_card_check prints this joint as "travel 0.26" and the point as "at 89%".
+# Both are the fixed-point reader truncating rather than rounding - 0.27 and
+# 0.90 become 0.269989 and 0.899994 in 16.16 - and the margin above holds
+# either way. Nothing is wrong; the printed numbers are just a notch low.
+#
+# A VRD_BUTTON_DOWN in the shared vocabulary would say this exactly rather
+# than closely, and would clear on the way back up the way cover_open does.
+# That is an engine change to propose, not something a card can fix.
+
+# NO CONTROL LINE, DELIBERATELY - and this is the one place this card departs
+# from its SD sibling (cards/valve/v_satchel_radio.card).
+#
+# Part G would like one: the control under the thumb is what gets the
+# highlight and the haptic tick, and on a weapon whose entire interface is a
+# single button that is worth having. But a `control` must name a catch that
+# some joint carries (vr_card.cpp:889), the only catch in the vocabulary that
+# could mean "it goes off" is `sear`, and the parser then forces a sear
+# control to VRGUNCTL_PULL_BACK whatever `kind` the card asked for
+# (vr_card.cpp:932-933) - correctly, for a revolver hammer, which is a thing
+# you draw rather than push. On this weapon it would mean the satchels blow
+# when the thumbstick is pulled back with the thumb resting on the button:
+# not what Part J says, and a detonation nobody asked for.
+#
+# So the thumb pushes the JOINT, which is the real mechanism and the one the
+# measurement supports. Nothing is lost by leaving the pair out: on the SD
+# card they are inert anyway - VRJoint_Release on a catch that nothing ever
+# engages is a no-op, and VRGun_Controls' return value is discarded by
+# VRGun_Update - so they describe an intention rather than a mechanism.
+
+# THE AERIAL IS NOT A JOINT. `Cylinder03` is a 22-vertex, 1.57-unit stub
+# beside the button that turns about the body's X and nothing else: folded
+# flat at +/-pi while the radio is stowed, swung up to 0 by the last frame of
+# `draw`, and then free - 0.26 rad of wobble in `idle1`, 0.75 in `fidget1`,
+# 0.60 as the thumb jabs the button. Nothing works it and nothing can. It is
+# a whip antenna being shaken by the hand, so it stays the animation's, and
+# Part F's physics is its real home. Declaring it a joint would hand it to a
+# simulator that has no pendulum in it, and it would hang dead at rest.
+#
+# (vrcardgen reports its travel as 6.26 rad. That is max-minus-min on a
+# channel that wraps through pi: -3.140 and +3.122 are the same orientation.
+# The real deployment swing is pi - 180 degrees - from folded to upright.)
+
+# NO STRIKE LINE. Every card inherits the weak pistol-whip default, and a
+# plastic radio in the hand is exactly what that default is for.
+#
+# THE MESH IS OPEN, as all of them are: 1471 triangles, 13.8% of its edges
+# are holes, 4 degenerate. Part G's grip solver works against rest-pose
+# triangles and does not care, but nothing here may assume a solid.

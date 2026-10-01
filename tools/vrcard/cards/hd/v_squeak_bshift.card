@@ -1,0 +1,54 @@
+# Blue Shift HD snark. Measured by vrcardgen from
+#   bshift_hd/models/v_squeak.mdl
+# finished by hand.
+#
+# Part J: "Take one from the nest on the chest. It squirms in the hand and
+# bites if held too long (a small amount of damage, the Half-Life way).
+# Throw it, or drop it at your feet and let it hunt."
+#
+# So: nothing to work, nothing to load, nothing to aim. The card says the
+# weapon is released and then stops talking, because after the release the
+# snark is a monster and not a weapon.
+#
+# WHY THERE ARE NO JOINTS, measured rather than assumed. This rig is two
+# skeletons in one model: Bip01 (bones 0-41, 40.1% of the mesh) is the
+# player's arm and hand, and Bip02 (bones 42-56, 59.9%) is the snark itself,
+# parented to `Bip01 R Finger1` - the creature hangs off the index finger of
+# the fist that holds it. vrcardgen finds six drivable bones in the Bip02
+# subtree and they are all anatomy:
+#
+#   Bip02 Neck      1.89 rad   Bip02 Head       1.83 rad
+#   Bip02 L UpperArm 2.34 rad  Bip02 L Forearm  1.76 rad
+#   Bip02 R UpperArm 1.68 rad  Bip02 R Forearm  1.91 rad
+#
+# Every one of those is pure rotation with zero translation, and none of
+# them appears in `throw`. Posing the six sequences says what they are:
+#
+#   idle1       the creature almost still - head 2 deg, neck 6 deg
+#   fidgetfit   the squirm: neck 108 deg, head 93 deg, legs 179 deg
+#   fidgetnip   the BITE: head 91 deg, thighs 193/181 deg - it twists
+#               round in the fist to reach the hand
+#   down / up   holster and draw
+#   throw       ONE bone moves: Bip02 translates 129.43 units, and not a
+#               single joint in the creature rotates at all
+#
+# A neck that turns 108 degrees while the thing squirms is not a degree of
+# freedom the hand drives; it is the model breathing. Declaring any of it as
+# a joint would hand the simulator a hand-spring on the snark's skull. The
+# squirming and the biting belong to Part I (a thing in the hand with its own
+# behaviour) and Part G (haptics), not to a mechanism. Hence: no joints.
+#
+# NO ATTACHMENTS AT ALL on this model - numattachments is 0, so there is no
+# muzzle and no eject position to record. Correct for a thrown weapon: the
+# release direction comes from the hand's own velocity (Part F-05), not from
+# a barrel axis. The 129-unit arc in `throw` is Half-Life's canned flight
+# path and the VR build replaces it with the real throw.
+#
+# Weapon extent 16.39 units, from vertices - the header bounding boxes on
+# this model are (0,0,0) like every other retail valve model.
+
+weapon v_squeak
+match  bones 57  seqs 6  hash 0xab512ff3
+
+type   thrown
+fuse   0           # it is alive; it decides

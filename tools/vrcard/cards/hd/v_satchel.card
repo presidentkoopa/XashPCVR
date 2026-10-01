@@ -1,0 +1,112 @@
+# Half-Life HD satchel charge. Measured by vrcardgen, finished by hand.
+#
+# ONE CARD, THREE GAME DIRECTORIES. valve_hd, gearbox_hd and bshift_hd each
+# ship their own v_satchel.mdl and the three files are NOT identical - 129400,
+# 173116 and 120756 bytes, three different checksums, 871 / 877 / 849
+# vertices, extents 19.06 / 17.16 / 19.88 units. What they share is the rig:
+# 59 bones, 4 sequences, bone-name hash 0x9ab11d46, and animation that agrees
+# to the last measured thousandth on every bone named below. The mesh and the
+# arms differ; the skeleton does not. Binding is by fingerprint, so one card
+# serves all three - and the SD rigs are different weapons as far as a card is
+# concerned (retail valve 29 bones / 0xf8389268, gearbox 47 / 0xb461560d,
+# bshift 28 / 0x664588fc). None of those matches this card, which is right.
+#
+# Part J: "Take one from the chest; throw it or set it down gently where you
+# want it. The detonator is a radio in the hand (Half-Life ships
+# v_satchel_radio.mdl); press its button with the thumb."
+#
+# So the whole mechanism is RELEASE. Throwing it and setting it down are the
+# same gesture at two speeds, and both are the world's business (Part I)
+# rather than the weapon's. No pin, no spoon, no fuse: the charge waits for
+# the radio, which is a separate weapon with a card of its own. The `thrown`
+# preset in vr_gun.cpp names this very weapon in its comment and gives it no
+# joints and no fuse on purpose, so there is nothing here to override.
+#
+# This model is not fired and does not pretend to be: it has ZERO
+# attachments, so there is no muzzle to measure.
+
+weapon v_satchel
+match  bones 59  seqs 4  hash 0x9ab11d46
+
+type   thrown
+fuse   0           # it waits for the radio
+
+# -------------------------------------------------------------------------
+# THE SD CARD SAYS "NOTHING ON IT MOVES". THIS RIG IS NOT THAT RIG.
+#
+# That is the one trap on this weapon, and it is why this card is not a copy
+# of cards/valve/v_satchel.card. The HD satchel has ELEVEN animated bones,
+# and vrcardgen's draft offers seven of them as joints. Promoting that draft
+# would be wrong. All eleven are hanging decoration, and three measurements
+# say so.
+#
+# FIRST, THEY MOVE WHEN NOBODY IS TOUCHING THE WEAPON. Every one of them is
+# animated in `idle1` and `fidget1`. A slide, a bolt or a magazine sits still
+# in idle and moves in fire or reload; a part animated through 101 frames of
+# a man standing there holding a brick is sway.
+#
+# SECOND, THEY HANG. Measured in the satchel body's own frame, so the hand's
+# motion is removed, the swing grows monotonically from a motionless anchor
+# to a free tip along each chain. In `idle1`:
+#
+#   Bone04  0.00 -> Bone05  0.00 -> Bone06 0.06 -> Bone07 0.18 -> Bone08 0.38
+#   Bone11  0.00 -> Bone12  0.07 -> Bone13 0.56 -> Bone14 0.90
+#   Bone01  0.13 -> Bone02  2.11
+#
+# A rigid part carries every bone in it the same distance. A cord does this.
+# `Bone04` is animated in no sequence at all and `Bone11` only in draw and
+# drop: those are the two mounts the cords hang off.
+#
+# THIRD, THE LONGEST "TRAVEL" IS NOT A TRAVEL. `Bone02` is the biggest number
+# on the model - 0.681 units of position channel, 2.11 units of actual
+# displacement in idle - and it has TWO vertices, zero animated rotation in
+# every sequence, and keyframed position in x, y and z at once. That is a
+# cord tip hand-animated through the air, not a joint sliding along an axis.
+#
+# So: three cords and no mechanism. The long one on top is
+# Bone04-Bone05-Bone06-Bone07-Bone08, five segments with a round cross
+# section about 0.46 units across, running roughly 2.2 units out of the top
+# face. The two underneath are Bone11-Bone12-Bone13-Bone14 and Bone01-Bone02,
+# flat ribbons of four and two segments. Between them they own 71 vertices in
+# all three files - about 8% of the mesh.
+#
+# They are LEFT UNDECLARED, which is what keeps them swinging - the same
+# reason the crossbow card leaves its limbs alone. A declared joint is posed
+# from the hand's commanded value, so declaring these would freeze three
+# cords at whatever fraction the player's hand happened to ask for and take
+# the life out of the model to buy nothing.
+#
+# -------------------------------------------------------------------------
+# THE REST OF THE MODEL, measured:
+#
+#   psx_v_satchel   490 vertices - 56% of the mesh - the charge itself, a
+#                   brick 9.92 x 10.24 x 9.55 units. Identical in all three
+#                   files, to the hundredth: what differs between them is the
+#                   arms, which is why the overall vertex count and extent
+#                   differ and the satchel does not. Parented to
+#                   `Bip01 L Hand`, not to a root, and it turns 0.269 radians
+#                   in `drop` - which is the hand tossing it away, not a part
+#                   of the satchel moving.
+#   the arms        L_Arm_bone and R_Arm_bone, 63 vertices each, plus two
+#                   hands and forty fingers. The viewmodel shows both arms.
+#
+# SEQUENCES. idle1 (101 frames), fidget1 (61), draw (61), drop (16) - exactly
+# satchel_e in dlls/satchel.cpp, in that order. There is NO throw animation
+# on this model and no fire: `drop` is the HOLSTER animation
+# (CSatchel::Holster sends SATCHEL_DROP), and throwing swaps the viewmodel to
+# v_satchel_radio.mdl and plays SATCHEL_RADIO_DRAW over there. Nothing was
+# ever animated here for the throw, so there was nothing to measure it from -
+# which costs this card nothing, because the throw is the hand's.
+#
+# NO CONTROL IS DECLARED. The detonator's button is on v_satchel_radio and
+# carries the `sear` catch and the thumb control there; putting one here would
+# name a catch no joint has, and the parser refuses that outright.
+#
+# The strike is left at the pistol-whip default the parser hands every card.
+# Part J gives the butt-stroke to firearms, and nobody has measured what a
+# ten-unit block of plastic explosive does to a houndeye.
+#
+# MESH. Not solid, in any of the three: valve_hd 1428 triangles and 13.5% of
+# edges open, gearbox_hd 1379 and 15.6%, bshift_hd 1393 and 13.4%, with 12
+# non-manifold edges apiece. OPEN, like 69 of the 101 retail viewmodels.
+# Nothing here needs a closed mesh, but do not assume one.

@@ -1,0 +1,148 @@
+# Blue Shift HD 9mm pistol. Measured by vrcardgen, carved and carded by hand.
+#
+# Part J: "Magazine release under the thumb drops the magazine; seat a new
+# one; slide-stop press or a tug on the slide sends it home. Locks back on
+# empty. Press-check by easing the slide."
+#
+# THIS IS ITS OWN RIG, which is the whole reason the fingerprint does the
+# binding and the bone names do not. A stock install ships the HD pistol three
+# times and only two of them are the same model: valve_hd and gearbox_hd are
+# byte for byte identical at 51 bones, 0xea5e27df. bshift_hd is a separate
+# export - 47 bones, 9 sequences, 0x9ece81ed - and this card applies to that
+# one alone. All three carry the SD family's bone names, `Hands mesh`,
+# `Hands mesh 2`, `Hands mesh 3`, so names alone would bind the wrong card to
+# the wrong export every time.
+
+weapon v_9mmhandgun
+match  bones 47  seqs 9  hash 0x9ece81ed
+
+# 17 is GLOCK_MAX_CLIP in dlls/weapons.h. The rpm is deliberately above
+# anything Half-Life asks for - glock.cpp's fastest cadence is GlockFire's
+# 0.2 s, which is 300 - so that a self-loader's rate is set by the trigger
+# finger and not by a second, invisible timer sitting behind it.
+type   magazine_slide  capacity 17  rpm 400
+
+# The preset's feed rules are already right here and nothing is cleared: this
+# pistol really is self-loading and really does lock back, and the next block
+# is the measurement that says so.
+
+# JOINT 0: THE SLIDE. `Hands mesh 2`, 133 vertices, 15.8% of the mesh, moving
+# in `shoot`, `shoot_empty` and `reload` and in nothing else. (That is already
+# a difference from the 51-bone HD export, where `shoot` does not touch the
+# slide at all - this card's rig animates it in both.)
+#
+# TRAVEL IS A BRACKET, NOT A SPAN. Measured the way the engine measures one
+# (R_StudioDerivePart in ref/gl/gl_studio.c): find the sequence that moves the
+# part furthest - sampling at eighths, which here picks `shoot_empty` - then
+# find the frame where it is furthest out scored against its neighbours so a
+# one-frame spike cannot win, and take the distance the part's own geometry
+# centre covers between frame 0 and that frame. Peak frame 3; 3.41 units.
+#
+# vrcardgen's draft says 3.74, which is the full span of the bone's
+# translation channel across every sequence rather than one bracketed stroke.
+# The engine brackets, so the bracket is what this card records - and every
+# fraction below is a fraction of IT.
+joint 0  bone "Hands mesh 2"  slide  travel 3.41  rest 0
+
+# AND IT LOCKS BACK, which this model proves rather than implies. Posed frame
+# by frame against that bracket, `shoot_empty` throws the slide to 1.00 on
+# frames 3 and 4 - the recoil overshoot, which is the bracket's own far end -
+# and then settles it at 0.67 and leaves it there for the remaining fifteen
+# frames. `reload` opens with the slide held at that same 0.67 for thirty
+# frames and only then runs it home. A loaded cycle never gets that far back:
+# `shoot` peaks at 0.90. So 0.67 is the slide stop's measured seat, and the
+# preset's 0.95 is above anything the slide ever reaches and holds.
+#
+# `holds -1` and `releases_past` are the preset's own, restated because a
+# catch line REPLACES the entry it overrides rather than patching it - leaving
+# them off would silently drop them. `releases_past` is Part J's "a tug on the
+# slide sends it home".
+    catch slide_lock at 0.67  holds -1  releases_past
+
+# The feed point at 0.40 and the ejection point at 0.85 are the preset's, left
+# alone because there is nothing on this model to measure them against: no
+# round bone, no case bone, and no attachment but the muzzle. Both stay
+# reachable - a loaded shot takes the slide to 0.90 and an empty one to 1.00,
+# so a case leaves past 0.85, and releasing the catch at 0.67 runs the slide
+# forward through 0.40 and chambers. Easing it back short of 0.85 is the press
+# check, and that still exposes the chamber without throwing the round away.
+    grab  point 0.07 0.15 1.26  radius 3.26
+
+# THE MAGAZINE HAS TO BE CARVED, and this model is unusually clear about why.
+#
+# `Box02` is a 50-vertex magazine and it is a PROP, not a part. It is
+# root-parented, it carries animation in `reload` and `reload_noshot` and in
+# no other sequence, and its bind pose sits at the model origin - at the
+# viewer's eye, inside the near plane, which is where a GoldSrc animator parks
+# something he does not want drawn. Posed through the reload it lies twelve
+# units below the gun for the first thirteen frames, swings up into the grip
+# by frame 27, is pushed two units PAST flush by frame 30, and is parked again
+# for the last eleven. It is never the magazine the weapon is holding; the
+# seated magazine is welded into `Hands mesh`. Declaring `Box02` as a joint
+# would hang a magazine in the player's eye and pose it there, which is why it
+# is not declared - and mod_surgery.h says the same of both pistols: neither
+# the HD nor the SD rig has a magazine bone.
+#
+# What `Box02` IS good for is measurement. Its own bounding box is
+# 2.14 x 3.81 x 0.79, so the magazine is 3.81 units long; and at reload frame
+# 27, the frame where its base comes closest to flush with the grip's heel, it
+# fills the grip column from Y -0.22 to Y 3.49. That is where the magazine
+# lives, and 3.81 is how far it has to come down to be clear of the well.
+#
+# So the magazine is cut out of the grip, the way the SD pistol's card does
+# it. The grip column is 38 vertices in three rings - 1.44..1.90, 2.32..2.98
+# and 3.05..3.55 - and the only gap between rings is 1.90 to 2.32, so cutting
+# at 2.10 takes 28 whole vertices and leaves 10 behind as the walls of the
+# well. Box, pivot and axis are in `Hands mesh`'s own space, which is the
+# space the generator's preview draws; the pivot sits at the cut, on the
+# carved vertices' own centre line (0.58, 0.40), so the part hinges on nothing
+# and simply slides; and the axis runs down the grip, which on this rig is
+# local +Y.
+synth magazine  from "Hands mesh"
+      box   -0.90 2.10 -1.40    1.30 3.70 1.60
+      pivot  0.58 2.10 0.40
+      axis   0.0 1.0 0.0   travel 3.81
+
+# JOINT 1: the magazine the surgery just made. THE ORDER IS NOT FREE:
+# `magazine_slide` makes joint 0 the action and joint 1 the magazine, so
+# numbering these the other way round would hand the slide's stop to the
+# magazine and the magazine's latch to the slide.
+joint 1  bone "magazine"  slide  travel 3.81  rest 0
+
+# AND IT IS NOT CLEAR UNTIL IT IS ALL THE WAY OUT. The preset puts that
+# crossing at 0.35, which is right when the travel is the whole arc a reload
+# animation carries a magazine through; here the travel IS the magazine's own
+# measured length, so it is free of the well only at the end of it. 0.95
+# rather than 1.00, because a point at the very end of a joint's travel is a
+# crossing a hand can never quite make.
+    point mag_clear at 0.95
+
+# The magazine latch keeps the preset's seat at 0.02 and the preset's
+# breakout, which is what makes a deliberate pull take the magazine out. That
+# matters here more than usual - see the note on controls below.
+    grab  point 0.00 0.90 0.00  radius 1.22
+
+# Both grab points are in their own bone's space - the slide's is vrcardgen's
+# measured centroid, the magazine's is the carved vertices' centroid less the
+# pivot they are re-expressed against. Both radii are the rms spread of that
+# part's geometry about its own centre, which is the same quantity the
+# renderer uses to decide which part a hand is ON rather than merely near.
+
+# `Hands mesh 3` is the hammer: 26 vertices, 0.28 units thick, sitting at the
+# top rear behind the slide and turning 1.75 radians - a hundred degrees -
+# about the lateral axis in `shoot`, `shoot_empty` and `reload`. NOT DECLARED,
+# for the reason the SD pistol's card gives: a self-loader re-cocks its own
+# hammer, and a hammer the simulator owns is a hammer frozen somewhere no hand
+# can reach it. It keeps the animation it has.
+#
+# NO CONTROLS. Part J wants a magazine release and a slide stop under the
+# thumb, and this model marks the position of neither - no bone, no
+# attachment, no separable geometry for either, and a control is a point in
+# space. Both jobs are still done by hand, which is the other half of what
+# Part J asks for: the latch's breakout means a deliberate pull takes the
+# magazine out, and `releases_past` on the slide stop means a tug sends the
+# slide home.
+#
+# NO STRIKE LINE. Part J gives every firearm a pistol whip, and a card that
+# declares no strike inherits exactly that default - which is what a pistol
+# should have.
