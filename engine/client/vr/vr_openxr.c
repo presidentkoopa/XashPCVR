@@ -4516,6 +4516,10 @@ static struct
 	int  cur_id;
 } vr_wlist;
 
+// Defined with Part F below; a dropping clip is how a shot reaches the
+// held-weapon body.
+void VR_HoldRecoil( int shots );
+
 void VR_ObserveUserMessage( const char *name, int size, const void *buf )
 {
 	const byte *p = (const byte *)buf;
@@ -4545,6 +4549,27 @@ void VR_ObserveUserMessage( const char *name, int size, const void *buf )
 			// before that shot, and that has been guessed at twice.
 			if( vr_diag.value != 0.0f && newclip != vr.rl_clip )
 				VR_DiagPrintf( "CURWEAPON id=%d clip=%d state=%d\n", id, newclip, p[0] );
+
+			// A CLIP THAT WENT DOWN IS ROUNDS THAT WENT OUT, and that is how
+			// Part F learns a shot happened without a new API.
+			//
+			// The alternative was the firing EDGE in cl_main.c, which already
+			// drives the haptic - but that edge is deliberately coarse
+			// ("otherwise an automatic weapon buzzes continuously into one long
+			// meaningless rumble"), so it would kick once per trigger HOLD and
+			// once on a dry click against an empty chamber. An automatic weapon
+			// that climbs once per burst is not recoil.
+			//
+			// Its limits, stated rather than discovered later: this arrives at
+			// the server's rate rather than the shot's, so a fast burst can land
+			// as one message carrying a drop of three - which is why
+			// VR_HoldRecoil takes a COUNT and applies that many kicks. A weapon
+			// firing from the ammo pool with no clip never moves this number and
+			// gets no kick; the honest fix is the simulator telling us, which is
+			// a game API addition and can wait until somebody wants the gauss to
+			// climb.
+			if( newclip >= 0 && vr.rl_clip > newclip )
+				VR_HoldRecoil( vr.rl_clip - newclip );
 
 			vr.rl_clip = newclip;
 		}
@@ -5260,8 +5285,27 @@ static vrhold_t    vr_hold;
 static vrholdcfg_t vr_holdcfg;
 static qboolean    vr_hold_ready = false;
 
+// What the body was last built for, so a weapon change can actually be seen.
+static int         vr_hold_model = -1;
+static int         vr_hold_server = -1;
+
 CVAR_DEFINE_AUTO( vr_hold_sim, "0", FCVAR_ARCHIVE,
 	"hold the weapon as a body with mass rather than pinning it to the hand" );
+
+// THE NINE NUMBERS THAT DECIDE HOW A WEAPON FEELS, and until now every one of
+// them was a literal inside VRHold_DefaultCfg.
+//
+// The gate comment above says proving Part F is "a session with the headset
+// on". That session could not happen: changing follow, weight or recoil meant
+// editing vr_hold.c and rebuilding, which is not a thing anybody does with a
+// headset on their face. Zero means "use the module's own default", so the
+// defaults stay in one place and these are overrides.
+static CVAR_DEFINE_AUTO( vr_hold_follow, "0", FCVAR_ARCHIVE, "seconds for the weapon to catch up to the hand; 0 = module default (0.0022 * mass)" );
+static CVAR_DEFINE_AUTO( vr_hold_turn, "0", FCVAR_ARCHIVE, "seconds for the weapon to catch up in angle; 0 = module default (0.0060 * mass)" );
+static CVAR_DEFINE_AUTO( vr_hold_recoil, "0", FCVAR_ARCHIVE, "impulse along the barrel per shot; 0 = module default (26)" );
+static CVAR_DEFINE_AUTO( vr_hold_torque, "0", FCVAR_ARCHIVE, "muzzle-climb torque per shot; 0 = module default (9)" );
+static CVAR_DEFINE_AUTO( vr_hold_lag, "0", FCVAR_ARCHIVE, "furthest the weapon may trail the hand, units; 0 = module default (1.2)" );
+static CVAR_DEFINE_AUTO( vr_hold_tilt, "0", FCVAR_ARCHIVE, "furthest the weapon may lean from the hand, radians; 0 = module default (0.35)" );
 CVAR_DEFINE_AUTO( vr_hold_mass, "1.0", FCVAR_ARCHIVE,
 	"the held weapon's mass, until cards carry one" );
 
@@ -5292,10 +5336,32 @@ static void VR_HoldWeapon( vec3_t org, vec3_t ang )
 
 	// A weapon change is a new weapon: start it where the hand is rather
 	// than flying the old one across the room to the new grip.
-	if( !vr_hold_ready || vr_holdcfg.mass != vr_hold_mass.value )
+	// IT NEVER ACTUALLY DETECTED A WEAPON CHANGE, despite the comment above
+	// saying it did. The only triggers were the first frame and the mass cvar
+	// moving - and mass is one global number, so swapping from the crowbar to
+	// the RPG kept the crowbar's body and dropped it into the launcher's
+	// grip. The model index is what says "different weapon", which is how
+	// VR_AlignModelToFireRay has always spotted one; cl.servercount catches a
+	// level change, where every pose is meaningless anyway.
+	if( !vr_hold_ready
+		|| vr_holdcfg.mass != vr_hold_mass.value
+		|| vr_hold_model != cl.local.viewmodel
+		|| vr_hold_server != cl.servercount )
 	{
 		VRHold_DefaultCfg( &vr_holdcfg, vr_hold_mass.value );
+
+		// The owner's overrides on top of the module's defaults, so the feel
+		// session can happen without a compiler in the loop.
+		if( vr_hold_follow.value > 0.0f ) vr_holdcfg.follow_time = vr_hold_follow.value;
+		if( vr_hold_turn.value > 0.0f )   vr_holdcfg.turn_time = vr_hold_turn.value;
+		if( vr_hold_recoil.value > 0.0f ) vr_holdcfg.recoil_impulse = vr_hold_recoil.value;
+		if( vr_hold_torque.value > 0.0f ) vr_holdcfg.recoil_torque = vr_hold_torque.value;
+		if( vr_hold_lag.value > 0.0f )    vr_holdcfg.max_lag = vr_hold_lag.value;
+		if( vr_hold_tilt.value > 0.0f )   vr_holdcfg.max_tilt = vr_hold_tilt.value;
+
 		VRHold_Reset( &vr_hold, org, q );
+		vr_hold_model = cl.local.viewmodel;
+		vr_hold_server = cl.servercount;
 		vr_hold_ready = true;
 		return;
 	}
@@ -5309,9 +5375,77 @@ static void VR_HoldWeapon( vec3_t org, vec3_t ang )
 	QuaternionAngle( vr_hold.quat, ang );
 }
 
+// The cached fire ray for this frame, declared here because VR_HoldRecoil
+// below reads it - the kick goes about the axis the SHOT was on, not the one
+// the hand happens to be on this frame.
 static vec3_t vr_fire_org;
 static vec3_t vr_fire_ang;
 static qboolean vr_fire_valid = false;
+
+/*
+================
+VR_GetHeldPose
+
+Where the weapon's BODY actually got to, as opposed to where the hand is.
+
+THE HALF PART F WAS MISSING. The module has been written, compiled and
+headless-tested since September, and almost nothing read its answer: the drawn
+weapon is placed in cl_view.c from its own read of the controller, and
+VR_SeatViewmodel seats the model on the raw palm. So with the sim on, the gun
+stayed welded to the hand while the shot came from a body that lagged behind
+it - the two silently disagreeing, which is the exact failure the fire-ray
+cache exists to prevent.
+
+Returns false when the sim is off or the body has not settled yet, and a
+caller that gets false must use the hand pose exactly as it does today. That
+is what keeps this inert at vr_hold_sim 0.
+================
+*/
+qboolean VR_GetHeldPose( vec3_t out_org, vec3_t out_ang )
+{
+	if( vr_hold_sim.value == 0.0f || !vr_hold_ready || !vr_hold.have )
+		return false;
+
+	if( out_org ) VectorCopy( vr_hold.pos, out_org );
+	if( out_ang ) QuaternionAngle( vr_hold.quat, out_ang );
+
+	return true;
+}
+
+/*
+================
+VR_HoldRecoil
+
+A shot kicked the weapon. Called with the number of rounds that actually went
+off, which the simulator knows and a trigger edge does not.
+
+PER ROUND, NOT PER PULL. The obvious hook is the firing edge in cl_main.c that
+already fires a haptic - but that edge is deliberately coarse ("otherwise an
+automatic weapon buzzes continuously into one long meaningless rumble"), so it
+would kick once per trigger HOLD and once on a dry click against an empty
+chamber. An automatic weapon that climbs once per burst is not recoil.
+================
+*/
+void VR_HoldRecoil( int shots )
+{
+	vec3_t fwd;
+	int i;
+
+	if( vr_hold_sim.value == 0.0f || !vr_hold_ready || shots <= 0 )
+		return;
+
+	// Along the barrel as the fire ray has it, which is the same line the
+	// bullet took - so the kick is about the axis the shot was on rather
+	// than the one the hand happens to be on this frame.
+	if( !vr_fire_valid )
+		return;
+
+	AngleVectors( vr_fire_ang, fwd, NULL, NULL );
+
+	for( i = 0; i < shots && i < 8; i++ )
+		VRHold_Recoil( &vr_hold, &vr_holdcfg, fwd );
+}
+
 
 void VR_UpdateFireRay( void )
 {
@@ -10855,6 +10989,12 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_hand_roll_offset );
 	Cvar_RegisterVariable( &vr_twohand );
 	Cvar_RegisterVariable( &vr_hold_sim );
+	Cvar_RegisterVariable( &vr_hold_follow );
+	Cvar_RegisterVariable( &vr_hold_turn );
+	Cvar_RegisterVariable( &vr_hold_recoil );
+	Cvar_RegisterVariable( &vr_hold_torque );
+	Cvar_RegisterVariable( &vr_hold_lag );
+	Cvar_RegisterVariable( &vr_hold_tilt );
 	Cvar_RegisterVariable( &vr_hold_mass );
 	Cvar_RegisterVariable( &vr_twohand_min );
 	Cvar_RegisterVariable( &vr_twohand_max );
@@ -13576,5 +13716,7 @@ void     VR_DrawViewTargetTest( void ) { }
 void     VR_RenderOpticViews( void ) { }
 void     VR_DrawOptics( void ) { }
 qboolean VR_WeaponHasSights( void ) { return false; }
+qboolean VR_GetHeldPose( vec3_t o, vec3_t a ) { return false; }
+void     VR_HoldRecoil( int shots ) { }
 
 #endif

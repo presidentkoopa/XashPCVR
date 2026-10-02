@@ -514,6 +514,18 @@ void V_RenderView( void )
 				vec3_t hand_org, hand_ang;
 
 				vec3_t seat_ang;
+				// PART F: THE PICTURE HAS TO AGREE WITH THE AIM.
+				//
+				// The weapon is drawn where the BODY got to when the hold
+				// simulation is on, and where the hand is when it is not.
+				// Until now this read the controller directly and nothing
+				// here ever saw vr_hold's pose - so turning the sim on left
+				// the gun welded to the hand while the shot came from a body
+				// lagging behind it, which is the silent disagreement the
+				// fire-ray cache was built to stop.
+				//
+				// VR_GetHeldPose returns false at vr_hold_sim 0, so this is
+				// byte-identical to what it was unless somebody opts in.
 				if( VR_GetHandWorld( VR_DominantHand(), hand_org, hand_ang ))
 				{
 					vec3_t dbg_raw, dbg_cal, dbg_align;
@@ -524,6 +536,21 @@ void V_RenderView( void )
 					// it operates on physical tracked angles like everything
 					// else. No-op unless the off hand is up at the weapon.
 					braced = VR_ApplyTwoHandedAim( hand_org, hand_ang );
+
+					// ...AND THEN THE BODY, IF THE HOLD SIM IS RUNNING.
+					//
+					// Taken AFTER the two-handed stabilisation and not
+					// instead of it, because that is the order the aim path
+					// uses: VR_UpdateFireRay does GetHandWorld, then
+					// ApplyTwoHandedAim, then VR_HoldWeapon. The body pose
+					// already contains the brace, so substituting it here
+					// puts the drawn weapon on exactly the pose the shot
+					// came from - which is the entire point, and what was
+					// missing for as long as Part F has existed.
+					//
+					// False at vr_hold_sim 0, so the line below does nothing
+					// and every angle from here on is what it always was.
+					VR_GetHeldPose( hand_org, hand_ang );
 
 					// Weapon meshes rest at a different angle than the bare-hand
 					// mesh, so they get their own correction (vr_weapon_*_offset).

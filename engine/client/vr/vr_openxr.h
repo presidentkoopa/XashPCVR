@@ -435,6 +435,16 @@ void     VR_DrawViewTargetTest( void );
 // per frame, before either eye, because two eyes down one tube see one
 // picture. VR_DrawOptics draws the result on the eyepiece - and a reticle at
 // infinity - once PER EYE, because that answer differs between them.
+// PART F. Where the weapon's BODY got to, as opposed to where the hand is.
+// False when vr_hold_sim is 0 or the body has not settled, and a caller that
+// gets false must use the hand pose exactly as it does today - which is what
+// keeps all of Part F inert at the default.
+qboolean VR_GetHeldPose( vec3_t out_org, vec3_t out_ang );
+
+// ...and a shot kicked it. Takes the number of rounds that actually went off,
+// because a trigger edge kicks once per HOLD and once on a dry click.
+void     VR_HoldRecoil( int shots );
+
 void     VR_RenderOpticViews( void );
 void     VR_DrawOptics( void );
 
