@@ -452,6 +452,49 @@ Then, in order:
     running, a finger solver, and a sight line the engine does not currently have a way to express -
     and `VR_AlignModelToFireRay` is working against it.
 
+## The in-game menu, and whether the Touch has room (owner, 1 Oct)
+
+**The owner's note:** all of this will eventually need a proper in-headset menu for settings and
+controls. Parked deliberately and *conditionally* - "way further down the road as long as the Quest 2
+Touch controllers do what we need them to."
+
+**So: does the Touch have room? Yes, but not where you would look for it.** Counted against the
+`oculus/touch_controller` binding table in `vr_openxr.c`:
+
+| | Right (gun hand) | Left (off hand) |
+| --- | --- | --- |
+| thumbstick | TURN | MOVE |
+| stick click | NEXTWEAP | PREVWEAP |
+| trigger | TRIGGER *and* ATTACK | USE |
+| squeeze | ATTACK2 | OFFGRIP |
+| face 1 | JUMP (A) | RELOAD (X) |
+| face 2 | CROUCH (B) | FLASHLIGHT (Y) |
+| menu | — | MENU |
+
+**Every button, stick and trigger is spoken for.** There is no free *button* for a menu, a
+magnification cycle, or anything else, and the next feature that wants one has to take it from
+something.
+
+**What IS free is six touch sensors and two analog ranges**, and two of them are already designed and
+simply not wired:
+
+- **`thumbrest/touch`, both hands - unbound.** `VRBTN_THUMB_TOUCH` is *defined in `vrcmd.h` and
+  written by nothing*. It is the input Part G's whole rule is phrased in terms of ("the thumb is off
+  its rest, so it is reaching for something"), and every control gesture in that table is gated on a
+  signal that is always zero.
+- **Both grips are read as a BIT.** They are bound to `squeeze/value` - an analog axis - but declared
+  `XR_ACTION_TYPE_BOOLEAN`, so the pressure is thrown away. This is why the grip solver hardcodes
+  `grip = 1.0f`, and it is the single input most of Part G is waiting on.
+- `trigger/touch` and `thumbstick/touch`, both hands - unbound.
+
+**So the honest answer to the condition:** the controllers are not the constraint, and the menu can
+wait. But **two inputs that already exist on the hardware and already have names in our code are
+doing nothing**, and they block more than a menu would - they block the grip solver and the whole of
+Part G's control table. That is the work to do before anyone draws a menu.
+
+A menu also wants one more thing nobody has built: a way to *point* at something in the world and
+click it. The aim arc and `VR_Marker` are most of the geometry; nothing consumes a hit.
+
 ## One more fun thing per gun (owner, 1 Oct)
 
 The owner's note, kept because it is the right instinct and the architecture is
