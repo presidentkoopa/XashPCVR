@@ -45,11 +45,25 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vrcardgen as V
 from find_controls import body_verts
 
-# How far a declared travel may differ from the bone's measured range before it
-# is worth a human looking. Generous: a bone's full range over every sequence
-# is an upper bound on any one gesture's travel, so under-declaring is normal
-# and only a declared travel LARGER than the measured range is certainly wrong.
+# How far a declared travel may EXCEED the bone's measured range before it is
+# certainly wrong. Tight, because this direction has no innocent explanation: a
+# part cannot travel further than its bone ever moves.
 TRAVEL_SLACK = 0.25
+
+# ...and how far UNDER the range a travel may sit before it is worth a look.
+# This direction is usually innocent and the first calibration got it wrong.
+#
+# A bone's range over EVERY sequence is an upper bound on any one gesture: a
+# slide that recoils past its stop, or a part parked somewhere else entirely in
+# a different animation, both widen the range without widening the stroke. The
+# engine brackets a single stroke, so that is what a card records. The Blue
+# Shift pistol declares 3.41 against a 3.74 range and says so in eight lines of
+# comment - 91%, and correct.
+#
+# So the note fires only on a gap no bracket explains. A note that goes off on
+# a right answer teaches people to ignore notes, which costs more than the note
+# was ever worth.
+UNDER_DECLARED = 0.60
 
 # How far outside the weapon's vertex bounds a declared point may sit. A grab
 # point is meant to be ON the part, but a centroid of a thin shell plus a
@@ -257,10 +271,48 @@ def audit(card_path, models_dir, card_set):
             f.append(Finding(name, "FAIL",
                              "line %d: joint %s declares travel %.2f on \"%s\", which moves only %.2f"
                              % (j["line"], j["index"], j["travel"], j["bone"], rng)))
-        elif rng > 0.2 and j["travel"] < rng - TRAVEL_SLACK:
+        elif rng > 0.2 and j["travel"] < rng * UNDER_DECLARED:
             f.append(Finding(name, "note",
-                             "line %d: joint %s declares travel %.2f, bone \"%s\" ranges %.2f"
+                             "line %d: joint %s declares travel %.2f, well under \"%s\"'s range of %.2f"
                              % (j["line"], j["index"], j["travel"], j["bone"], rng)))
+
+    # ---- is the body bone the WEAPON? ------------------------------------
+    #
+    # The bounds check below catches a gross frame error - the HD shotgun's
+    # grab point sat 9.9 units outside an arm - but it cannot catch a subtle
+    # one, and I proved that by sabotaging a card on purpose. Point the .357 at
+    # `Bip01 R Hand` instead of `python` and every bounds test still passes,
+    # because a revolver is small enough that its positions fall inside the
+    # hand's bounds too.
+    #
+    # Mesh share does catch it: `python` owns 396 vertices and `Bip01 R Hand`
+    # owns 22. A bone that is the weapon owns the weapon, and a body bone with
+    # an order of magnitude less mesh than some other bone is almost always a
+    # rig bone the generator walked into.
+    #
+    # Almost always, not always - which is why it is a note. On the HD pistol
+    # the gun genuinely IS welded to `Hands mesh`, because that model has no
+    # separate weapon bone at all.
+    if decl["body"] and decl["body"][0] in byname:
+        bb = byname[decl["body"][0]]
+        counts, total = m.vertex_owners()
+        mine = counts[bb.index]
+        rig = ("bip01", "bip02", "finger", "arm_bone", "hands mesh")
+        rival = None
+
+        for ob in m.bones:
+            if ob.index == bb.index:
+                continue
+            if any( k in ob.name.lower() for k in rig ):
+                continue
+            if counts[ob.index] > max( mine * 4, 40 ):
+                if not rival or counts[ob.index] > counts[rival.index]:
+                    rival = ob
+
+        if rival:
+            f.append(Finding(name, "note",
+                             'line %d: body "%s" owns %d verts, but "%s" owns %d - is that the weapon?'
+                             % (decl["body"][1], bb.name, mine, rival.name, counts[rival.index])))
 
     # ---- every declared point --------------------------------------------
     bi = byname[decl["body"][0]].index if ( decl["body"] and decl["body"][0] in byname ) else None
