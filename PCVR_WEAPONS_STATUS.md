@@ -714,6 +714,29 @@ Each of these cost a wrong implementation first.
 - **No spring and no damping is not a mechanism, it is a projectile.** Nothing dissipates energy, so
   any nudge coasts to a travel limit.
 
+## HEADSET BACKLOG - everything below is built, deployed and never worn (2 Oct)
+
+A whole day of work went in on 1 Oct and **none of it has been in a headset**. The headless side is
+proven - 124 cases, nine builds agreeing, mutation-verified - and that proves the simulator, not the
+plumbing. This tree's own worst bugs were all plumbing. Run `E:\XashWork\XashVRun.bat`.
+
+**In this order, because each one is cheap and the early ones inform the rest.**
+
+| # | Do this | Expect | If wrong |
+| --- | --- | --- | --- |
+| 1 | Point the **RPG** at a wall | The laser dot tracks the gun's muzzle, not your head | If it tracks your head, H-04 needs the work the plan describes. **If it tracks the muzzle, do not "fix" it** - the offset would be applied twice |
+| 2 | `vr_viewtarget_test 1` | The corridor **behind you**, in the corner of each eye | Black, blank, upside down, or your gun in it - each points at a different step; say which |
+| 3 | Draw the **crossbow** | A magnified view through the eyepiece when your eye is behind it, black when it isn't, and **no laser dot** | `vr_optic_fov`, `vr_optic_size`, `vr_optic_eyebox` tune it; `vr_laser 3` forces the laser back |
+| 4 | **Revolver**: thumb the hammer, then fire. Then fire without cocking | Cocked = short light break at 40% travel. Uncocked = a long pull through 85% | |
+| 5 | **Revolver**: point the barrel UP | Cases tip out. It used to fire on wrist ROLL instead | |
+| 6 | Pull a **magazine** out | It falls, tumbles, makes the sound of what it hit, and lies there. Walk over it to get the rounds back | `vr_world_items 0` reverts to the old vanishing one |
+| 7 | Close your **off hand** near that magazine | It is picked up at arm's length | Server-side, so expect a round-trip delay, not instant. **No diagnostic print for this yet** - the one real gap in the backlog |
+| 8 | `vr_holsters 1`, hold the pistol, `vr_holster hip` | Reach to your hip with the hand **closed** and it draws, with Half-Life's select sound. **Stand still a second first** - the slot does not exist below 0.5 solve confidence | `vr_diag 1` prints distance, radius and confidence twice a second |
+| 9 | `vr_hold_sim 1; vr_hold_turn 0.08; vr_hold_torque 20` | The gun lags your hand slightly; the muzzle climbs and settles | **This is a feel question only you can answer.** `vr_hold_follow/_recoil/_lag/_tilt` are all live. At the shipped `turn_time` the spring is four times stiffer than the recoil decay and no climb is visible at all |
+
+**9 is the one gating the most.** Part F is wired but its tuning makes its headline feature
+invisible, and no amount of code fixes a number that has to be felt.
+
 ## How to check it still works
 
 ```
