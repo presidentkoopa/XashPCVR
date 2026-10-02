@@ -303,7 +303,7 @@ static CVAR_DEFINE_AUTO( vr_twohand_smooth, "0.12", FCVAR_ARCHIVE, "two-hand: en
 // CL_TraceLine, not a decorative curve: it uses the same gravity the server
 // applies, so where the line ends is where the grenade lands.
 // ---------------------------------------------------------------------
-static CVAR_DEFINE_AUTO( vr_laser,        "1",   FCVAR_ARCHIVE, "laser sight: 0 off, 1 dot only, 2 dot + beam" );
+static CVAR_DEFINE_AUTO( vr_laser,        "1",   FCVAR_ARCHIVE, "laser sight: 0 off, 1 dot only, 2 dot + beam, 3 also on scoped weapons" );
 static CVAR_DEFINE_AUTO( vr_laser_r,      "1.0", FCVAR_ARCHIVE, "laser sight colour, red 0-1" );
 static CVAR_DEFINE_AUTO( vr_laser_g,      "0.1", FCVAR_ARCHIVE, "laser sight colour, green 0-1" );
 static CVAR_DEFINE_AUTO( vr_laser_b,      "0.1", FCVAR_ARCHIVE, "laser sight colour, blue 0-1" );
@@ -5789,11 +5789,29 @@ static void VR_DrawVignette( void )
 	}
 }
 
+// Defined with the optics, below: does the weapon in hand carry a scope or a
+// red dot? H-04 suppresses the laser when it does.
+qboolean VR_WeaponHasSights( void );
+
 static void VR_DrawLaser( void )
 {
 	vec3_t org, fwd;
 
 	if( vr_laser.value <= 0.0f )
+		return;
+
+	// H-04: A WEAPON WITH SIGHTS DOES NOT GET A LASER DOT BY DEFAULT.
+	//
+	// Part H asks for exactly this and it could not be expressed until a card
+	// could say what a weapon looks through. The laser exists because a VR
+	// player otherwise has no idea where a gun is pointed; a scope or a red
+	// dot answers the same question better, and a floating laser dot on top of
+	// a scope image is both redundant and a giveaway through walls.
+	//
+	// `vr_laser 3` forces it back on for a player who wants both - the setting
+	// was 0/1/2 and 3 means "even on sighted weapons", so no existing value
+	// changes meaning.
+	if( vr_laser.value < 3.0f && VR_WeaponHasSights())
 		return;
 
 	if( VR_GetMuzzle( org, fwd ))
@@ -6246,6 +6264,37 @@ static void VR_UpdateOptics( void )
 		Matrix3x4_VectorTransform( refState.vrFrameMatrix, o->rear, vr_optics.rear[i] );
 		vr_optics.placed[i] = true;
 	}
+}
+
+/*
+================
+VR_WeaponHasSights
+
+Does the weapon in hand carry something a player can aim WITH - a scope or a
+red dot, as opposed to nothing or a pair of irons?
+
+Irons do not count, and that is the distinction worth drawing. A set of iron
+sights is a thing you align, which in VR means holding the weapon up to your
+face and lining up two posts; it does not tell you where the barrel points
+until you do. A scope or a dot does, continuously, which is what makes the
+laser redundant rather than merely duplicated.
+================
+*/
+qboolean VR_WeaponHasSights( void )
+{
+	int i;
+
+	if( vr_optics_enable.value == 0.0f )
+		return false;
+
+	for( i = 0; i < vr_optics.count; i++ )
+	{
+		if( vr_optics.opt[i].kind == VR_OPTIC_RETICLE
+			|| vr_optics.opt[i].kind == VR_OPTIC_SCOPE )
+			return true;
+	}
+
+	return false;
 }
 
 /*
@@ -13415,5 +13464,6 @@ void     VR_RenderViewTargets( void ) { }
 void     VR_DrawViewTargetTest( void ) { }
 void     VR_RenderOpticViews( void ) { }
 void     VR_DrawOptics( void ) { }
+qboolean VR_WeaponHasSights( void ) { return false; }
 
 #endif

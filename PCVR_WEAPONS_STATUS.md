@@ -64,16 +64,16 @@ retail content the only binding target — see the card section.
 | **B** Architecture | done | the split holds; posing via `pfnGetJointValues`, game API **v5** |
 | **C** Mechanism simulator | done | `hlsdk/dlls/vr_joint.*`, `vr_trigger.*` |
 | **D** Rounds and feed | done | `hlsdk/dlls/vr_feed.*` — magazine, tube, belt, cylinder, single-shot, thrown |
-| **E** Cards and mesh surgery | **part** | parser and surgery work; **a card with a synth part cannot bind** |
+| **E** Cards and mesh surgery | **done** | parser, surgery and binding all work together. The synth/fingerprint conflict is fixed and verified end to end: `vrfingerprint_check` reports **23 cards bind, 0 refused**, including the M40A1's two synthetic bones. |
 | **F** Held weapon as an object | done, gated | `engine/client/vr/vr_hold.*`, behind `vr_hold_sim`, default 0 |
 | **G** Hands on the gun | **mostly** | grip solver built from the authored fist; six cards now carry measured controls, none a placeholder |
-| **H** Sights and scopes | **part** | zoom suppressed for hand-loaders; offscreen view targets built and self-testable; both scopes measured. No lens syntax, no lens drawing. |
+| **H** Sights and scopes | **H-00/02/03/04 done; H-01 blocked** | zoom suppressed; `optic` card keyword; game API v7 `pfnGetOptics`; reticle at infinity per eye; scope image on the eyepiece with an eye box; laser suppressed on sighted weapons. Both scoped weapons declare their optics. **H-01 irons blocked** - see below. |
 | **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What is missing is the slots themselves - holstering and drawing - not the body under them. | **Since: holsters (hip, chest), a dropped magazine as a real bouncing entity with surface sounds and walk-over recovery, and the grab path end to end - vrcmd_t v5 `grab_ent`, a client proposal, a server claim check. No physics library taken.**
 | **J** Half-Life's arsenal | **part** | 18 HD cards written, 6 verified clean |
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
 | **L** Malfunctions, fidelity | **done** (simulator side) | `hlsdk/dlls/vr_feed.*` - three levels, three jams, deterministic rolls |
 | **M** Multiplayer | designed | split authority won a three-way design race; not built |
-| **O** Testing | **part** | **124** headless cases, 9-build determinism; nothing needing a headset. **vr_strike and vr_card are not in the determinism matrix at all** - see below |
+| **O** Testing | **part** | **124** headless cases, plus `card_audit.py` checking every card's declared geometry against its model, 9-build determinism; nothing needing a headset. **vr_strike and vr_card are not in the determinism matrix at all** - see below |
 
 **The simulator now runs.** Until 1 October it had never executed inside Half-Life at all — not
 "untested in a headset", never run. Client prediction dereferenced a model index as a pointer, then
@@ -206,6 +206,25 @@ capabilities that do not exist. What follows is measured, not inferred.
 - **The M40A1 and the Desert Eagle are not in this tree.** No `m40a1.cpp`, no Desert Eagle class, no
   OpFor build define. The M40A1 card is real and binds to the retail model; the *weapon* does not
   exist. Part H names both as its targets, so Part H work on them starts by adding the weapons.
+
+## Part H finished, except H-01 (1 Oct)
+
+The owner parked the scope and then unparked it. Where it landed:
+
+| Item | State |
+| --- | --- |
+| **H-00** never zoom the view | **done** - and it was half-true already: `VR_BeginEye` overwrites fov from the HMD after the mod has had its say. The damage was in the mod's own client, where fov drives look sensitivity and crosshair choice. |
+| **H-01** iron sights | **BLOCKED, and not by this work.** A card can now *declare* `optic irons`, which is the half that does not depend on anything. The other half needs Part F running (`vr_hold_sim` defaults 0, three of its five functions have no engine call site), a finger solver (`grip` is hardcoded 1.0), and a way to express a sight line the engine does not have - `VR_AlignModelToFireRay` forces the drawn BORE onto the fire ray, which is the wrong line by the sight-over-bore offset at every range. |
+| **H-02** reticle at infinity | **done** - drawn per eye, where the line from that eye to a far point along the axis crosses the lens plane. |
+| **H-03** the scope | **done** - aux view from the objective into a texture, drawn on the eyepiece with an eye box. |
+| **H-04** lasers | **done** for the sighted-weapon default: `vr_laser` 3 forces it back on. The RPG's guidance laser needs a headset check, not code - see below. |
+
+**What unblocked it, having looked rather than assumed.** The recon said H-03 needed the R0 single-pass-stereo work (which does not exist) to pay for an extra render pass, and that magnification should scale the eye frustum's tangents. Both turned out to be wrong-headed:
+
+- **Magnification never touches the eye frustum.** `R_RenderViewTarget` already takes a field of view, so magnification just narrows the *second* camera. That is both simpler and more correct - it is literally what "never zoom the player's view" asks for.
+- **The renderer needed exactly ONE new entry point**, `TexCoord2f`. The engine could already bind any texture and emit world-space vertices; it simply had no way to say where on a texture a vertex sits, which is why every marker this fork draws is flat white.
+
+**The gating is the trap here, and it is inverted twice.** `ref_params.h` says once-per-frame work must be gated on `vr_eye == 0`. A reticle gated that way has exactly the parallax it exists to remove, so it is drawn **per eye**. A scope's image is the opposite - two eyes down one tube see one picture - so it renders **once per frame, before either eye**. Two adjacent features with opposite rules.
 
 ## Part I, and the physics-library question answered (1 Oct)
 
