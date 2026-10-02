@@ -61,19 +61,19 @@ retail content the only binding target — see the card section.
 
 | Part | State | Where it lives |
 | --- | --- | --- |
-| **B** Architecture | done | the split holds; posing via `pfnGetJointValues`, game API **v5** |
+| **B** Architecture | done | the split holds; posing via `pfnGetJointValues`, game API **v7** (`pfnGetOptics` added; `VR_GAMEAPI_VRCMD` now ties the vendored `vrcmd.h` to it at compile time) |
 | **C** Mechanism simulator | done | `hlsdk/dlls/vr_joint.*`, `vr_trigger.*` |
 | **D** Rounds and feed | done | `hlsdk/dlls/vr_feed.*` — magazine, tube, belt, cylinder, single-shot, thrown |
 | **E** Cards and mesh surgery | **done** | parser, surgery and binding all work together. The synth/fingerprint conflict is fixed and verified end to end: `vrfingerprint_check` reports **23 cards bind, 0 refused**, including the M40A1's two synthetic bones. |
 | **F** Held weapon as an object | **wired, gated, tunable** | All six functions have callers; the drawn weapon reads the body; a shot kicks it; nine tuning cvars. Still behind `vr_hold_sim`, default 0, so nothing changes until you opt in. Remaining: `shouldered` (needs a stock point), a second body for dual wield. |
 | **G** Hands on the gun | **mostly** | grip solver built from the authored fist, now driven by a **real analog grip** instead of a hardcoded 1.0; the **thumb-rest** is bound at last, so Part G's control table is no longer gated on a bit that was always zero. Six cards carry measured controls. |
 | **H** Sights and scopes | **H-00/02/03/04 done; H-01 blocked** | zoom suppressed; `optic` card keyword; game API v7 `pfnGetOptics`; reticle at infinity per eye; scope image on the eyepiece with an eye box; laser suppressed on sighted weapons. Both scoped weapons declare their optics. **H-01 irons blocked** - see below. |
-| **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What is missing is the slots themselves - holstering and drawing - not the body under them. | **Since: holsters (hip, chest), a dropped magazine as a real bouncing entity with surface sounds and walk-over recovery, and the grab path end to end - vrcmd_t v5 `grab_ent`, a client proposal, a server claim check. No physics library taken.**
+| **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What was missing is the slots, not the body. **Since: holsters (hip, chest), a dropped magazine as a real bouncing entity with surface sounds and walk-over recovery, and the grab path end to end - `vrcmd_t` v5 `grab_ent`, a client proposal, a server claim check. No physics library taken.** |
 | **J** Half-Life's arsenal | **part** | 18 HD cards written, 6 verified clean |
 | **K** Opposing Force | done | 7 cards in `tools/vrcard/cards/gearbox/`, all valid against retail |
 | **L** Malfunctions, fidelity | **done** (simulator side) | `hlsdk/dlls/vr_feed.*` - three levels, three jams, deterministic rolls |
 | **M** Multiplayer | designed | split authority won a three-way design race; not built |
-| **O** Testing | **part** | **124** headless cases, plus `card_audit.py` checking every card's declared geometry against its model, 9-build determinism; nothing needing a headset. **vr_strike and vr_card are not in the determinism matrix at all** - see below |
+| **O** Testing | **part** | **124** headless cases, plus `card_audit.py` checking every card's declared geometry against its model, 9-build determinism over **14,000 commands** - melee included since 1 Oct, having never been in the matrix despite Part J being "done". Nothing here needs a headset, which is also the limit of what it proves. |
 
 **The simulator now runs.** Until 1 October it had never executed inside Half-Life at all — not
 "untested in a headset", never run. Client prediction dereferenced a model index as a pointer, then
