@@ -718,7 +718,7 @@ Each of these cost a wrong implementation first.
 
 A whole day of work went in on 1 Oct and **none of it has been in a headset**. The headless side is
 proven - 124 cases, nine builds agreeing, mutation-verified - and that proves the simulator, not the
-plumbing. This tree's own worst bugs were all plumbing. Run `E:\XashWork\XashVRun.bat`.
+plumbing. This tree's own worst bugs were all plumbing. Run `E:\XashWork\XashVR\run.bat`.
 
 **In this order, because each one is cheap and the early ones inform the rest.**
 
