@@ -144,17 +144,26 @@ qboolean VR_SelectOpen( void );
 // the other.
 #define VR_BTN_TRIGGER     2	// the trigger is an AXIS, not a button - the slot
 				// exists so the numbering stays visibly aligned
-#define VR_BTN_JUMP        3
-#define VR_BTN_CROUCH      4
-#define VR_BTN_ATTACK      5
-#define VR_BTN_ATTACK2     6
-#define VR_BTN_USE         7
-#define VR_BTN_RELOAD      8
-#define VR_BTN_FLASHLIGHT  9
-#define VR_BTN_NEXTWEAP    10
-#define VR_BTN_PREVWEAP    11
-#define VR_BTN_MENU        12
-#define VR_BTN_OFFGRIP     13	// off-hand grip: grab / two-hand a weapon
+// Two ANALOG actions, bound to the same squeeze paths the grip booleans use.
+// Not buttons, and in the button numbering for the same reason VR_BTN_TRIGGER
+// is: this list mirrors vr_action_id_t slot for slot, and the asserts beside
+// that enum fail the build if it stops doing so.
+#define VR_BTN_GRIPFORCE   3	// float - weapon hand squeeze
+#define VR_BTN_OFFGRIPFORCE 4	// float - off hand squeeze
+
+#define VR_BTN_JUMP        5
+#define VR_BTN_CROUCH      6
+#define VR_BTN_ATTACK      7
+#define VR_BTN_ATTACK2     8
+#define VR_BTN_USE         9
+#define VR_BTN_RELOAD      10
+#define VR_BTN_FLASHLIGHT  11
+#define VR_BTN_NEXTWEAP    12
+#define VR_BTN_PREVWEAP    13
+#define VR_BTN_MENU        14
+#define VR_BTN_OFFGRIP     15	// off-hand grip: grab / two-hand a weapon
+#define VR_BTN_THUMBREST   16	// weapon hand thumb on its rest
+#define VR_BTN_OFFTHUMBREST 17	// off hand thumb on its rest
 
 // Thumbstick locomotion, already deadzoned and scaled to HL move units.
 // Values are relative to the current view direction, matching how the engine

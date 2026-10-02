@@ -609,6 +609,27 @@ typedef enum
 	// fail to read.
 	VRA_TRIGGER,	// float - right trigger travel
 
+	// HOW HARD EACH HAND IS SQUEEZING, and why these are separate actions
+	// rather than a change to attack2/offgrip.
+	//
+	// Both grips were already bound to `squeeze/value` - an analog axis - and
+	// declared XR_ACTION_TYPE_BOOLEAN, so the pressure was thrown away at the
+	// runtime. That is the single reason VR_UpdateControls hardcodes
+	// grip = 1.0f and the whole of Part G's finger work has been waiting on a
+	// number that was always there.
+	//
+	// They cannot simply become floats: VRA_ATTACK2 is SECONDARY FIRE as well
+	// as the grip, and a dozen places read vr.btn[VRA_ATTACK2] as a bit.
+	// OpenXR is happy to bind two actions to one input, so these are two more
+	// actions on the same paths, and nothing that reads the booleans changes.
+	//
+	// In the FLOAT region deliberately - the sampling loop reads everything
+	// from VRA_JUMP down as a boolean, and a float in that range would not
+	// read at all. Which is also why adding them here renumbers every action
+	// below, and why the asserts under this enum exist.
+	VRA_GRIPFORCE,		// float - weapon hand squeeze, 0..1
+	VRA_OFFGRIPFORCE,	// float - off hand squeeze, 0..1
+
 	VRA_JUMP,
 	VRA_CROUCH,
 	VRA_ATTACK,
@@ -620,6 +641,17 @@ typedef enum
 	VRA_PREVWEAP,
 	VRA_MENU,
 	VRA_OFFGRIP,	// off-hand grip: grab / two-hand a weapon
+
+	// IS THE THUMB OFF ITS REST. Part G's control table is phrased entirely in
+	// terms of this - "the thumb is off its rest, so it is reaching for
+	// something" - and VRBTN_THUMB_TOUCH has been defined in vrcmd.h and
+	// written by nothing, so every gesture in that table was gated on a signal
+	// that was always zero.
+	//
+	// Appended rather than inserted: these are booleans, so they belong after
+	// VRA_JUMP, and putting them last renumbers nothing.
+	VRA_THUMBREST,		// weapon hand thumb on its rest
+	VRA_OFFTHUMBREST,	// off hand thumb on its rest
 	VRA_COUNT
 } vr_action_id_t;
 
@@ -648,6 +680,10 @@ STATIC_ASSERT( VR_BTN_NEXTWEAP   == VRA_NEXTWEAP,   "vr_openxr.h VR_BTN_NEXTWEAP
 STATIC_ASSERT( VR_BTN_PREVWEAP   == VRA_PREVWEAP,   "vr_openxr.h VR_BTN_PREVWEAP is out of step with vr_action_id_t" );
 STATIC_ASSERT( VR_BTN_MENU       == VRA_MENU,       "vr_openxr.h VR_BTN_MENU is out of step with vr_action_id_t" );
 STATIC_ASSERT( VR_BTN_OFFGRIP    == VRA_OFFGRIP,    "vr_openxr.h VR_BTN_OFFGRIP is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_GRIPFORCE  == VRA_GRIPFORCE,  "vr_openxr.h VR_BTN_GRIPFORCE is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_OFFGRIPFORCE == VRA_OFFGRIPFORCE, "vr_openxr.h VR_BTN_OFFGRIPFORCE is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_THUMBREST  == VRA_THUMBREST,  "vr_openxr.h VR_BTN_THUMBREST is out of step with vr_action_id_t" );
+STATIC_ASSERT( VR_BTN_OFFTHUMBREST == VRA_OFFTHUMBREST, "vr_openxr.h VR_BTN_OFFTHUMBREST is out of step with vr_action_id_t" );
 
 static const struct
 {
@@ -659,6 +695,8 @@ static const struct
 	{ "move",       "Move",           XR_ACTION_TYPE_VECTOR2F_INPUT },
 	{ "turn",       "Turn",           XR_ACTION_TYPE_VECTOR2F_INPUT },
 	{ "trigger",    "Trigger travel", XR_ACTION_TYPE_FLOAT_INPUT },
+	{ "gripforce",  "Grip Force",     XR_ACTION_TYPE_FLOAT_INPUT },
+	{ "offgripforce","Off Grip Force",XR_ACTION_TYPE_FLOAT_INPUT },
 	{ "jump",       "Jump",           XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "crouch",     "Crouch",         XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "attack",     "Attack",         XR_ACTION_TYPE_BOOLEAN_INPUT },
@@ -670,6 +708,8 @@ static const struct
 	{ "prevweap",   "Prev Weapon",    XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "menu",       "Menu",           XR_ACTION_TYPE_BOOLEAN_INPUT },
 	{ "offgrip",    "Off-hand Grip",  XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "thumbrest",  "Thumb On Rest",  XR_ACTION_TYPE_BOOLEAN_INPUT },
+	{ "offthumbrest","Off Thumb Rest",XR_ACTION_TYPE_BOOLEAN_INPUT },
 };
 
 typedef struct
@@ -830,6 +870,11 @@ static struct
 	// what lets the server act on a command it receives late.
 	unsigned short grab_ent;
 	qboolean      grab_grip_prev;
+
+	// Part G: how hard each hand is squeezing, 0..1. Read from the squeeze
+	// AXIS rather than inferred from the grip boolean - see VRA_GRIPFORCE.
+	// Both default to 1 on hardware that cannot report pressure.
+	float         grip_force, offgrip_force;
 
 	vec3_t        anchor_neck, anchor_chest;
 	vec3_t        anchor_shoulder[2], anchor_hip[2];
@@ -6566,12 +6611,19 @@ static void VR_UpdateControls( void )
 	if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
 		return;
 
-	// HOW CLOSED THE HAND IS. There is no analog grip on the dominant hand -
-	// its squeeze is bound to secondary fire - and a hand holding a weapon is
-	// closed around it in any case, so the fist is the honest default. When an
-	// analog grip action exists this becomes its value and nothing else here
-	// changes.
-	grip = 1.0f;
+	// HOW CLOSED THE HAND IS, and it is measured now rather than assumed.
+	//
+	// This used to be a hardcoded 1.0f, with a comment saying "when an analog
+	// grip action exists this becomes its value and nothing else here
+	// changes". That action exists: VRA_GRIPFORCE reads the same
+	// squeeze/value path the grip boolean was already bound to, which the
+	// runtime had been handing us as a bit and throwing the pressure away.
+	//
+	// Still 1.0f on a controller whose squeeze is a click - a Vive wand, a
+	// WMR controller - because the alternative is reading "no sensor" as "not
+	// holding on", which would open the player's hand on hardware that simply
+	// cannot say.
+	grip = vr.grip_force;
 
 	{
 		const float *a, *b;
@@ -9710,6 +9762,22 @@ void VR_FillCmd( vrcmd_t *out )
 	if( VR_GetButton( VR_BTN_ATTACK2 ))
 		SetBits( out->buttons, VRBTN_FACE_A );
 
+	// THE THUMB IS OFF ITS REST, so it is reaching for something.
+	//
+	// VRBTN_THUMB_TOUCH has been defined in vrcmd.h since the block was
+	// written and set by nothing, and Part G's whole control table is phrased
+	// in terms of it - a safety is worked by a thumb that has LEFT the stick,
+	// not by one resting on it. Every gesture in that table was gated on a bit
+	// that was always zero.
+	//
+	// Inverted on purpose: the action is "thumb ON the rest", and the flag the
+	// wire carries is "thumb OFF it, reaching". A controller with no thumbrest
+	// sensor never sets the action, which reads as the thumb always being
+	// away - the permissive answer, and the one that leaves those weapons
+	// behaving as they do today rather than making their controls unreachable.
+	if( !VR_GetButton( VR_BTN_THUMBREST ))
+		SetBits( out->buttons, VRBTN_THUMB_TOUCH );
+
 	out->stick_x = (signed char)( bound( -1.0f, vr.turn_x, 1.0f ) * 127.0f );
 	out->stick_y = (signed char)( bound( -1.0f, vr.turn_y, 1.0f ) * 127.0f );
 
@@ -11902,6 +11970,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick",		// MOVE
 			"/user/hand/right/input/thumbstick",		// TURN
 			"/user/hand/right/input/trigger/value",	// TRIGGER (analog)
+			"/user/hand/right/input/squeeze/value",		// GRIPFORCE (analog)
+			"/user/hand/left/input/squeeze/value",		// OFFGRIPFORCE (analog)
 			"/user/hand/right/input/a/click",		// JUMP
 			"/user/hand/right/input/b/click",		// CROUCH
 			"/user/hand/right/input/trigger/value",		// ATTACK
@@ -11917,6 +11987,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",	// PREVWEAP
 			"/user/hand/left/input/menu/click",		// MENU
 			"/user/hand/left/input/squeeze/value",		// OFFGRIP
+			"/user/hand/right/input/thumbrest/touch",	// THUMBREST
+			"/user/hand/left/input/thumbrest/touch",	// OFFTHUMBREST
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -11927,6 +11999,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick",
 			"/user/hand/right/input/thumbstick",
 			"/user/hand/right/input/trigger/value",	// TRIGGER (analog)
+			"/user/hand/right/input/squeeze/value",		// GRIPFORCE (analog)
+			"/user/hand/left/input/squeeze/value",		// OFFGRIPFORCE (analog)
 			"/user/hand/right/input/a/click",
 			"/user/hand/right/input/b/click",
 			"/user/hand/right/input/trigger/value",
@@ -11938,6 +12012,13 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/system/click",
 			"/user/hand/left/input/squeeze/value",		// OFFGRIP
+			// An Index has no thumbrest. Its trackpad touch is a different
+			// thing in a different place and substituting it would make
+			// "the thumb is reaching for something" fire whenever a thumb
+			// brushed the pad, so these are left unbound: OpenXR drops a
+			// NULL suggestion and the action simply never goes true.
+			NULL,						// THUMBREST
+			NULL,						// OFFTHUMBREST
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -11948,6 +12029,11 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick",
 			"/user/hand/right/input/thumbstick",
 			"/user/hand/right/input/trigger",	// TRIGGER (analog)
+			// This controller's squeeze is a CLICK, not an axis - there is
+			// no force to read, and a boolean bound to a float action
+			// would read 0 or 1 and pretend to be analog.
+			NULL,						// GRIPFORCE
+			NULL,						// OFFGRIPFORCE
 			"/user/hand/right/input/trackpad/click",
 			"/user/hand/left/input/trackpad/click",
 			"/user/hand/right/input/trigger",
@@ -11959,6 +12045,8 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/thumbstick/click",
 			"/user/hand/left/input/menu/click",
 			"/user/hand/left/input/squeeze/click",		// OFFGRIP
+			NULL,						// THUMBREST - not on this controller
+			NULL,						// OFFTHUMBREST
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -11969,6 +12057,11 @@ static const vr_profile_t vr_profiles[] =
 			"/user/hand/left/input/trackpad",
 			"/user/hand/right/input/trackpad",
 			"/user/hand/right/input/trigger/value",	// TRIGGER (analog)
+			// This controller's squeeze is a CLICK, not an axis - there is
+			// no force to read, and a boolean bound to a float action
+			// would read 0 or 1 and pretend to be analog.
+			NULL,						// GRIPFORCE
+			NULL,						// OFFGRIPFORCE
 			"/user/hand/right/input/trackpad/click",
 			"/user/hand/left/input/trackpad/click",
 			"/user/hand/right/input/trigger/value",
@@ -11980,6 +12073,8 @@ static const vr_profile_t vr_profiles[] =
 			NULL,
 			"/user/hand/left/input/menu/click",
 			"/user/hand/left/input/squeeze/click",		// OFFGRIP
+			NULL,						// THUMBREST - not on this controller
+			NULL,						// OFFTHUMBREST
 		},
 		"/user/hand/left/input/aim/pose",  "/user/hand/right/input/aim/pose",
 		"/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose"
@@ -12232,6 +12327,22 @@ static void VR_SyncInput( void )
 	gi.action = vr.actions[VRA_TRIGGER];
 	if( XR_SUCCEEDED( xrGetActionStateFloat( vr.session, &gi, &fl )) && fl.isActive )
 		vr.trigger_value = bound( 0.0f, fl.currentState, 1.0f );
+
+	// HOW HARD EACH HAND IS SQUEEZING. Defaults to 1 rather than 0 when the
+	// action is inactive, which is the important part: a Vive wand's squeeze
+	// is a click with no force behind it, and a controller that cannot report
+	// pressure must read as "holding on properly" rather than as "barely
+	// holding on at all". Dropping a weapon because the hardware has no
+	// sensor would be the worst possible reading of a missing number.
+	vr.grip_force = 1.0f;
+	gi.action = vr.actions[VRA_GRIPFORCE];
+	if( XR_SUCCEEDED( xrGetActionStateFloat( vr.session, &gi, &fl )) && fl.isActive )
+		vr.grip_force = bound( 0.0f, fl.currentState, 1.0f );
+
+	vr.offgrip_force = 1.0f;
+	gi.action = vr.actions[VRA_OFFGRIPFORCE];
+	if( XR_SUCCEEDED( xrGetActionStateFloat( vr.session, &gi, &fl )) && fl.isActive )
+		vr.offgrip_force = bound( 0.0f, fl.currentState, 1.0f );
 
 	for( i = VRA_JUMP; i < VRA_COUNT; i++ )
 	{
