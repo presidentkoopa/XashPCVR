@@ -52,9 +52,28 @@ match  bones 52  seqs 10  hash 0xf086fed6
 # grab points, the chamber, the ejection port. Nothing recorded it until
 # the engine had to place a control in the world to ask whether a thumb is
 # near it; the simulator never needed one, because it never works in world
-# space. Taken from the generator, which has always called this bone the
-# WEAPON BODY and is what measured these numbers in the first place.
-body   "R_Arm_bone"
+# space.
+#
+# IT SAID `R_Arm_bone` AND THAT WAS WRONG - an arm, 63 vertices, offset 8.55
+# units from its parent and rotated by (1.26, -1.55, -1.28). Every position in
+# this card is measured in `Reciever`, the 422-vertex bone that is the gun, and
+# the grab point below sits 9.9 units outside the arm's bounds. Caught by
+# tools/vrcard/card_audit.py, which checks a card's declared points against
+# the bone it says they are in.
+#
+# WHY THE GENERATOR GOT IT WRONG, because it will do it again: find_body starts
+# from the first attachment - "on a view model that is the muzzle, which is on
+# the weapon by definition" - and walks UP the parent chain taking whichever
+# ancestor owns the most mesh. On this model the attachment is on `Bip01 R
+# Hand` and `Reciever` has NO PARENT AT ALL: the gun is a separate root, not
+# parented into the arm rig. So walking up from the hand can never reach it,
+# and the best ancestor is an arm.
+#
+# The grab point needs no change, and that is the one lucky part: `Charger` is
+# parented to `Reciever` with a bind position of exactly 0,0,0 and no rotation,
+# so its own frame and the receiver's are the same frame. The number was always
+# right; only the name of the frame was wrong.
+body   "Reciever"
 
 # 8 is SHOTGUN_MAX_CLIP, dlls/weapons.h:128.
 #
