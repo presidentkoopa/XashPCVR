@@ -718,7 +718,26 @@ Each of these cost a wrong implementation first.
 
 A whole day of work went in on 1 Oct and **none of it has been in a headset**. The headless side is
 proven - 124 cases, nine builds agreeing, mutation-verified - and that proves the simulator, not the
-plumbing. This tree's own worst bugs were all plumbing. Run `E:\XashWork\XashVR\run.bat`.
+plumbing. This tree's own worst bugs were all plumbing.
+
+**Launch it with `4 - XashVR headset test.bat` on the desktop**, which calls
+`E:\XashWork\XashVR\run_test.bat`. That is plain `run.bat` plus `+exec vrtest.cfg`, which
+turns every feature below on, gives the full loadout, parks the pistol on your hip and
+puts the few things that cannot all be live at once on keys you can find by feel:
+
+| Key | Does |
+| --- | --- |
+| **F1** | rear-view target on/off (check 2) |
+| **F2** | held-weapon physics on/off (check 9) |
+| **F3** | cycle three recoil feels - soft / middle / hard (check 9) |
+| **F4** / **F5** | park the held weapon on your hip / chest (check 8) |
+| **F6** | reprint this list into the headset |
+| **F12** | all of it OFF - the baseline to bisect anything odd against |
+
+The echoes are readable in the headset: `cl_view.c` composites `Con_DrawConsole()` into
+each eye, and `vrtest.cfg` raises `con_notifytime` to 14 so a line survives being read
+through a Quest 2 lens. Edit `valve\vrtest.cfg` to change what is tested - it is all cvars,
+so nothing there needs a rebuild.
 
 **In this order, because each one is cheap and the early ones inform the rest.**
 
