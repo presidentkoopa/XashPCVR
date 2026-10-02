@@ -91,6 +91,23 @@ typedef struct vrhold_s
 	float   quat[4];        // x y z w
 	float   avel[3];        // radians per second, world axes
 
+	// ANGULAR VELOCITY FROM IMPULSES, kept apart from avel because the hand
+	// OVERWRITES avel every step.
+	//
+	// The spring that holds the gun computes the spin it wants and assigns
+	// it - correct for following a hand, fatal for anything added on top. A
+	// recoil torque written into avel survived exactly one frame: on the
+	// frame after the shot the gun is still at the hand's orientation, so
+	// the twist is zero, the assignment is skipped, and the impulse gets
+	// one step. The muzzle climbed in a single 11ms spike and was then
+	// fought straight back down - while the decay written to make "an
+	// impulse from a shot ring down rather than turning the gun forever"
+	// never saw the impulse at all.
+	//
+	// Kept here instead, added to the spin each step and decayed on its own
+	// clock, the kick does what that comment always said it did.
+	float   kick[3];
+
 	int     have;           // false until the first pose arrives
 } vrhold_t;
 
@@ -108,8 +125,11 @@ One frame. `tpos` and `tquat` are where the hands have the weapon; `hands` is
 how many are on it, which is how a second hand steadies the gun; `dt` is the
 frame in seconds.
 
-Sub-stepped internally, because a stiff spring integrated once over a long
-frame is a spring that explodes.
+NOT sub-stepped, and it does not need to be. This said it was - and
+VRHOLD_SUBSTEPS was defined in the .c and referenced by nothing - but
+VRHold_Smooth is the CLOSED FORM of a critically damped spring, stable at any
+step size. There is no stiff integration here to explode. The dt clamp is for
+a different hazard: a frame long enough to teleport the gun.
 ====================
 */
 void VRHold_Step( vrhold_t *h, const vrholdcfg_t *cfg,

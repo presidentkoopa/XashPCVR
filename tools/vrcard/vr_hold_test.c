@@ -219,6 +219,78 @@ static void t_recoil_climbs_and_comes_back( void )
 	ok();
 }
 
+
+/* VRHold_Len is static to the module, so the test keeps its own. */
+static float kicklen( void )
+{
+	return (float)sqrt( H.kick[0] * H.kick[0]
+		+ H.kick[1] * H.kick[1] + H.kick[2] * H.kick[2] );
+}
+
+static void t_recoil_survives_the_hand( void )
+{
+	float fwd[3] = { 1.0f, 0.0f, 0.0f };
+	float t[3] = { 0.0f, 0.0f, 0.0f };
+	float dt = 1.0f / 90.0f;
+	float k0, k1, k4;
+	int i;
+
+	/* A SHOT MUST OUTLIVE THE NEXT STEP, which it did not.
+	 *
+	 * Recoil used to write its torque into avel, and the hand's spring
+	 * ASSIGNS avel outright every step - so the impulse survived exactly one
+	 * frame, and only that one because on the frame after the shot the gun
+	 * is still at the hand's orientation, the twist is zero, and the
+	 * assignment is skipped. Meanwhile the decay written to make "an impulse
+	 * ring down rather than turning the gun forever" was decaying a number
+	 * the hand had already overwritten.
+	 *
+	 * Measured on the kick itself rather than on the visible tilt, and that
+	 * is deliberate: the tilt also depends on how hard the spring pulls back,
+	 * and with turn_time at 0.006*mass the spring wins inside one frame on
+	 * every weapon. See the note in PCVR_WEAPONS_STATUS.md - the constants
+	 * make recoil invisible no matter how it is stored, which is a TUNING
+	 * problem and a separate one. This asserts only that the impulse is
+	 * still there to be felt.
+	 */
+	g_case = "a shot's kick outlives the hand's next step";
+	setup( 2.0f );
+
+	VRHold_Recoil( &H, &CFG, fwd );
+	k0 = kicklen();
+
+	if( k0 < 1e-4f )
+	{
+		fail( "kick immediately after the shot", k0, 1.0 );
+		return;
+	}
+
+	VRHold_Step( &H, &CFG, t, IDENT, 1, 0, dt );
+	k1 = kicklen();
+
+	/* The old code left nothing here at all. */
+	if( k1 < k0 * 0.5f )
+	{
+		fail( "kick after one step, against the shot's", k1, k0 );
+		return;
+	}
+
+	for( i = 0; i < 3; i++ )
+		VRHold_Step( &H, &CFG, t, IDENT, 1, 0, dt );
+
+	k4 = kicklen();
+
+	/* ...and it must RING DOWN rather than persist. */
+	if( k4 >= k1 )
+	{
+		fail( "kick after four steps, against one", k4, k1 );
+		return;
+	}
+
+	printf( "       (kick %.3f -> %.3f -> %.3f rad/s)\n", k0, k1, k4 );
+	ok();
+}
+
 static void t_a_heavier_gun_recoils_less( void )
 {
 	float fwd[3] = { 1.0f, 0.0f, 0.0f };
@@ -309,6 +381,7 @@ int main( void )
 	t_nothing_ever_lags_further_than_the_cap();
 	t_two_hands_steady_it();
 	t_recoil_climbs_and_comes_back();
+	t_recoil_survives_the_hand();
 	t_a_heavier_gun_recoils_less();
 	t_a_hitch_does_not_launch_it();
 	t_being_blocked_stops_it();

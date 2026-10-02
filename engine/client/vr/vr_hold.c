@@ -27,7 +27,13 @@ GNU General Public License for more details.
 // A stiff spring integrated once over a whole frame is a spring that
 // explodes. Four sub-steps at 90 Hz is about 2.8 ms each, which is where the
 // plan puts it and comfortably stable for the stiffnesses below.
-#define VRHOLD_SUBSTEPS     4
+// NO SUBSTEP COUNT. There was a VRHOLD_SUBSTEPS here, defined as 4 and
+// referenced by nothing, while the header claimed the step was sub-stepped
+// "because a stiff spring integrated once over a long frame is a spring that
+// explodes". VRHold_Smooth is the closed form of a critically damped spring
+// and is stable at any step, so there was nothing to sub-step and the claim
+// described code that was never written. VRHOLD_MAX_DT below is the real
+// guard, against a different hazard: a frame long enough to teleport the gun.
 
 // Above this a frame is a hitch rather than a frame, and integrating it is
 // worse than skipping it: the gun would lunge. Half a second of nothing is
@@ -355,17 +361,31 @@ void VRHold_Step( vrhold_t *h, const vrholdcfg_t *cfg,
 		}
 
 		VRHold_ClampLen( h->avel, cfg->max_angaccel );
-		VRHold_Spin( h->quat, h->avel, dt );
 
-		// The spin decays, so an impulse from a shot rings down rather than
-		// turning the gun forever.
+		// THE HAND'S SPIN PLUS WHATEVER THE GUN IS STILL DOING. The kick
+		// rides on top rather than being overwritten by the assignment
+		// above, which is what turns a shot into a rise and a settle
+		// instead of one frame of enormous angular velocity.
+		{
+			float total[3];
+
+			for( i = 0; i < 3; i++ )
+				total[i] = h->avel[i] + h->kick[i];
+
+			VRHold_Spin( h->quat, total, dt );
+		}
+
+		// The kick decays, so an impulse from a shot rings down rather than
+		// turning the gun forever. That is what this comment always meant;
+		// until the kick had somewhere of its own to live it was decaying a
+		// number the hand had already overwritten.
 		{
 			float keep = 1.0f - dt / ( turn * 4.0f < 1e-4f ? 1e-4f : turn * 4.0f );
 
 			if( keep < 0.0f ) keep = 0.0f;
 
 			for( i = 0; i < 3; i++ )
-				h->avel[i] *= keep;
+				h->kick[i] *= keep;
 		}
 	}
 
@@ -449,8 +469,12 @@ void VRHold_Recoil( vrhold_t *h, const vrholdcfg_t *cfg, const float fwd[3] )
 
 	VRHold_ClampLen( axis, 1.0f );
 
+	// INTO kick, NOT avel. The hand's spring assigns avel outright every
+	// step, so a torque written there is gone by the next frame - see the
+	// note on vrhold_t::kick. That is the whole reason muzzle climb was a
+	// one-frame spike rather than a rise and a settle.
 	for( i = 0; i < 3; i++ )
-		h->avel[i] += axis[i] * cfg->recoil_torque / cfg->inertia;
+		h->kick[i] += axis[i] * cfg->recoil_torque / cfg->inertia;
 }
 
 void VRHold_Blocked( vrhold_t *h, const float at[3], const float normal[3] )
