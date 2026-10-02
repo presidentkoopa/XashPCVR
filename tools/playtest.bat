@@ -28,6 +28,9 @@ setlocal enabledelayedexpansion
 set "ENGINE=E:\XashWork\XashFWGS"
 set "HLSDK=E:\XashWork\hlsdk-portable"
 set "PLAY=E:\XashWork\XashVR"
+rem Retail Half-Life. This is what -rodir points at, so these are the rigs
+rem the cards must fingerprint - not whatever sits in our own install tree.
+set "HLRETAIL=D:\SteamLibrary\steamapps\common\Half-Life"
 set "VS=C:\Program Files\Microsoft Visual Studio\18\Community"
 set "CMAKE=%VS%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 
@@ -87,7 +90,11 @@ if %DO_BUILD%==1 (
 	echo       ok
 
 	echo [4/5] deploy engine, DLLs and cards to %PLAY% ...
-	python "%ENGINE%\tools\deploy.py" "%PLAY%" --arch 32
+	rem --models-from, because the deploy used to fingerprint the INSTALL tree.
+rem Through Aug/Sep that tree held Half-Life VR Mod rigs left over from a
+rem conversion, so every card bound to those and all 18 HD cards matched
+rem nothing. Measured 2 Oct 2026: 19 cards installed where 46 should have.
+	python "%ENGINE%\tools\deploy.py" "%PLAY%" --arch 32 --models-from "%HLRETAIL%"
 	if errorlevel 1 ( echo       FAILED & goto :fail )
 )
 

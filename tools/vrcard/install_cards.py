@@ -90,6 +90,25 @@ def main(argv):
     root = os.path.abspath(argv[0])
     dry = '--dry-run' in argv
 
+    # WHERE THE MODELS ARE READ FROM, which is not always where the cards go.
+    #
+    # We ship our own install and point the engine at a retail Half-Life with
+    # -rodir, so the rigs the engine actually loads live in the RETAIL tree -
+    # and fingerprinting our install tree instead binds every card to whatever
+    # stale content happens to sit there. That is not hypothetical: it bound
+    # all twelve mod cards and skipped all eighteen HD ones for weeks, because
+    # a set of Half-Life VR Mod rigs had been left in the install's models
+    # directory and shadowed retail.
+    #
+    # So: fingerprint one tree, install into another.
+    models_root = root
+    for i, a in enumerate(argv):
+        if a == '--models-from' and i + 1 < len(argv):
+            models_root = os.path.abspath(argv[i + 1])
+    if not os.path.isdir(models_root):
+        print('not a directory: %s' % models_root)
+        return 2
+
     if not os.path.isdir(root):
         print('not a directory: %s' % root)
         return 2
@@ -97,14 +116,28 @@ def main(argv):
     cards = load_cards()
     print('%d cards with a fingerprint, under %s' % (len(cards), CARDS))
     print('install root: %s%s' % (root, '   (DRY RUN)' if dry else ''))
+    if models_root != root:
+        print('models read from: %s' % models_root)
     print()
 
     installed = skipped = ambiguous = 0
     for gamedir in sorted(os.listdir(root)):
-        mdir = os.path.join(root, gamedir, 'models')
-        if not os.path.isdir(mdir):
+        if not os.path.isdir(os.path.join(root, gamedir)):
             continue
-        models = sorted(glob.glob(os.path.join(mdir, 'v_*.mdl')))
+
+        # THE ENGINE'S OWN PRECEDENCE, not ours to invent. FS_AddGameHierarchy
+        # mounts <gamedir>_hd AFTER <gamedir>, and a later search path wins, so
+        # with fs_mount_hd set the HD rig is the one loaded. Matching that here
+        # is the whole point: a card chosen against a rig the engine will not
+        # load is a card that silently never binds.
+        models = {}
+        for sub in (gamedir, gamedir + '_hd'):
+            mdir = os.path.join(models_root, sub, 'models')
+            if not os.path.isdir(mdir):
+                continue
+            for mp in sorted(glob.glob(os.path.join(mdir, 'v_*.mdl'))):
+                models[os.path.basename(mp)] = mp
+        models = [models[k] for k in sorted(models)]
         if not models:
             continue
 

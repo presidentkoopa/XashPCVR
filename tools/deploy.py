@@ -1,6 +1,7 @@
 """Put a built engine, the built game DLLs and the matching cards into a play install.
 
     python tools/deploy.py <install-root> [--arch 32|64] [--dry-run]
+                          [--models-from <retail Half-Life dir>]
 
 This exists because a first run was nearly made against binaries five days old.
 Three separate things have to arrive together for the VR weapon path to do
@@ -88,6 +89,21 @@ def main(argv):
         arch = argv[argv.index('--arch') + 1]
     dry = '--dry-run' in argv
 
+    # WHERE THE RIGS LIVE, which is not the install root.
+    #
+    # We ship our own install and point the engine at a retail Half-Life with
+    # -rodir, so the models the engine loads are retail's. Fingerprinting the
+    # install tree instead picked up a set of Half-Life VR Mod rigs that had
+    # been left in valve/models in August: every card bound to those, the 18
+    # HD cards matched nothing, and the weapons quietly had no controls for
+    # weeks. Pass the retail tree and the cards follow the engine.
+    models_from = None
+    if '--models-from' in argv:
+        models_from = os.path.abspath(argv[argv.index('--models-from') + 1])
+        if not os.path.isdir(models_from):
+            print('--models-from is not a directory: %s' % models_from)
+            return 2
+
     if arch not in PIECES:
         print('--arch must be 32 or 64')
         return 2
@@ -125,6 +141,8 @@ def main(argv):
     print()
     print('cards:')
     cmd = [sys.executable, os.path.join(HERE, 'vrcard', 'install_cards.py'), root]
+    if models_from:
+        cmd += ['--models-from', models_from]
     if dry:
         cmd.append('--dry-run')
     r = subprocess.run(cmd, capture_output=True, text=True)

@@ -6419,6 +6419,7 @@ static struct
 	int        target;          // the scope's view target, -1 for none
 	qboolean   target_init;     // ...and whether that -1 has been set yet
 	qboolean   want_frame;      // we need the body bone's matrix this frame
+	double     next_diag;       // rate limit for the state print, see below
 } vr_optics;
 
 /*
@@ -6454,6 +6455,28 @@ static void VR_UpdateOptics( void )
 		return;
 
 	vr_optics.count = clgame_vr_funcs.pfnGetOptics( vr_optics.opt, VR_MAX_OPTICS );
+
+	// WHY THERE IS A PRINT HERE AT ALL. On 2 Oct 2026 a headset session came
+	// back reporting no scope on the crossbow, and the log could neither
+	// confirm nor deny it: optics had no diagnostic of any kind. The three
+	// states below are the three different bugs that look identical through a
+	// lens - the card declares no optic, the renderer has not yet handed back
+	// the bone's frame, or the optic is placed and the problem is elsewhere -
+	// so each one says which it is. Rate-limited, under vr_diag like the rest.
+	if( vr_diag.value != 0.0f && host.realtime >= vr_optics.next_diag )
+	{
+		vr_optics.next_diag = host.realtime + 1.0;
+
+		if( vr_optics.count <= 0 )
+			VR_DiagPrintf( "OPTIC none declared by the held weapon's card\n" );
+		else if( !refState.vrFrameValid || !refState.vrFrameBone[0] )
+			VR_DiagPrintf( "OPTIC %d declared, waiting for bone '%s' frame"
+				" (valid=%d)\n", vr_optics.count, refState.vrFrameBone,
+				refState.vrFrameValid ? 1 : 0 );
+		else
+			VR_DiagPrintf( "OPTIC %d declared, frame ok on '%s'\n",
+				vr_optics.count, refState.vrFrameBone );
+	}
 
 	if( vr_optics.count <= 0 )
 		return;
@@ -8892,9 +8915,16 @@ that moves wrongly the moment the player bends forward: the neck anchor pitches
 with the head, the chest does not.
 ================
 */
+// solved_only: this gesture has NO head-relative history to preserve, so do
+// not crossfade toward one. The crossfade exists so that gestures older than
+// the body solve do not move when it engages; a gesture invented after the
+// solve has nothing to protect, and blending its spot toward a head-relative
+// guess drags it bodily off the joint by however much confidence is short of
+// 1.0 - which for the hip holster was about ten units, against a radius of
+// nine. Callers that predate the solve pass false and are untouched.
 static qboolean VR_HandInGestureSpot( int hand_id, int anchor_id,
 	const vec3_t legacy_sbl, const vec3_t joint_fou,
-	float legacy_r, float joint_r, float *out_dist )
+	float legacy_r, float joint_r, qboolean solved_only, float *out_dist )
 {
 	vec3_t hand_w, hang, head, hang_w, fwd, right, up;
 	vec3_t legacy_spot, solved_spot, spot, d;
@@ -8935,8 +8965,22 @@ static qboolean VR_HandInGestureSpot( int hand_id, int anchor_id,
 		VectorMA( solved_spot, joint_fou[1] * side, Rt, solved_spot );
 		solved_spot[2] += joint_fou[2];
 
-		VectorLerp( legacy_spot, conf, solved_spot, spot );
-		radius = legacy_r + conf * ( joint_r - legacy_r );
+		if( solved_only )
+		{
+			VectorCopy( solved_spot, spot );
+			radius = joint_r;
+		}
+		else
+		{
+			VectorLerp( legacy_spot, conf, solved_spot, spot );
+			radius = legacy_r + conf * ( joint_r - legacy_r );
+		}
+	}
+	else if( solved_only )
+	{
+		// No solve, no spot. Saying "not here" is correct; falling back to a
+		// head-relative hip is not.
+		return false;
 	}
 	else
 	{
@@ -8963,7 +9007,7 @@ static qboolean VR_HandInHeadSpot( int hand_id, float side )
 	VectorSet( legacy_sbl, side, vr_shoulder_back.value, vr_shoulder_up.value );
 	VectorSet( joint_fou, -vr_shoulder_grab_back.value, 0.0f, vr_shoulder_grab_up.value );
 
-	return VR_HandInGestureSpot( hand_id, 1, legacy_sbl, joint_fou,
+	return VR_HandInGestureSpot( hand_id, 1, legacy_sbl, joint_fou, false,
 		vr_shoulder_radius.value, vr_shoulder_grab_radius.value * vr.k_arm, NULL );
 }
 
@@ -9979,6 +10023,16 @@ void VR_FillCmd( vrcmd_t *out )
 		else if( !grip )
 			vr.grab_ent = 0;
 
+		// SAY SO. On 2 Oct 2026 a headset session came back with "nothing is
+		// different" and this was one of three features that could not be
+		// cleared or blamed from the log, because it printed nothing at all.
+		// A proposal is exactly the thing worth recording: it says the hand
+		// closed, and what the client offered the server, which separates
+		// "the gesture never fired" from "the server refused it".
+		if( vr_diag.value != 0.0f && grip && !vr.grab_grip_prev )
+			VR_DiagPrintf( "GRAB offhand closed, proposing ent %d (reach %.1f)\n",
+				(int)vr.grab_ent, vr_grab_reach.value );
+
 		vr.grab_grip_prev = grip;
 		out->grab_ent = vr.grab_ent;
 	}
@@ -10115,7 +10169,7 @@ static void VR_UpdateReload( void )
 		VectorSet( joint_fou, vr_pouch_fwd.value, vr_pouch_out.value, vr_pouch_up.value );
 
 		if( grip && !grip_prev
-			&& VR_HandInGestureSpot( VR_OffHand(), 2, legacy_sbl, joint_fou,
+			&& VR_HandInGestureSpot( VR_OffHand(), 2, legacy_sbl, joint_fou, false,
 				vr_reload_radius.value, vr_pouch_radius.value * vr.k_arm, NULL ))
 		{
 			vr.rl_holding = true;
@@ -10481,14 +10535,20 @@ static void VR_UpdateHolsters( void )
 
 		VectorSet( joint_fou, fwd, out, up );
 
-		// NO LEGACY SPOT. The head-relative fallback exists so that gestures
-		// which predate the body solve do not move when it engages; this
-		// gesture has no history to preserve, and a hip measured from the HEAD
-		// is not a hip at all. Giving the legacy arm the same offsets would
-		// place the slot a foot and a half too high whenever the solve has not
-		// settled, which is worse than not firing - so the slot simply does
-		// not exist until the body is solved, and the confidence crossfade
-		// below reads zero until then.
+		// NO LEGACY SPOT, and it is the solved_only argument below that gets
+		// that - not this line. A hip measured from the HEAD is not a hip, and
+		// this gesture has no history to preserve.
+		//
+		// This USED to copy joint_fou into legacy_sbl and rely on the
+		// confidence gate alone, which is exactly the mistake the comment
+		// warned about: the crossfade still ran, so the slot sat
+		// ( 1 - conf ) of the way toward a head-relative point about thirty
+		// units too high. Measured in a headset on 2 Oct 2026 at conf 0.56 to
+		// 0.75: the hand read 14.5 to 23 units from a slot of radius 9 while
+		// resting on the hip, and the holster never once fired.
+		//
+		// legacy_sbl is ignored under solved_only. It is still passed because
+		// the signature is shared.
 		VectorCopy( joint_fou, legacy_sbl );
 
 		if( !vr.body_valid || vr.body_conf <= 0.5f )
@@ -10498,7 +10558,7 @@ static void VR_UpdateHolsters( void )
 		}
 
 		inside = VR_HandInGestureSpot( hand, vr_holster_def[slot].anchor,
-			legacy_sbl, joint_fou, radius, radius, &dist );
+			legacy_sbl, joint_fou, radius, radius, true, &dist );
 
 		// The hand must CLOSE on the slot, not merely pass through it - the
 		// same rule the shoulder hotspots use, and for the same reason: a hand
