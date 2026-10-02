@@ -445,6 +445,14 @@ qboolean VR_GetHeldPose( vec3_t out_org, vec3_t out_ang );
 // because a trigger edge kicks once per HOLD and once on a dry click.
 void     VR_HoldRecoil( int shots );
 
+// The muzzle is inside geometry: stop the body there and strip the velocity
+// going into the surface. No-op when the sim is off.
+void     VR_HoldBlocked( const vec3_t at, const vec3_t normal );
+
+// How far the body has ended up from the hand, in units. 0 when the sim is
+// off. The plan's "why has my aim stopped" diagnostic.
+float    VR_HoldSeparation( void );
+
 void     VR_RenderOpticViews( void );
 void     VR_DrawOptics( void );
 

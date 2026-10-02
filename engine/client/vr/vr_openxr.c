@@ -5414,6 +5414,24 @@ qboolean VR_GetHeldPose( vec3_t out_org, vec3_t out_ang )
 
 /*
 ================
+VR_HoldBlocked
+
+The muzzle is inside something. Stop the body there.
+
+Behind the gate like the rest of Part F, and a no-op when the sim is off - so
+the geometry-honesty clamp above keeps behaving exactly as it does today.
+================
+*/
+void VR_HoldBlocked( const vec3_t at, const vec3_t normal )
+{
+	if( vr_hold_sim.value == 0.0f || !vr_hold_ready )
+		return;
+
+	VRHold_Blocked( &vr_hold, at, normal );
+}
+
+/*
+================
 VR_HoldRecoil
 
 A shot kicked the weapon. Called with the number of rounds that actually went
@@ -5426,6 +5444,19 @@ would kick once per trigger HOLD and once on a dry click against an empty
 chamber. An automatic weapon that climbs once per burst is not recoil.
 ================
 */
+float VR_HoldSeparation( void )
+{
+	vec3_t hand, hang;
+
+	if( vr_hold_sim.value == 0.0f || !vr_hold_ready )
+		return 0.0f;
+
+	if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
+		return 0.0f;
+
+	return VRHold_Separation( &vr_hold, hand );
+}
+
 void VR_HoldRecoil( int shots )
 {
 	vec3_t fwd;
@@ -5610,6 +5641,19 @@ void VR_UpdateFireRay( void )
 				VectorSubtract( eye, org, back );
 				VectorNormalize( back );
 				VectorMA( tr.endpos, 1.0f, back, org );
+
+				// AND TELL THE BODY IT HIT SOMETHING. Part F's third unwired
+				// function: the trace that already proved the muzzle is
+				// inside geometry is exactly the information VRHold_Blocked
+				// wants, and it was sitting here unused.
+				//
+				// It stops the gun and strips the velocity going INTO the
+				// surface, so a weapon pushed at a wall rests against it and
+				// still slides along. Note it does NOT rotate - the plan's
+				// "the gun pivots in the hand" is not what the function
+				// does, and saying so here is cheaper than somebody
+				// rediscovering it.
+				VR_HoldBlocked( tr.endpos, tr.plane.normal );
 			}
 		}
 	}
@@ -5631,6 +5675,15 @@ void VR_UpdateFireRay( void )
 			fwd[0], fwd[1], fwd[2],
 			vr_weapon_pitch_offset.value, VR_HoldingMelee() ? 1 : 0,
 			VR_WeaponOriginActive() ? 1 : 0 );
+
+		// HOW FAR THE GUN IS FROM THE HAND. Part F's last unwired function,
+		// and the plan's own intended use for it: "why has my aim stopped" -
+		// a weapon pressed into a wall, or dragged by a hand moving faster
+		// than the body can follow, is a gun that is no longer where the
+		// player thinks it is. Reported rather than acted on, because what
+		// to DO about it is the hand-drawing work in Part G.
+		if( vr_hold_sim.value != 0.0f )
+			VR_DiagPrintf( "HOLD   separation=%.2f units\n", VR_HoldSeparation());
 	}
 }
 
@@ -13718,5 +13771,7 @@ void     VR_DrawOptics( void ) { }
 qboolean VR_WeaponHasSights( void ) { return false; }
 qboolean VR_GetHeldPose( vec3_t o, vec3_t a ) { return false; }
 void     VR_HoldRecoil( int shots ) { }
+void     VR_HoldBlocked( const vec3_t at, const vec3_t n ) { }
+float    VR_HoldSeparation( void ) { return 0.0f; }
 
 #endif
