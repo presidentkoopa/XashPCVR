@@ -51,3 +51,18 @@ joint 1  bone "magazine"  slide  travel 5.00  rest 0
 # shoot_empty. Not declared, because a hammer nobody can cock is a part the
 # simulator would freeze where a hand cannot reach it - it keeps the
 # animation it has until there is a control for it.
+
+# THE SLIDE STOP AND THE MAGAZINE RELEASE, ported from cards/hd/v_9mmhandgun
+# on 2 Oct 2026 - the same weapon on a remeshed rig.
+#
+# WHY A PORT IS DEFENSIBLE HERE: identical bone names ("Hands mesh",
+# "Hands mesh 2"), and the slide's centroid sits (-0.06 2.41 2.01) from the
+# body bone on this rig against (-0.20 2.22 2.70) on HD. The rigs agree to
+# within 0.7 units.
+#
+# WHY 0.7 UNITS IS STILL A RISK: a control is a thumb test. If the thumb
+# never lands, these two numbers are the first thing to re-measure on THIS
+# file - vr_diag prints the distance, so read it rather than guessing again.
+# Part G: a control only ever RELEASES a catch, never engages one.
+control slide_lock  at 1.10 -2.79 0.19   finger thumb  kind button
+control mag_latch   at 1.08 -0.73 -0.31  finger thumb  kind button

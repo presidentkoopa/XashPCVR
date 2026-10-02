@@ -1,35 +1,119 @@
-# Half-Life .357 revolver (Colt Python). Measured by vrcardgen, finished by
-# hand.
+# Half-Life .357 revolver (Colt Python) - THE RIG THAT IS ACTUALLY INSTALLED
+# at E:\XashWork\XashVR\valve\models\v_357.mdl. 44 bones, 8 seqs, 0xba7f43f7.
 #
-# The cylinder is bone "revolver", swinging 1.100 radians - 63 degrees -
-# about Y in `reload`. That is the whole mechanism a hand needs: open it,
-# tip the muzzle up and the cases fall out, fill it, close it, shoot.
+# WHY THIS CARD WAS THIN UNTIL 2 OCT 2026, AND WHY THAT MATTERED.
 #
-# The model also has six SHELL bones and a speed_loader that travel in from
-# off-screen during the reload. Those are ROUNDS, not joints, and the feed
-# path owns them - a card declaring six hinges would have the simulator
-# trying to drive the ejecting brass.
+# A note written on 1 Oct recorded that the twelve cards in this directory
+# "bind to the Half-Life VR Mod's rigs, 0 of 16 retail Half-Life models", and
+# the work that followed - the hammer control, the crossbow optic, Part J's
+# single action - was authored into cards/hd instead, against retail valve_hd.
 #
-# NOT declared, deliberately:
-#   trigger  - it moves 0.754 rad in `fire1`, but it is driven by the analog
-#              trigger and the sear, not by a hand grabbing it. Left to the
-#              existing path so it keeps animating.
-#   hammer   - exists, owns 2.6% of the mesh, and is never animated in any
-#              sequence. Single-action thumbing needs a travel stated by
-#              hand, which nobody has measured yet.
+# That was true and it was the wrong conclusion. THIS DIRECTORY IS THE OWNER'S
+# ACTUAL GUNS. The install has these rigs in valve/models and the engine loads
+# them; the retail HD rigs are the ones nobody plays. So three days of weapon
+# work landed on twelve files the game never reads, and a headset session came
+# back saying - correctly - that nothing had changed.
+#
+# MEASURED ON THIS FILE:
+#   body bone        `python`, bone 11, 49.0% of the mesh    (same name as HD)
+#   cylinder travel  1.10 rad on `revolver`, bone 14, in `reload`
+#   trigger travel   0.75 rad on `trigger`, bone 12, in `fire1`
+#   whole extent     20.02 units
+#   muzzle           attachment on bone 22, `muzzle_pos`
+#
+# TRANSFERRED FROM cards/hd/v_357.card, AND SAY SO:
+#   the hammer's 0.74 rad stroke, and the two control positions.
+#
+# The transfer is justified, not convenient. These are the same weapon: the
+# same gun textures (v_python_Reference.BMP, bluesteelchrome.bmp), the same
+# bone names, `python`/`hammer`/`revolver` at bones 11/13/14 in BOTH rigs, and
+# the cylinder measuring 1.10 here against HD's 1.0996 - the same animation.
+# Body-frame positions between the two rigs agree to within 0.4 units, which
+# the grab radii below absorb.
+#
+# WHY THE HAMMER HAS TO BE STATED RATHER THAN MEASURED. On this rig vrcardgen
+# reports `hammer` as "EXISTS BUT NEVER ANIMATED - give it a travel": the bone
+# owns 2.6% of the mesh and not one of the 8 sequences moves it. The HD rig
+# does animate it, 0.7365 rad in `fidget1`, and that is where 0.74 comes from.
+# This is the one number in the card that is not off this file, and it is
+# flagged here because the next person reading it will assume otherwise.
+#
+# STILL NOT VERIFIED IN A HEADSET. The two `control` positions are a thumb
+# test, and a thumb that lands 0.4 units off is a control that never triggers.
+# vr_diag prints the distance; read it rather than re-guessing.
 
 weapon v_357
 match  bones 44  seqs 8  hash 0xba7f43f7
 
-# The bone every position in this card is measured in - the controls, the
-# grab points, the chamber, the ejection port. Nothing recorded it until
-# the engine had to place a control in the world to ask whether a thumb is
-# near it; the simulator never needed one, because it never works in world
-# space. Taken from the generator, which has always called this bone the
-# WEAPON BODY and is what measured these numbers in the first place.
+# Bone 11, 673 verts, 49.0% of the mesh - the frame every position below is
+# measured in.
 body   "python"
 
+# Six chambers, six SHELL bones. rpm 300 is NOT a measurement - a rate cannot
+# be read off a model - and is carried from the HD card so both rigs of the
+# same revolver behave alike. The double-action pull and the cylinder's own
+# advance are the real limiter.
 type   revolver  capacity 6  rpm 300
 
+# THE HAMMER, RESTATED AS A PURE TURN. Joint 1's 0 is rest and its 1 is full
+# cock, which is what the detent below assumes. No vertex moves and no bone is
+# added; the motion is simply given a direction and a length, because this rig
+# animates none.
+synth hammer  from "hammer"  rewrite
+      hinge  axis -1.0 0.0 0.0   travel 0.74
+
+# JOINT 0 IS THE CYLINDER, because the `revolver` preset says so: it makes
+# joint 0 the cylinder, sets feed.cyl_joint to 0, and makes joint 1 the hammer.
+# Numbering them the other way round hands the hammer the cylinder's detent.
 joint 0  bone "revolver"  hinge  travel 1.10  rest 0
-    grab  point 0.00 0.00 0.00  radius 3.0
+    # The cylinder latch, as the magazine latch's catch - the only catch in
+    # vr_feed's vocabulary meaning "this holds a part shut, it starts engaged,
+    # and a thumb lets it go". Nothing outside VRGun_Preset and VRGun_Init
+    # reads the id, so this is the latch idea under the only name the format
+    # has for it. breakout 10000 lets a deliberate pull open it too.
+    catch mag_latch  at 0.02  holds 1  breakout 10000
+
+    # Open at 0.90, transferred: on the HD rig all six chamber mouths clear
+    # the standing breech at 0.90 of the swing and not before. Same swing
+    # here, so the same fraction. vr_joint's 3% hysteresis trips it at 0.93,
+    # so the cylinder has to be swung right out - which is what a reload is.
+    point cyl_open   at 0.90
+
+    # Measured on THIS file: the cylinder's own vertex centroid.
+    grab  point -0.44 -0.18 1.65  radius 2.5
+
+# JOINT 1: the hammer, from the synth above.
+joint 1  bone "hammer"  hinge  travel 0.74  rest 0
+    # Full cock at 0.90 with 30% resist, which is what makes a hammer feel
+    # like a hammer rather than a free-swinging flap. Crossing it sets
+    # hammer_cocked and advances the cylinder one chamber - Part J's "chambers
+    # advance one per cock" - and with break_cocked on the revolver preset it
+    # is what gives the short 40% let-off instead of the long 85% pull.
+    #
+    # NO SEAR CATCH, deliberately. A revolver is double action, so
+    # VRFeed_NeedsCocking returns 0 and feed.action_joint stays VRJ_NO_JOINT,
+    # which is the only joint vr_feed ever releases a VRC_SEAR on. A sear here
+    # would engage at full cock and nothing would ever let it go, leaving the
+    # hammer stuck back for the rest of the weapon's life.
+    point hammer_cock at 0.90  resist 0.30
+
+    # Measured on THIS file: the hammer bone's own vertex centroid.
+    grab  point -0.00 -0.28 1.39  radius 1.5
+
+# THE THUMBPIECE AND THE SPUR. Both TRANSFERRED from the HD card, in the
+# `python` frame - the rigs agree to within 0.4 units and these are the two
+# numbers most worth re-measuring on this file if the thumb misses.
+#
+# Part G puts a cylinder latch on a face button (`kind button`) and the hammer
+# on the stick (`kind lever`), because a hammer is DRAWN rather than released:
+# every other control lets something go, and releasing a hammer the moment a
+# thumb touched it is the trigger's job.
+control mag_latch  at 0.92 0.37 0.01  finger thumb  kind button
+control hammer     at 0.02 2.44 0.91  finger thumb  kind lever
+
+# The firing chamber - the top one, under the barrel and under the hammer -
+# and where the brass leaves. Both transferred; the chambers run along the
+# bore axis, so cases come out along +Y, straight back, which is what tipping
+# the muzzle up turns into a fall.
+chamber at 0.01 0.33 0.85
+eject   at 1.97 0.29 -0.60  dir 0.00 1.00 0.00
