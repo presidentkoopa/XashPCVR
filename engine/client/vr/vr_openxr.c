@@ -415,6 +415,17 @@ static CVAR_DEFINE_AUTO( vr_holsters, "0", FCVAR_ARCHIVE, "reach to a holster to
 // off hand closing on nothing has always done nothing - and because the game
 // refuses every proposal it does not like, so the worst a wrong reach does is
 // propose something the server declines.
+// Part H's optics. Default ON because an optic only exists when a card
+// declares one, and only two cards will - so "off" would mean a feature
+// nobody can reach rather than a safe default.
+static CVAR_DEFINE_AUTO( vr_optics_enable, "1", FCVAR_ARCHIVE, "draw scopes and red dots declared by a weapon's card" );
+static CVAR_DEFINE_AUTO( vr_optic_size, "512", FCVAR_ARCHIVE, "square size of a scope's view texture, pixels" );
+static CVAR_DEFINE_AUTO( vr_optic_fov, "40", FCVAR_ARCHIVE, "a 1x optic's field of view, degrees; magnification divides it" );
+static CVAR_DEFINE_AUTO( vr_optic_eyebox, "0.86", FCVAR_ARCHIVE, "how near the scope's axis an eye must be to see the image, as a cosine" );
+static CVAR_DEFINE_AUTO( vr_optic_dot, "0.08", FCVAR_ARCHIVE, "radius of a reticle dot on the glass, units" );
+static CVAR_DEFINE_AUTO( vr_optic_r, "1.0", FCVAR_ARCHIVE, "reticle red" );
+static CVAR_DEFINE_AUTO( vr_optic_g, "0.1", FCVAR_ARCHIVE, "reticle green" );
+static CVAR_DEFINE_AUTO( vr_optic_b, "0.1", FCVAR_ARCHIVE, "reticle blue" );
 static CVAR_DEFINE_AUTO( vr_grab_reach, "6", FCVAR_ARCHIVE, "how far from the palm a thing can be and still be grabbed, units" );
 static CVAR_DEFINE_AUTO( vr_holster_grab, "1", FCVAR_ARCHIVE, "a holster needs the hand closed, not just passing through" );
 static CVAR_DEFINE_AUTO( vr_holster_hip, "", FCVAR_ARCHIVE, "weapon kept on the dominant hip; set it with vr_holster hip" );
@@ -6102,6 +6113,358 @@ the renderer for that bone's matrix (refState.vrFrameBone) and places them
 with it. Everything then happens in world space, where the thumb already is.
 =====================
 */
+
+/*
+=================================================================
+OPTICS (Part H)
+
+A scope's image on its eyepiece, and a red dot that sits still on the target.
+
+NEVER ZOOM THE PLAYER'S VIEW, which is the first line of Part H and the thing
+that shapes all of this. In a headset a field-of-view change is not a scope,
+it is the whole world lurching. So the eye frustum is never touched: it
+belongs to the headset. What magnification divides is the field of view of a
+SECOND view, rendered from the objective lens into a texture of its own and
+drawn on the eyepiece. The world stays the size it is and the picture inside
+the tube gets bigger, which is what a real scope does.
+
+THE RETICLE IS DRAWN PER EYE AND THAT IS THE WHOLE POINT. A dot painted at a
+fixed spot on a piece of glass has parallax: move your head and it slides off
+the target, which is exactly what a real red dot does NOT do. A real one
+collimates its dot to infinity, so both eyes see it over the same point in the
+world however the head moves. Reproducing that is one line of geometry - draw
+the dot where the line from THIS EYE to a far point along the sight axis
+crosses the lens plane - and it has to happen once per eye.
+
+WHICH IS THE INVERSE OF THIS FILE'S USUAL RULE, so it is worth saying loudly:
+ref_params.h instructs that once-per-frame work be gated on vr_eye == 0,
+because the scene is drawn twice. A reticle must be recomputed for BOTH eyes
+or it has the parallax it exists to remove. The scope's IMAGE is the opposite
+again - two eyes looking down one tube see one picture, so that renders once
+per frame, before either eye, through R_RenderViewTarget.
+
+THE FRAME THE NUMBERS ARE IN. An optic's two points are measured in the
+weapon's body bone, the same bone a card's controls are measured in - so this
+shares the bone-matrix request VR_UpdateControls already makes rather than
+needing a second slot in a channel that only has one.
+=================================================================
+*/
+#define VR_MAX_OPTICS 2
+
+// How far along the axis "infinity" is for the parallax solve. Far enough that
+// the dot does not visibly swim at any range a player shoots at, near enough
+// that the maths stays in float comfortably.
+#define VR_OPTIC_FAR  8192.0f
+
+static struct
+{
+	vr_optic_t opt[VR_MAX_OPTICS];
+	int        count;
+
+	// The two points in WORLD space, placed through the body bone's matrix.
+	vec3_t     front[VR_MAX_OPTICS];
+	vec3_t     rear[VR_MAX_OPTICS];
+	qboolean   placed[VR_MAX_OPTICS];
+
+	int        target;          // the scope's view target, -1 for none
+	qboolean   target_init;     // ...and whether that -1 has been set yet
+	qboolean   want_frame;      // we need the body bone's matrix this frame
+} vr_optics;
+
+/*
+================
+VR_UpdateOptics
+
+Ask the game what the weapon in hand has, and place it in the world.
+
+Runs before VR_UpdateControls, and sets the bone request when controls have
+not - a weapon can have a scope and no controls, which the M40A1 does, and
+the request would otherwise be cleared out from under us.
+================
+*/
+static void VR_UpdateOptics( void )
+{
+	vec3_t hand, hang;
+	int i;
+
+	// A zero-initialised static would make target 0 look like a valid handle
+	// on the first frame, and R_ViewTargetTexnum would be asked about a target
+	// nobody acquired.
+	if( !vr_optics.target_init )
+	{
+		vr_optics.target = -1;
+		vr_optics.target_init = true;
+	}
+
+	vr_optics.count = 0;
+	vr_optics.want_frame = false;
+
+	if( !VR_IsActive() || vr_optics_enable.value == 0.0f
+		|| !clgame_vr_funcs.pfnGetOptics )
+		return;
+
+	vr_optics.count = clgame_vr_funcs.pfnGetOptics( vr_optics.opt, VR_MAX_OPTICS );
+
+	if( vr_optics.count <= 0 )
+		return;
+
+	// The frame they were measured in. Every optic on a card shares it with
+	// every control, because both come from the card's one `body` line - so
+	// the first that names a bone decides, and VR_UpdateControls asking for
+	// the same bone a moment later is a no-op rather than a conflict.
+	for( i = 0; i < vr_optics.count; i++ )
+	{
+		if( vr_optics.opt[i].bone[0] )
+		{
+			Q_strncpy( refState.vrFrameBone, vr_optics.opt[i].bone,
+				sizeof( refState.vrFrameBone ));
+			vr_optics.want_frame = true;
+			break;
+		}
+	}
+
+	for( i = 0; i < vr_optics.count; i++ )
+		vr_optics.placed[i] = false;
+
+	// The renderer answers on the frame after it next draws the model, so the
+	// first frame a weapon is out reports nothing. Correct rather than
+	// unfortunate: guessing a frame would hang a scope in mid-air.
+	if( !refState.vrFrameValid || !refState.vrFrameBone[0] )
+		return;
+
+	if( !VR_GetHandWorld( VR_DominantHand(), hand, hang ))
+		return;
+
+	for( i = 0; i < vr_optics.count; i++ )
+	{
+		const vr_optic_t *o = &vr_optics.opt[i];
+
+		if( !o->bone[0] || o->radius <= 0.0f )
+			continue;
+
+		Matrix3x4_VectorTransform( refState.vrFrameMatrix, o->front, vr_optics.front[i] );
+		Matrix3x4_VectorTransform( refState.vrFrameMatrix, o->rear, vr_optics.rear[i] );
+		vr_optics.placed[i] = true;
+	}
+}
+
+/*
+================
+VR_RenderOpticViews
+
+The scope's own view, once per frame, before either eye.
+
+ONE PICTURE FOR TWO EYES, which is not a saving but the correct answer: two
+eyes looking down one tube see the same image, and the eye that is not at the
+eyepiece sees no image at all. Rendering it per eye would cost twice as much
+to produce an identical result.
+
+Called from V_RenderView beside the other view targets.
+================
+*/
+void VR_RenderOpticViews( void )
+{
+	int i;
+
+	for( i = 0; i < vr_optics.count; i++ )
+	{
+		const vr_optic_t *o = &vr_optics.opt[i];
+		vec3_t axis, ang;
+		float fov;
+
+		if( o->kind != VR_OPTIC_SCOPE || !vr_optics.placed[i] )
+			continue;
+
+		if( vr_optics.target < 0 )
+		{
+			vr_optics.target = R_AcquireViewTarget( "*vr_scope",
+				(int)bound( 128.0f, vr_optic_size.value, 2048.0f ));
+
+			if( vr_optics.target < 0 )
+				return;
+		}
+
+		// Along the tube, from the objective. VectorAngles rather than a
+		// matrix because R_RenderViewTarget takes a pose, and a scope has no
+		// roll worth preserving - the image is round.
+		VectorSubtract( vr_optics.front[i], vr_optics.rear[i], axis );
+
+		if( VectorLength( axis ) < 0.01f )
+			continue;
+
+		VectorNormalize( axis );
+		VectorAngles( axis, ang );
+
+		// MAGNIFICATION IS A NARROWER VIEW, and nothing else. This is the
+		// whole of "never zoom the player's view": the eye frustum is
+		// untouched and only this second camera narrows.
+		fov = vr_optic_fov.value / (float)( o->power > 0 ? o->power : 1 );
+
+		R_RenderViewTarget( vr_optics.target, vr_optics.front[i], ang, fov );
+		return;        // one scope is drawn; a second would want its own target
+	}
+}
+
+/*
+================
+VR_DrawOpticDisc
+
+A disc of `n` segments facing `normal`, at `at`, radius `r`. Textured if the
+caller bound one and asked for texcoords.
+================
+*/
+static void VR_DrawOpticDisc( const vec3_t at, const vec3_t right, const vec3_t up,
+	float r, qboolean textured )
+{
+	const int SEG = 24;
+	vec3_t p;
+	int i;
+
+	// A triangle fan would be fewer vertices, but TRI_QUADS is what the rest
+	// of this file emits and the engine's TriAPI exposes no fan mode.
+	for( i = 0; i < SEG; i++ )
+	{
+		float a0 = ( 2.0f * M_PI_F * i ) / SEG;
+		float a1 = ( 2.0f * M_PI_F * ( i + 1 )) / SEG;
+		float c0 = cosf( a0 ), s0 = sinf( a0 );
+		float c1 = cosf( a1 ), s1 = sinf( a1 );
+
+		if( textured ) ref.dllFuncs.TexCoord2f( 0.5f, 0.5f );
+		ref.dllFuncs.Vertex3fv( at );
+
+		if( textured ) ref.dllFuncs.TexCoord2f( 0.5f + 0.5f * c0, 0.5f - 0.5f * s0 );
+		VectorMA( at, r * c0, right, p ); VectorMA( p, r * s0, up, p );
+		ref.dllFuncs.Vertex3fv( p );
+
+		if( textured ) ref.dllFuncs.TexCoord2f( 0.5f + 0.5f * c1, 0.5f - 0.5f * s1 );
+		VectorMA( at, r * c1, right, p ); VectorMA( p, r * s1, up, p );
+		ref.dllFuncs.Vertex3fv( p );
+
+		// Degenerate fourth corner, because the fan is being drawn as quads.
+		if( textured ) ref.dllFuncs.TexCoord2f( 0.5f, 0.5f );
+		ref.dllFuncs.Vertex3fv( at );
+	}
+}
+
+/*
+================
+VR_DrawOptics
+
+Per eye, during the 3D pass, with the world's depth buffer live so the gun
+occludes its own glass correctly.
+
+Called from VR_DrawOverlays.
+================
+*/
+void VR_DrawOptics( void )
+{
+	vec3_t eye, eang;
+	int i;
+
+	if( !vr_optics.count || vr_optics_enable.value == 0.0f )
+		return;
+
+	// THIS eye, not the head. The whole reason a reticle is drawn here rather
+	// than once per frame is that the answer differs between them.
+	VectorCopy( refState.vieworg, eye );
+	VectorCopy( refState.viewangles, eang );
+
+	for( i = 0; i < vr_optics.count; i++ )
+	{
+		const vr_optic_t *o = &vr_optics.opt[i];
+		vec3_t axis, lens_n, right, up, far_pt, d, hit;
+		float denom, t;
+
+		if( !vr_optics.placed[i] || o->kind == VR_OPTIC_IRONS )
+			continue;
+
+		VectorSubtract( vr_optics.front[i], vr_optics.rear[i], axis );
+
+		if( VectorLength( axis ) < 0.01f )
+			continue;
+
+		VectorNormalize( axis );
+
+		// The glass faces back down the tube, at the eye.
+		VectorNegate( axis, lens_n );
+		VectorVectors( lens_n, right, up );
+
+		if( o->kind == VR_OPTIC_SCOPE )
+		{
+			int tex = R_ViewTargetTexnum( vr_optics.target );
+
+			if( tex <= 0 )
+				continue;
+
+			// EYE RELIEF, cheaply and honestly. A real scope shows its image
+			// only from close behind and near the axis; off to the side you
+			// get a black disc, which is what the eye NOT at the eyepiece
+			// should see. Measured as the angle between the tube's axis and
+			// the line to this eye rather than as a box, because that is the
+			// quantity an eye box actually describes.
+			VectorSubtract( eye, vr_optics.rear[i], d );
+
+			if( VectorLength( d ) > 0.01f )
+			{
+				vec3_t dn;
+				float off;
+
+				VectorCopy( d, dn );
+				VectorNormalize( dn );
+				off = DotProduct( dn, lens_n );
+
+				if( off < vr_optic_eyebox.value )
+					continue;   // outside the eye box: the tube is opaque
+			}
+
+			ref.dllFuncs.GL_SetRenderMode( kRenderTransTexture );
+			ref.dllFuncs.GL_Bind( XASH_TEXTURE0, tex );
+			ref.dllFuncs.Color4f( 1.0f, 1.0f, 1.0f, 1.0f );
+			ref.dllFuncs.Begin( TRI_QUADS );
+			VR_DrawOpticDisc( vr_optics.rear[i], right, up, o->radius, true );
+			ref.dllFuncs.End();
+			continue;
+		}
+
+		// ---- a reticle, at infinity -----------------------------------
+		//
+		// Where the line from THIS EYE to a far point along the axis crosses
+		// the lens plane. That is the whole of collimation: the dot lands on
+		// whatever the barrel is pointed at, from wherever the eye happens to
+		// be, so moving your head does not move the dot off the target.
+		VectorMA( vr_optics.front[i], VR_OPTIC_FAR, axis, far_pt );
+		VectorSubtract( far_pt, eye, d );
+
+		denom = DotProduct( d, lens_n );
+
+		if( fabs( denom ) < 0.0001f )
+			continue;   // looking along the glass edge-on
+
+		VectorSubtract( vr_optics.front[i], eye, hit );
+		t = DotProduct( hit, lens_n ) / denom;
+
+		if( t <= 0.0f )
+			continue;   // the lens is behind this eye
+
+		VectorMA( eye, t, d, hit );
+
+		// Off the glass entirely - the eye is too far off axis to see the dot,
+		// which is what a real sight does and is the reason this is a lens
+		// rather than a crosshair.
+		VectorSubtract( hit, vr_optics.front[i], d );
+
+		if( VectorLength( d ) > o->radius )
+			continue;
+
+		ref.dllFuncs.GL_SetRenderMode( kRenderTransAdd );
+		VR_BindOverlayTexture();
+		ref.dllFuncs.Color4f( vr_optic_r.value, vr_optic_g.value, vr_optic_b.value, 1.0f );
+		ref.dllFuncs.Begin( TRI_QUADS );
+		VR_Marker( hit, vr_optic_dot.value );
+		ref.dllFuncs.End();
+	}
+}
+
 static void VR_UpdateControls( void )
 {
 	// The authored thumb, in the hand bone's frame. See above - these are
@@ -7256,6 +7619,8 @@ pass. Everything drawn here is additive and depth-tested against the world.
 */
 void VR_DrawOverlays( void )
 {
+	VR_DrawOptics();
+
 	if( vr_diag_aim.value > 0.0f )
 	{
 		vec3_t m, a;
@@ -10328,6 +10693,14 @@ qboolean VR_Init( void )
 	Cvar_RegisterVariable( &vr_slide_travel );
 	Cvar_RegisterVariable( &vr_reload_hold );
 	Cvar_RegisterVariable( &vr_shoulder_grab );
+	Cvar_RegisterVariable( &vr_optics_enable );
+	Cvar_RegisterVariable( &vr_optic_size );
+	Cvar_RegisterVariable( &vr_optic_fov );
+	Cvar_RegisterVariable( &vr_optic_eyebox );
+	Cvar_RegisterVariable( &vr_optic_dot );
+	Cvar_RegisterVariable( &vr_optic_r );
+	Cvar_RegisterVariable( &vr_optic_g );
+	Cvar_RegisterVariable( &vr_optic_b );
 	Cvar_RegisterVariable( &vr_grab_reach );
 	Cvar_RegisterVariable( &vr_holsters );
 	Cvar_RegisterVariable( &vr_holster_grab );
@@ -12468,6 +12841,7 @@ qboolean VR_BeginFrame( void )
 	// Before the gestures that test against it, and after this frame's poses
 	// were located, or every hotspot answers from last frame's body.
 	VR_BodyUpdate();
+	VR_UpdateOptics();
 	VR_UpdateShoulderMelee();
 	VR_UpdateHolsters();
 	VR_UpdateReload();
@@ -13039,5 +13413,7 @@ void     R_FreeViewTargets( void ) { }
 void     VR_BlitViewTarget( int target, int x, int y, int w, int h ) { }
 void     VR_RenderViewTargets( void ) { }
 void     VR_DrawViewTargetTest( void ) { }
+void     VR_RenderOpticViews( void ) { }
+void     VR_DrawOptics( void ) { }
 
 #endif

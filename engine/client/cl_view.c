@@ -689,6 +689,7 @@ void V_RenderView( void )
 		// VR_BeginEye's. Framebuffer 0 is current here, which is what it
 		// expects and what it restores.
 		VR_RenderViewTargets();
+		VR_RenderOpticViews();
 
 		for( eye = 0; eye < VR_GetEyeCount(); eye++ )
 		{

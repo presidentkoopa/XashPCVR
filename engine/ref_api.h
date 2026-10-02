@@ -81,6 +81,8 @@ GNU General Public License for more details.
 // 19. vr_part_t gained `driven`, and `value` is read only when it is set.
 //     The VR part fields were added to this struct without ever bumping the
 //     version, so a renderer and an engine built apart could already disagree
+//     Added TriAPI TexCoord2f, so engine code can draw a textured quad in
+//     world space rather than only a flat-white one (PCVR: Part H's optics)
 //     about its layout in silence; this bump makes the mismatch loud.
 #define REF_API_VERSION 19
 
@@ -750,6 +752,19 @@ typedef struct ref_interface_s
 	void	(*Vertex3fv)( const float *worldPnt );
 	void	(*Vertex3f)( float x, float y, float z );
 	void    (*CullFace)( TRICULLSTYLE mode );
+
+	// PCVR fork: the one entry point that was missing to draw a TEXTURED quad
+	// from engine code.
+	//
+	// The engine can already bind any texture (GL_Bind), set a render mode and
+	// emit vertices - so it could draw world-space geometry, but only ever
+	// flat: VR_BindOverlayTexture binds REF_WHITE_TEXTURE because there was no
+	// way to say where on a texture a vertex sits. The laser, the aim arc and
+	// every marker this fork draws are white for that reason alone.
+	//
+	// Part H needs it for a scope's image on an eyepiece. It is general, it is
+	// additive, and it is at the END of this block so no existing slot moves.
+	void	(*TexCoord2f)( float u, float v );
 
 	// fill render_api_t and triangleapi_t with renderer-specific functions
 	void	(*R_FillRenderAPI)( struct render_api_s *api );

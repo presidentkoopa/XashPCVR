@@ -196,3 +196,16 @@ joint 1  bone "Clip Master"  slide  travel 8.35  rest 0
 # centreline (+0.03) and WELL above the body (+3.81 of the mid) - the two
 # that outrank it on roundness are the bow limbs, at x +1.68 and -1.72, which
 # are a mirrored pair, and nothing carries two scopes.
+
+# THE SCOPE, DECLARED (Part H). Measurements in the block above.
+#
+# POWER 4 because that is what the weapon already did: stock Half-Life's
+# crossbow zoomed to fov 20 against a 90 default, which is 4.5x. Rounded down,
+# and now it narrows the scope's own view instead of the player's whole world.
+#
+# THE FRONT FACE IS THE ONE NUMBER STILL OPEN - see the caveat above. The tube
+# is stepped and its forward end reads as y -3.00 or y -3.69 depending on how
+# the rings group; -3.00 is used here because it is the conservative one, and
+# the only thing it affects is where the second camera sits along an axis both
+# answers agree on. Somebody should look at the model and settle it.
+optic scope  front 0.03 -3.00 2.95   rear 0.03 0.76 2.95  radius 0.64  power 4

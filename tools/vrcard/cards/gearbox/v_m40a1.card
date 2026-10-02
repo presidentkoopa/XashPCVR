@@ -113,3 +113,23 @@ joint 2  bone "m40a1_bolt"  hinge  travel 0.60  rest 0
 # bone for the scope, the glass, or the eyepiece. A lens can only ever be a
 # measured point in the body's frame, which is what `control` and `strike`
 # already are.
+
+# THE SCOPE, DECLARED (Part H). The measurements are in the block above; these
+# are the same numbers in the parser's vocabulary.
+#
+# `front` is the objective and `rear` the eyepiece - the end toward the target
+# and the end toward the eye. Two points rather than a point and a direction
+# because that is what a model gives you and because this parser has no sqrt.
+# `radius` is the eyepiece's, because that is the glass the image is drawn on.
+#
+# POWER 3, and it is a choice rather than a measurement. The real M40A1 wears a
+# Redfield 3-9x and Part H wants secondary fire to cycle between them; the card
+# format carries one power because the channel for cycling does not exist yet.
+# The low end is the right single value - a 9x picture on a 512-pixel texture
+# is a blurry 4-degree window, and nobody can hold it steady without Part F's
+# bipod anyway.
+#
+# Magnification narrows THIS optic's own view and nothing else. The eye frustum
+# belongs to the headset: see Part H's first line, and vr_openxr.c's optics
+# section for why that is not a detail.
+optic scope  front -7.82 0.00 3.16   rear -0.17 0.00 3.16  radius 0.78  power 3

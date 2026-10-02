@@ -46,7 +46,7 @@ the other to work.
 // speaks; a DLL that does not recognise it must return 0 and will be treated
 // as though it never exported anything, rather than reading a table whose
 // layout it is guessing at.
-#define VR_GAMEAPI_VERSION  6
+#define VR_GAMEAPI_VERSION  7
 
 // WHICH vrcmd_t LAYOUT THIS REVISION CARRIES.
 //
@@ -109,6 +109,53 @@ typedef struct vr_control_s
 	float   radius;
 	int     finger;         // VR_FINGER_*
 } vr_control_t;
+
+/*
+====================
+AN OPTIC - a scope, a red dot, a pair of iron sights.
+
+Part H, and the same shape as vr_control_t above for the same reason: a point
+the card measured in the weapon's own frame, carrying the name of the bone it
+was measured in, because the renderer and the card number bones in orders that
+have no reason to agree.
+
+TWO POINTS, NOT A POINT AND A DIRECTION. A sight line measured off a model
+gives two positions, and the card parser is integer-only by design and has no
+sqrt to normalise a vector with. `front` is the end toward the target - the
+objective lens of a scope, the front post of a pair of irons - and `rear` is
+the end toward the eye. The axis is the difference, and whoever needs it
+normalised can do it in float on this side of the line.
+
+NO MODEL MARKS ANY OF THIS, which is why it is a measured point rather than a
+bone. Neither of the two scoped weapons Half-Life and Opposing Force ship has
+a bone for its scope, its lens or its eyepiece: the HD crossbow's scope is 135
+vertices of the body mesh and the M40A1's is part of the stock's. They are
+measured with tools/vrcard/find_optics.py and recorded in the card.
+====================
+*/
+#define VR_OPTIC_IRONS    0   // a front post and a rear notch, nothing drawn
+#define VR_OPTIC_RETICLE  1   // a dot on a lens, at infinity, drawn per eye
+#define VR_OPTIC_SCOPE    2   // a magnified view on the eyepiece
+
+typedef struct vr_optic_s
+{
+	// WHICH BONE front[] AND rear[] ARE MEASURED IN. Empty means the optic
+	// cannot be placed in the world, and the engine must draw nothing rather
+	// than guess a frame.
+	char    bone[32];
+
+	float   front[3];       // toward the target: objective, or front post
+	float   rear[3];        // toward the eye: eyepiece, or rear notch
+	float   radius;         // of the glass at the rear, in units
+	int     kind;           // VR_OPTIC_*
+
+	// Magnification, 1 for none. On a scope this divides the aux view's field
+	// of view and nothing else - it does NOT touch the eye frustum, which
+	// belongs to the headset. That is what "never zoom the player's view"
+	// means in practice: the world stays the size it is and the picture
+	// inside the tube gets bigger, which is what a real scope does.
+	int     power;
+} vr_optic_t;
 
 // Which digit works a control. Matches the card's `finger` vocabulary.
 #define VR_FINGER_THUMB   0
@@ -215,6 +262,20 @@ typedef struct vr_game_funcs_s
 	// controls, or none in hand - which is the normal answer and the answer
 	// for every mod that has never heard of any of this.
 	int ( *pfnGetControls )( vr_control_t *out, int max );
+
+	/*
+	====================
+	pfnGetOptics
+
+	The optics of the weapon in hand, in the weapon's own frame.
+
+	Same contract as pfnGetControls: positions measured by the card, carrying
+	the bone they are measured in, and zero is the normal answer - for a
+	weapon with no card, no optic, or none in hand, and for every mod that has
+	never heard of any of this.
+	====================
+	*/
+	int ( *pfnGetOptics )( vr_optic_t *out, int max );
 } vr_game_funcs_t;
 
 // The export itself. Returns VR_GAMEAPI_VERSION on success, 0 to decline.

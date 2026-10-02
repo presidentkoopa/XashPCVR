@@ -422,6 +422,13 @@ void     VR_BlitViewTarget( int target, int x, int y, int w, int h );
 // nothing unless vr_viewtarget_test is set.
 void     VR_DrawViewTargetTest( void );
 
+// Part H's optics. VR_RenderOpticViews renders a scope's own narrow view once
+// per frame, before either eye, because two eyes down one tube see one
+// picture. VR_DrawOptics draws the result on the eyepiece - and a reticle at
+// infinity - once PER EYE, because that answer differs between them.
+void     VR_RenderOpticViews( void );
+void     VR_DrawOptics( void );
+
 //
 // tracking queries (used later by input / gameplay layers)
 //

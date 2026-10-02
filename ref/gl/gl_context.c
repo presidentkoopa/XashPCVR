@@ -570,6 +570,7 @@ const ref_interface_t gReffuncs =
 	TriVertex3fv,
 	TriVertex3f,
 	TriCullFace,
+	TriTexCoord2f,
 
 	R_FillRenderAPI,
 	R_FillTriAPI,
