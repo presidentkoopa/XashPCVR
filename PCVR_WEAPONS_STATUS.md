@@ -65,7 +65,7 @@ retail content the only binding target — see the card section.
 | **C** Mechanism simulator | done | `hlsdk/dlls/vr_joint.*`, `vr_trigger.*` |
 | **D** Rounds and feed | done | `hlsdk/dlls/vr_feed.*` — magazine, tube, belt, cylinder, single-shot, thrown |
 | **E** Cards and mesh surgery | **done** | parser, surgery and binding all work together. The synth/fingerprint conflict is fixed and verified end to end: `vrfingerprint_check` reports **23 cards bind, 0 refused**, including the M40A1's two synthetic bones. |
-| **F** Held weapon as an object | **written, tested headless, consumed by almost nothing** | `engine/client/vr/vr_hold.*`, behind `vr_hold_sim`, default 0. "Done, gated" was too kind - see below. |
+| **F** Held weapon as an object | **wired, gated, tunable** | All six functions have callers; the drawn weapon reads the body; a shot kicks it; nine tuning cvars. Still behind `vr_hold_sim`, default 0, so nothing changes until you opt in. Remaining: `shouldered` (needs a stock point), a second body for dual wield. |
 | **G** Hands on the gun | **mostly** | grip solver built from the authored fist, now driven by a **real analog grip** instead of a hardcoded 1.0; the **thumb-rest** is bound at last, so Part G's control table is no longer gated on a bit that was always zero. Six cards carry measured controls. |
 | **H** Sights and scopes | **H-00/02/03/04 done; H-01 blocked** | zoom suppressed; `optic` card keyword; game API v7 `pfnGetOptics`; reticle at infinity per eye; scope image on the eyepiece with an eye box; laser suppressed on sighted weapons. Both scoped weapons declare their optics. **H-01 irons blocked** - see below. |
 | **I** World and body | **part, and more than this file said** | the solved torso already exists and is **default on**: `anchor_neck`, `anchor_chest`, `anchor_shoulder[2]`, `anchor_hip[2]`, a torso yaw and a confidence cross-fade, in `vr_openxr.c`. **Five of the plan's six slot anchors are solved.** What is missing is the slots themselves - holstering and drawing - not the body under them. | **Since: holsters (hip, chest), a dropped magazine as a real bouncing entity with surface sounds and walk-over recovery, and the grab path end to end - vrcmd_t v5 `grab_ent`, a client proposal, a server claim check. No physics library taken.**
@@ -272,24 +272,28 @@ pivots in the hand" is not what it does. There is one global `vr_hold`, so dual 
 off-hand weapon share nothing with it. And nothing resets the body on a weapon change, so drawing a
 new gun flies the old body's state into the new grip.
 
-### What it would take, in order - and the middle of this is the owner's call
+### Done since, all behind the gate
 
-1. **Make the drawn weapon read the body.** A `VR_GetHeldPose` used in `cl_view.c` where
-   `VR_GetHandWorld` is read now, and in `VR_SeatViewmodel` instead of the raw palm. Without this,
-   Part F and the picture disagree every frame.
-2. **Decide the attachment-versus-body precedence** in `VR_UpdateFireRay`. Once (1) lands the
-   attachments derive from the body pose and the existing order becomes self-consistent; without
-   (1), those blocks must be skipped when the sim is on or Part F contributes nothing on stock
-   content. **This step reorders the calibrated aim chain, and that chain is a long record of live
-   regressions - gun 45 degrees low, barrel upside down, point-blank shots doing no damage. A
-   mistake here is a mistake in where every bullet goes.** Not to be done without the owner's say.
-3. **Reset on weapon change**, the way `VR_AlignModelToFireRay` already tracks the model.
-4. **Expose VRHold_DefaultCfg's nine constants as cvars**, or the feel session the gate comment
-   depends on cannot happen - and the recoil tuning above cannot be fixed without a recompile.
-5. **Call `VRHold_Recoil`** on a real shot. The existing firing edge in `cl_main.c` is a trigger-hold
-   edge, so it would kick once per burst and once on a dry click; the shot count from the simulator
-   is the honest source.
-6. **Only then** set `vr_hold_sim` to 1.
+1. **The drawn weapon reads the body** - `VR_GetHeldPose`, taken after the two-handed stabilisation
+   and not instead of it, because that is the order `VR_UpdateFireRay` uses. The picture and the aim
+   now agree.
+2. **A real weapon-change reset.** It never detected one: the only triggers were the first frame and
+   the mass cvar moving, so swapping crowbar to RPG kept the crowbar's body.
+3. **Nine tuning cvars** (`vr_hold_follow`, `_turn`, `_recoil`, `_torque`, `_lag`, `_tilt`, plus
+   `_mass` and the gate). Zero means "module default". The gate comment promised the proof was "a
+   session with the headset on"; that session was impossible while every number needed a recompile.
+4. **Recoil fires on a shot**, driven by the clip count dropping rather than a trigger edge - which
+   kicks once per HOLD and once on a dry click. Limits written in the code.
+5. **`VRHold_Blocked` and `VRHold_Separation` have callers.** All six functions are wired now.
+
+**Still open:** `shouldered` is still a literal 0 at every call site in the tree - it needs a stock
+point, which no model marks and no card keyword exists for. There is one global `vr_hold`, so dual
+wield and the off-hand weapon share nothing with it. `max_angaccel` clamps a velocity against a
+constant documented as an acceleration, and at 900 rad/s never binds.
+
+**And the tuning is where the headline feature went.** `turn_time` is `0.0060 * mass`, so a 2kg
+weapon returns to the hand in 12ms and no recoil is visible through a spring that stiff. **This is
+now a thing you can type**: `vr_hold_sim 1; vr_hold_turn 0.08` and judge it.
 
 ## Part I, and the physics-library question answered (1 Oct)
 
